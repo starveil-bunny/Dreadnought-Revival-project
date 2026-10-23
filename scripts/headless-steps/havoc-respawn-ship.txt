@@ -1,0 +1,56 @@
+# Havoc respawn ship switch: havoc-kill.sh (NUKE=0) kills at wave 1 t+10; pick Tugarin, respawn.
+# Toggle -> "RESPAWNING IN" + ready tick but no spawn during the wave (headless 10-16 21:19); havoc-kill.sh /nuke ends the wave 40 s after the kill.
+# Respawn screen + 5 ship cards seen ~24 s after the kill (headless kill3 10-16 21:06).
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 172 585     # first ship card (Havoc lobby layout)
+sleep 3
+click 500 690     # READY toggle (Havoc lobby)
+sleep 3
+shot ready
+wait-log Wave 1 starts now   # spawn lands with the wave 1 announcement (headless 10-16 20:24), so watch wave 2
+sleep 5
+shot spawned
+sleep 30
+shot dead
+click 336 585     # second ship card (Modified Tugarin, artillery)
+sleep 2
+shot picked
+click 500 690     # toggle under the cards (the RESPAWN AVAILABLE bar itself did nothing, headless 10-16 21:13)
+sleep 6
+shot r-01
+sleep 6
+shot r-02
+sleep 6
+shot r-03
+sleep 10
+shot r-04
+sleep 10
+shot r-05
+sleep 10
+shot r-06
+sleep 10
+shot r-07
+sleep 10
+shot r-08
+sleep 10
+shot r-09
+sleep 10
+shot r-10
+sleep 10
+shot r-11
+sleep 10
+shot r-12

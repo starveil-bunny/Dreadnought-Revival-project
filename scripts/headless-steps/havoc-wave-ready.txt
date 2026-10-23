@@ -1,0 +1,67 @@
+# Havoc between-wave ready: pg-battle flow to spawn, then press ReadyUp (space)
+# every 10 s; drive the wave end from outside with /wave skip.
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 172 585     # first ship card (Havoc lobby layout)
+sleep 3
+click 500 690     # READY toggle (Havoc lobby)
+sleep 3
+shot ready
+wait-log Starting game music   # ~60 s orbit intro, then control
+sleep 5
+shot spawned
+hold w 4          # fly forward
+hold a 2          # turn
+sleep 2
+shot flying
+key space         # ReadyUp
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+sleep 10
+key space
+shot end

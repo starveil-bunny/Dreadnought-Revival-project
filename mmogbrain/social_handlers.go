@@ -275,6 +275,13 @@ func handleChatMethod(r socialRequest) map[string]any {
 		if body == "" {
 			return socialError("empty message")
 		}
+		if reply, ok := handleChatCommand(r.peer.playerID, name, body); ok {
+			// Commands stay between the typist and the Server (chat_commands.go).
+			if reply != "" {
+				sendServerLine(r.peer, name, reply)
+			}
+			return socialOK(map[string]any{"channel": name})
+		}
 		persistMmogChatMessage(r.peer.playerID, name, body)
 		notice := chatMessageNotice(r.method, name, r.hub.presenceEntry(r.peer.playerID), body)
 		// Every copy carries the profanity filter's verdict; the sender's own

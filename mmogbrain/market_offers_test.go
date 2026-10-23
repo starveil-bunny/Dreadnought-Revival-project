@@ -15,7 +15,7 @@ import (
 // Every documented bundle resolves its heroes from the client's data, is
 // Featured, references its contents, and costs more GP than nothing.
 func TestMarketBundlesAreRealAndFeatured(t *testing.T) {
-	seeds := marketBundleCatalogSeeds()
+	seeds := marketBundleCatalogSeeds("")
 	if len(seeds) != len(marketBundles) {
 		t.Fatalf("%d bundle offers for %d bundles", len(seeds), len(marketBundles))
 	}
@@ -173,7 +173,15 @@ func TestDocumentedMarketPrices(t *testing.T) {
 	if gatewayGpToCreditsRate != 105 {
 		t.Errorf("GP to credits rate %d, want 105", gatewayGpToCreditsRate)
 	}
-	if len(heroCatalogSeeds("")) != len(heroShipLoadouts) {
+	// Every hero is offered on its own except the Havoc unlockable, which is
+	// sold only as its Havoc bundle (havoc.go).
+	plain := 0
+	for _, h := range heroShipLoadouts {
+		if _, havoc := havocUnlockThreshold(h.loadoutID); !havoc {
+			plain++
+		}
+	}
+	if len(heroCatalogSeeds("")) != plain {
 		t.Error("not every hero ship is offered")
 	}
 }
@@ -235,4 +243,147 @@ func TestEveryBundleIsListedForTheBundlesSection(t *testing.T) {
 			t.Errorf("bundle %q is not listed, so the client drops it", id)
 		}
 	}
+}
+
+// A bundle reads as owned once every ship and cosmetic in it is (the same
+// ownership grantMarketBundle checks): otherwise the Hero Ships tab offered a
+// bundle a player already had in full, and buying it only bought the credits.
+func TestBoughtBundleIsListedAsOwned(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	const pid = "650dd79476a1484b8adcd01ac2f17354"
+	if err := seedMmogPlayerState(database, pid); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := marketBundleByID(marketBundleIDBase + 2)
+	ownedFlag := func() bool {
+		for _, s := range marketBundleCatalogSeeds(pid) {
+			if s.itemID == b.id {
+				return s.owned
+			}
+		}
+		t.Fatalf("bundle %d not listed", b.id)
+		return false
+	}
+	if ownedFlag() {
+		t.Fatal("bundle owned before buying it")
+	}
+	if _, err := database.Exec(`UPDATE player_state SET premium_currency=? WHERE user_id=?`, b.priceGP(), pid); err != nil {
+		t.Fatal(err)
+	}
+	req := protocol.AppendStringField(nil, "RT", "YA_PurchaseItem")
+	req = append(req, protocol.AppendStringField(nil, "offer", "999"+strconv.Itoa(int(b.id)))...)
+	if got := protocol.ExtractStringField(buildMmogPurchasePayload("YA_PurchaseItem", pid, protocol.AppendRootEnd(req)), "result"); got != "bought" {
+		t.Fatalf("bundle purchase: %q", got)
+	}
+	if !ownedFlag() {
+		t.Error("bundle not owned after buying everything in it")
+	}
+	// The owned flag is not enough to clear the tile: the client's offer
+	// loader (FYItemOfferData::Load, 0x142a6d760) does not read any ownership
+	// field, so an owned bundle is hidden instead (market_offers.go).
+	for _, s := range marketBundleCatalogSeeds(pid) {
+		if s.itemID == b.id {
+			if !s.hidden {
+				t.Error("bundle listing stays visible after everything in it is owned")
+			}
+			if e := gatewayMarketEntity(s, true); e["DoNotDisplayInStore"] != true {
+				t.Errorf("DoNotDisplayInStore = %v for an owned bundle", e["DoNotDisplayInStore"])
+			}
+		}
+	}
+	for _, s := range marketBundleCatalogSeeds("") {
+		if s.owned {
+			t.Errorf("bundle %d owned with no player", s.itemID)
+		}
+	}
+}
+
+// An owned bundle is hidden once EVERY content is owned, and only then: a
+// bundle with cosmetics needs those too, not just its hero ship.
+func TestOwnedBundleIsHiddenAndOnlyWhenComplete(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	const pid = "650dd79476a1484b8adcd01ac2f17355"
+	if err := seedMmogPlayerState(database, pid); err != nil {
+		t.Fatal(err)
+	}
+	hideState := func(name string) (owned, hidden bool) {
+		for _, s := range marketBundleCatalogSeeds(pid) {
+			if s.displayName == name {
+				return s.owned, s.hidden
+			}
+		}
+		t.Fatalf("%q is not listed", name)
+		return false, false
+	}
+	grant := func(id int32) {
+		tx, err := database.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := grantUnlockedShipLoadout(tx, pid, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	buy := func(id int32) {
+		if _, err := database.Exec(`INSERT INTO player_purchases(user_id,item_id,item_type,price_paid,currency) VALUES(?,?,'vanity',0,'admin')`, pid, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Nothing owned: every bundle is offered.
+	for _, s := range marketBundleCatalogSeeds(pid) {
+		if s.owned || s.hidden {
+			t.Errorf("%s: owned=%v hidden=%v with nothing owned", s.displayName, s.owned, s.hidden)
+		}
+	}
+	// Battle Ready: Recruit is its hero ship alone.
+	recruit := marketBundleByName(t, "Battle Ready: Recruit")
+	heroes, vanity := recruit.contents()
+	if len(heroes) != 1 || len(vanity) != 0 {
+		t.Fatalf("Recruit contents = %v / %v, want one hero and no cosmetics", heroes, vanity)
+	}
+	grant(heroes[0])
+	if owned, hidden := hideState(recruit.name); !owned || !hidden {
+		t.Errorf("Recruit: owned=%v hidden=%v after granting %d", owned, hidden, heroes[0])
+	}
+	// A bundle still missing a content stays visible.
+	if owned, hidden := hideState("Battle Ready: Veteran"); owned || hidden {
+		t.Errorf("Veteran: owned=%v hidden=%v while its contents are unowned", owned, hidden)
+	}
+	// Rogue Cache has a coating: its hero ship alone must not hide it.
+	rogue := marketBundleByName(t, "Rogue Cache")
+	rHeroes, rVanity := rogue.contents()
+	if len(rHeroes) != 1 || len(rVanity) == 0 {
+		t.Fatalf("Rogue Cache contents = %v / %v, want one hero and its coating", rHeroes, rVanity)
+	}
+	grant(rHeroes[0])
+	if owned, hidden := hideState(rogue.name); owned || hidden {
+		t.Errorf("Rogue Cache: owned=%v hidden=%v with its cosmetics still unowned", owned, hidden)
+	}
+	for _, id := range rVanity {
+		buy(id)
+	}
+	if owned, hidden := hideState(rogue.name); !owned || !hidden {
+		t.Errorf("Rogue Cache: owned=%v hidden=%v with every content owned", owned, hidden)
+	}
+	// hidden must never disagree with owned: DoNotDisplayInStore is what the
+	// client acts on, and the two are computed in one place on purpose.
+	for _, s := range marketBundleCatalogSeeds(pid) {
+		if s.hidden != s.owned {
+			t.Errorf("%s: hidden=%v owned=%v", s.displayName, s.hidden, s.owned)
+		}
+	}
+}
+
+func marketBundleByName(t *testing.T, name string) marketBundle {
+	t.Helper()
+	for _, b := range marketBundles {
+		if b.name == name {
+			return b
+		}
+	}
+	t.Fatalf("bundle %q is not defined", name)
+	return marketBundle{}
 }

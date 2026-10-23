@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -25,6 +26,16 @@ type VanityItem struct {
 	// PublicReady is m_itemMetaData.m_publicReady -- the developers' own "ready
 	// for players" flag. Captain materials and genders carry no such flag.
 	PublicReady bool
+	// IconPath/IconHighResPath are m_itemUIData.m_icon / m_highResIcon: the
+	// object path of the picture the client's own data uses for this cosmetic.
+	// They are NOT all the item's own art -- 687 of 1,494 name a shared
+	// per-slot glyph under /Game/Generic/UI/vanity/ (UI_Vanity_Coating is the
+	// water-drop the operator sees on coating tiles) and 312 name the item's
+	// own picture under /Game/UserInterface/Textures/ShipVanityItems/. Whether
+	// one can be served is decided at generation time, not here: see
+	// VanityIconFile.
+	IconPath        string
+	IconHighResPath string
 }
 
 // Category is the item id's top byte (the category law): 20-24 ship vanity,
@@ -55,6 +66,8 @@ func loadVanityItems() {
 			Export string `json:"export"`
 			UI     struct {
 				Headline string `json:"m_headline"`
+				Icon     string `json:"m_icon"`
+				HighRes  string `json:"m_highResIcon"`
 			} `json:"m_itemUIData"`
 			Meta struct {
 				PublicReady bool `json:"m_publicReady"`
@@ -69,6 +82,7 @@ func loadVanityItems() {
 		item := VanityItem{
 			ItemID: row.System.ItemID, Name: row.Export, File: row.File,
 			HeadlineKey: row.UI.Headline, PublicReady: row.Meta.PublicReady,
+			IconPath: row.UI.Icon, IconHighResPath: row.UI.HighRes,
 		}
 		if _, dup := vanityByID[item.ItemID]; dup {
 			continue
@@ -90,6 +104,47 @@ func VanityItemByID(itemID int32) (VanityItem, bool) {
 	vanityItemsOnce.Do(loadVanityItems)
 	v, ok := vanityByID[itemID]
 	return v, ok
+}
+
+// VanityIconFile is the picture the market serves for a cosmetic: a file name
+// under data/market-images, or "" when the server must send no picture at all.
+//
+// The map is written by scripts/gen-vanity-icons.py, which decodes the texture
+// each item's own m_icon/m_highResIcon names. It is a FILE, not a rule, on
+// purpose: an item whose icon asset is not a decodable Texture2D (218 name the
+// item's own material under /Game/Generic/VanityItems/) or has no icon at all
+// (19) must get no picture rather than a wrong one -- the project's rule is
+// that nothing is invented. A missing file means "send nothing", which is the
+// state every cosmetic was in before this existed.
+var (
+	vanityIconsOnce sync.Once
+	vanityIcons     map[int32]string
+)
+
+func loadVanityIcons() {
+	vanityIcons = map[int32]string{}
+	f, err := os.Open(filepath.Join(DataDir(), "vanity", "VanityIcons.json"))
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	var byID map[string]string
+	if json.NewDecoder(f).Decode(&byID) != nil {
+		return
+	}
+	for id, file := range byID {
+		n, err := strconv.Atoi(id)
+		if err != nil || n == 0 || file == "" {
+			continue
+		}
+		vanityIcons[int32(n)] = file
+	}
+}
+
+// VanityIconFile returns the file name to serve for a cosmetic, or "".
+func VanityIconFile(itemID int32) string {
+	vanityIconsOnce.Do(loadVanityIcons)
+	return vanityIcons[itemID]
 }
 
 // VanityItemIsFree is the server's rule for which cosmetics cost nothing.
@@ -139,14 +194,42 @@ func VanityItemIsFree(v VanityItem) bool {
 // heads, the seasonal "_Outfit" variants, the Explorer sets, Outfit_Base_
 // Military and 44 head attachments have names but are in no template, and
 // owned they appeared in the captain editor as options with no head or
-// nothing to wear.
+// nothing to wear. (2026-10-21: only MC01's empty suit tab has a recorded
+// sighting; the later sets are sold again, see laterCaptainMesh.)
 func VanityItemIsSold(v VanityItem) bool {
 	if v.HeadlineKey == "" || strings.Contains(v.File, "/Test/") ||
 		strings.HasPrefix(v.Name, "Test") || strings.HasSuffix(strings.ToUpper(v.Name), "_TEST") {
 		return false
 	}
-	if v.Category() == 51 && captainTemplatesLoaded() && !InCaptainTemplate(v.ItemID) {
+	if v.Category() == 51 && captainTemplatesLoaded() && !InCaptainTemplate(v.ItemID) && !laterCaptainMesh(v) {
 		return false
+	}
+	return true
+}
+
+// laterCaptainMesh reports a captain mesh no template lists that is sold
+// anyway (CHANGED 2026-10-21). The templates are a hand-kept list, not "what
+// can be worn": they name the DragonHead bodies but not the DragonHead
+// attachments, and none of the sets after Jovian (Explorer, NanoDoc, Memento
+// Mori, Red Tiger, the winter hat, the Good Fortune caps...) -- yet every one
+// ships its meshes in the paks (pakx listing 2026-10-21) and the Explorer set
+// was sold as "Deep Space Explorers" (Steam news, 2021-04-23). Still held to
+// the templates: base bodies and heads (Body_Male_Base_MC01 owned 2026-10-06
+// made a suit tab with nothing in it; the C00 heads), and an "_Outfit"
+// variant of a set the templates do list (a duplicate of a sold set).
+// GUESS: the later sets render in the captain editor -- not seen yet.
+// DN_CAPTAIN_TEMPLATE_FILTER=1 restores the strict rule.
+func laterCaptainMesh(v VanityItem) bool {
+	if os.Getenv("DN_CAPTAIN_TEMPLATE_FILTER") == "1" ||
+		strings.Contains(v.File, "/Characters/Bodies/") || strings.Contains(v.File, "/Characters/Heads/") {
+		return false
+	}
+	if base, ok := strings.CutSuffix(v.Name, "_Outfit"); ok {
+		for _, w := range vanityItems {
+			if w.Name == base && InCaptainTemplate(w.ItemID) {
+				return false
+			}
+		}
 	}
 	return true
 }

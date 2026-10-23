@@ -1,0 +1,688 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dreadnought</title>
+<!-- The game's own font, filled in by the bootstrap below from
+     media/Quantico-*.ttf (scripts/gen-launcher-media.py cuts those out of the
+     client's paks). Inline because the page gets its media through the API as
+     data: URIs, not as files it can link. -->
+<style id="dnfont"></style>
+<style>
+  :root { color-scheme: dark; --acc:#f0a23a; --acc2:#ffcf7a; --freexp:#8cc8ff; --line:rgba(255,255,255,.12); --dim:#9aa6b2; --panel:rgba(8,12,18,.78); }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; height:100%; overflow:hidden; }
+  body { font:14px/1.4 "Dreadnought UI", "Segoe UI", system-ui, sans-serif; color:#e8edf2; user-select:none; background:#05080c; }
+  .bg { position:fixed; inset:0; background:center/cover no-repeat; opacity:0; transition:opacity 2s; }
+  .bg.on { opacity:1; }
+  .shade { position:fixed; inset:0; background:
+    linear-gradient(180deg, rgba(0,0,0,.55) 0, rgba(0,0,0,0) 90px),
+    linear-gradient(0deg, rgba(3,5,8,.92) 0, rgba(3,5,8,.35) 42%, rgba(3,5,8,0) 65%),
+    linear-gradient(270deg, rgba(3,5,8,.75) 0, rgba(3,5,8,0) 45%); }
+  main { position:fixed; inset:0; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 20px; }
+  /* The art's own composition sits the wordmark in the window corner; the
+     operator asked for air around it, 10% of the viewport off the top and
+     left edges. Margin (not header padding) so the chips the page injects
+     into the same header stay where they are. */
+  #lgw { position:relative; width:fit-content; margin:10vh 0 0 10vw; cursor:pointer; line-height:0; }
+  #logo { position:relative; height:52px; }
+  /* Logo border: a thin outline in a moving gradient plus a soft glow, cut
+     from the logo's own alpha (copies offset round it, masked by the logo).
+     Off by default; a click cycles the styles. */
+  /* The gradient-filled logo shape, grown outward by #lgf (built in logoFx):
+     1px black, 3px of the colour, then a 5px glow fading 90% -> 10%. With
+     the style off only the black edge is drawn (#lgk). */
+  #lgfx { position:absolute; inset:-16px; pointer-events:none; filter:url(#lgf); }
+  #lgfx.plain { filter:url(#lgk); }
+  #lgfx i { position:absolute; inset:16px; background:var(--lgg); background-size:420px 100%; animation:lgmove 7s linear infinite;
+    -webkit-mask:var(--lgm) center/contain no-repeat; mask:var(--lgm) center/contain no-repeat; }
+  @keyframes lgmove { to { background-position:420px 0; } }
+  .lgc { display:flex; gap:6px; margin-top:6px; } .lgc input { width:44px; height:28px; padding:2px; margin:0; }
+  .sp { flex:1; }
+  .chip { display:flex; align-items:center; gap:7px; padding:5px 11px; font-size:12.5px; background:var(--panel);
+    border:1px solid var(--line); border-radius:3px; white-space:nowrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#666; }
+  .dot.on { background:#5fd47e; box-shadow:0 0 6px #5fd47e; } .dot.off { background:#e5584a; }
+  .icon { cursor:pointer; padding:5px 9px; font-size:16px; line-height:1; color:var(--dim); background:var(--panel);
+    border:1px solid var(--line); border-radius:3px; }
+  .icon:hover { color:#fff; }
+  .body { flex:1; display:flex; align-items:flex-end; gap:18px; padding:0 20px 20px; min-height:0; }
+  .left { flex:1; display:flex; flex-direction:column; gap:10px; min-width:0; max-height:100%; }
+  .right { width:450px; display:flex; flex-direction:column; gap:10px; }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:3px; padding:12px 14px; backdrop-filter:blur(4px); }
+  .cap { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:6px; }
+  /* live */
+  #battles { display:flex; flex-wrap:wrap; gap:6px; }
+  #battles:empty { display:none; }
+  .battle { font-size:12.5px; padding:4px 10px; border-left:2px solid var(--acc); background:rgba(0,0,0,.45); }
+  .battle b { font-weight:600; } .battle small { color:var(--dim); margin-left:6px; }
+  /* news */
+  .tile { padding:8px 12px; background:rgba(0,0,0,.45); border-left:2px solid rgba(255,255,255,.25); cursor:pointer; }
+  .tile h3 { margin:0; font-size:13.5px; font-weight:600; }
+  .tile p { margin:4px 0 0; font-size:12.5px; color:#c2ccd5; white-space:pre-wrap; display:none; }
+  .tile.open p { display:block; }
+  #sstat p span { margin-right:14px; } #sstat p b { color:#fff; font-weight:600; }
+  /* account */
+  .who { display:flex; align-items:center; gap:10px; }
+  /* the settings gear at 2x the .icon base (font 16->32, padding 5x9 -> 10x18) */
+  .who .icon { font-size:32px; padding:10px 18px; }
+  .rank { min-width:57px; height:57px; display:grid; place-items:center; font-weight:700; font-size:22px; color:#130c02;
+    background:linear-gradient(180deg,var(--acc2),var(--acc)); clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); }
+  #name { flex:1; font-size:28px; font-weight:600; word-break:break-all; }
+  /* the player's rank title, the game's own name for the rank they hold */
+  #ptitle { font-size:15px; letter-spacing:.1em; text-transform:uppercase; color:var(--acc2); margin:-2px 0 8px; }
+  .xp { height:3px; background:rgba(255,255,255,.12); margin:8px 0 10px; }
+  .xp i { display:block; height:100%; width:0; background:var(--acc); }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; text-align:center; }
+  .stats b { display:block; font-size:24px; font-weight:600; }
+  .stats span { font-size:13px; letter-spacing:.1em; color:var(--dim); text-transform:uppercase; }
+  .wallet { display:flex; gap:20px; margin-top:14px; font-size:18px; color:#c2ccd5; }
+  .wallet b { color:#fff; font-weight:600; }
+  /* the client's own currency glyphs (media/credit.png, media/gold.png) */
+  .wallet img { width:20px; height:20px; vertical-align:-4px; margin-right:2px; }
+  #recent { display:flex; gap:4px; margin-top:10px; }
+  #recent i { flex:1; height:6px; background:#555; }
+  #recent i.win { background:#5fd47e; } #recent i.loss { background:#e5584a; } #recent i.draw { background:#c9b458; }
+  .play { position:relative; width:100%; padding:24px 0; font:inherit; font-size:33px; font-weight:700; letter-spacing:.3em;
+    text-indent:.3em; cursor:pointer; color:#130c02; border:0; border-radius:2px;
+    background:linear-gradient(180deg,#ff7a3c,#e0401c); box-shadow:0 0 24px rgba(230,80,30,.4); transition:background .2s, box-shadow .2s; }
+  .play:hover:not(:disabled) { background:linear-gradient(180deg,#ffd257,#f59a2a); box-shadow:0 0 30px rgba(245,170,50,.5); }
+  .play:hover:not(:disabled) { filter:brightness(1.1); }
+  .play:disabled { filter:grayscale(.8) brightness(.7); cursor:default; }
+  .btn.sec:disabled { opacity:.6; cursor:default; }
+  .vbtn { margin-left:10px; padding:1px 8px; font:inherit; font-size:11px; font-weight:600; letter-spacing:.12em; color:var(--dim);
+    background:rgba(0,0,0,.4); border:1px solid rgba(255,255,255,.2); cursor:pointer; }
+  .vbtn:hover { color:#fff; border-color:rgba(255,255,255,.5); }
+  .vbtn.live { color:#fff; border-color:var(--acc2); }
+  /* battle view / fleet: a loading screen behind the page (--vbg), blurred
+     for the battle view; the pages close themselves (dnvClose). */
+  #vw { position:fixed; inset:0; z-index:50; background:#0b0e13; overflow:hidden; }
+  #vw::before { content:''; position:absolute; inset:0; background:var(--vbg, none) center/cover no-repeat; filter:brightness(.55); }
+  #vw.blur::before { inset:-30px; filter:blur(14px) brightness(.45); }
+  #vw iframe { position:relative; width:100%; height:100%; border:0; display:block; background:transparent; }
+  #msg { min-height:18px; font-size:12.5px; text-align:center; color:var(--dim); }
+  #msg.bad { color:#ff8f82; } #msg.good { color:#8fe0a8; }
+  /* overlays */
+  .ov { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
+  .ov.on { display:flex; }
+  .card { width:340px; padding:22px; background:rgba(8,12,18,.92); border:1px solid var(--line); border-radius:3px; }
+  .card h2 { margin:0 0 14px; font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:var(--acc2); font-weight:600; }
+  input, select { width:100%; padding:9px 11px; margin-bottom:8px; font:inherit; color:#e8edf2; background:rgba(0,0,0,.5);
+    border:1px solid var(--line); border-radius:2px; user-select:text; }
+  input:focus, select:focus { outline:none; border-color:var(--acc); }
+  .btn { width:100%; padding:10px 0; font:inherit; font-weight:600; letter-spacing:.12em; text-transform:uppercase; cursor:pointer;
+    color:#130c02; background:linear-gradient(180deg,var(--acc2),var(--acc)); border:0; border-radius:2px; }
+  .btn.sec { color:#e8edf2; background:rgba(255,255,255,.08); border:1px solid var(--line); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  /* FLEET: one panel per maker, each in its logo's colours (sampled from the
+     ManufacturersScreen logos), split by thin separators; the frame and the
+     corner badge are the highest fleet unlocked, the word sits in the lower
+     ledge between brackets. */
+  #fleetb { --ft:#a37143; position:relative; display:flex; align-items:stretch; width:100%; height:80px; margin:12px 0 18px; padding:0;
+    cursor:pointer; border:2px solid var(--ft); border-bottom:0; border-radius:3px 3px 0 0; background:#0b0f15; transition:filter .15s; }
+  #fleetb:hover { filter:brightness(1.25); }
+  #fleetb::before, #fleetb::after { content:''; position:absolute; bottom:0; height:2px; width:calc(50% - 74px); background:var(--ft); }
+  #fleetb::before { left:-2px; } #fleetb::after { right:-2px; }
+  #fleetb.t2 { --ft:#b0b4ba; } #fleetb.t3 { --ft:#ca7110; }
+  #fleetb .mk { flex:1; display:grid; place-items:center; }
+  #fleetb .mk + .mk { border-left:1px solid; border-image:linear-gradient(180deg, transparent, rgba(255,255,255,.35), transparent) 1; }
+  #fleetb .ja { background:linear-gradient(135deg, rgba(2,33,98,.9) 0%, rgba(216,72,45,.55) 55%, rgba(255,255,255,.28) 100%); }
+  #fleetb .av { background:linear-gradient(135deg, rgba(0,0,0,.9) 0%, rgba(234,196,23,.45) 55%, rgba(10,8,2,.9) 100%); }
+  #fleetb .ob { background:linear-gradient(135deg, rgba(236,102,96,.6) 0%, rgba(243,165,88,.5) 50%, rgba(169,200,236,.5) 100%); }
+  #fleetb .lg { height:58px; filter:drop-shadow(0 0 4px rgba(0,0,0,.85)); }
+  /* --{[ FLEET ]}-- on the lower ledge */
+  #fleetb .fw { position:absolute; bottom:0; left:50%; transform:translate(-50%,50%); display:flex; align-items:center; gap:7px;
+    font-size:15px; font-weight:700; letter-spacing:.3em; color:#fff; text-shadow:0 0 6px #000; white-space:nowrap; }
+  #fleetb .fw span { padding:0 2px 0 .3em; }
+  #fleetb .fw i { width:7px; height:7px; background:var(--ft); transform:rotate(45deg); }
+  #fleetb .fw b { width:6px; height:18px; border:2px solid var(--ft); border-right:0; }
+  #fleetb .fw b.r { border:2px solid var(--ft); border-left:0; }
+  #fleetb .bd { position:absolute; bottom:-22px; right:-18px; height:52px; filter:drop-shadow(0 0 4px #000); }
+  .lnk { background:none; border:0; padding:0; font:inherit; font-size:12.5px; color:var(--dim); cursor:pointer; }
+  .lnk:hover { color:#fff; }
+  .row { display:flex; gap:6px; align-items:center; } .row > * { margin:0; }
+  .err { min-height:18px; margin-top:8px; font-size:12.5px; color:#ff8f82; }
+  .err.good { color:#8fe0a8; }
+  .fp { font:11px/1.4 Consolas, monospace; color:var(--dim); word-break:break-all; margin-bottom:12px; user-select:text; }
+  /* settings drawer */
+  #set { position:fixed; top:0; right:0; bottom:0; width:330px; padding:18px 20px; overflow:auto; transform:translateX(100%);
+    transition:transform .2s; background:rgba(6,9,14,.96); border-left:1px solid var(--line); }
+  #set.on { transform:none; }
+  #set .cap { margin-top:16px; }
+  .path { font-size:12.5px; color:#c2ccd5; word-break:break-all; margin-bottom:6px; user-select:text; }
+  .path.missing { color:#ff8f82; }
+  .srv { display:flex; align-items:center; gap:8px; width:100%; padding:7px 10px; margin-bottom:4px; font:inherit; font-size:13px;
+    text-align:left; color:#e8edf2; background:rgba(0,0,0,.4); border:1px solid var(--line); border-radius:2px; cursor:pointer; }
+  .srv.sel { border-color:var(--acc); }
+  .srv small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+  .srv .x { color:var(--dim); padding:0 3px; } .srv .x:hover { color:#ff8f82; }
+  .tog { display:flex; align-items:center; gap:8px; font-size:13px; margin:6px 0; cursor:pointer; }
+  .tog input { width:auto; margin:0; accent-color:var(--acc); }
+</style>
+<div class="bg" id="bg0"></div><div class="bg" id="bg1"></div><div class="shade"></div>
+<main>
+  <header>
+    <div id="lgw" title="" onclick="logoFx(1)"><div id="lgfx" hidden><i></i></div><svg width="0" height="0" style="position:absolute"><filter id="lgf" x="-5%" y="-30%" width="110%" height="160%" color-interpolation-filters="sRGB"></filter><filter id="lgk" x="-5%" y="-30%" width="110%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="1"/></filter></svg><img id="logo" alt="Dreadnought"></div>
+    <span class="sp"></span>
+  </header>
+  <div class="body">
+    <div class="left">
+      <div id="battles"></div>
+      <div class="tile open" id="sstat" onclick="this.classList.toggle('open')"><h3>Server Status</h3><p><span>Server: <b id="st-srv">–</b></span><span>State: <b id="st-state">…</b></span><span>Ping: <b id="st-ping">–</b></span><span>Online: <b id="st-on">–</b></span><span>Battles: <b id="st-bat">–</b></span></p></div>
+    </div>
+    <div class="right">
+      <div class="box" id="acct" hidden>
+        <div class="who"><div class="rank" id="rank" title="Rank">–</div><div id="name"></div><button class="icon" title="Settings" onclick="drawer(true)">&#9881;</button></div>
+        <div id="ptitle" hidden></div>
+        <div class="xp"><i id="xp"></i></div>
+        <div class="stats" id="stats" hidden>
+          <div><b id="s-m">0</b><span>Battles</span></div>
+          <div><b id="s-w">–</b><span>Win %</span></div>
+          <div><b id="s-k">0</b><span>Kills</span></div>
+          <div><b id="s-kd">–</b><span>K/D</span></div>
+        </div>
+        <div class="wallet" id="wallet" hidden><span style="color:var(--freexp)"><img id="ico-freexp" alt=""><b id="freexp">0</b></span><span><img id="ico-cr" alt=""><b id="cr">0</b></span><span style="color:var(--acc2)"><img id="ico-gold" alt=""><b id="gold">0</b></span></div>
+        <div id="recent"></div>
+        <button id="fleetb" onclick="openFleet()" title="Fleet"><div class="mk ja"><img class="lg" id="fl-jup" alt=""></div><div class="mk av"><img class="lg" id="fl-akv" alt=""></div><div class="mk ob"><img class="lg" id="fl-obe" alt=""></div><span class="fw"><i></i><b></b><span>FLEET</span><b class="r"></b><i></i></span><img class="bd" id="fl-bd" alt="" hidden></button>
+      </div>
+      <div id="msg"></div>
+      <button class="play" id="play" onclick="play()" disabled>PLAY</button>
+    </div>
+  </div>
+</main>
+<div id="vw" hidden><iframe id="vwf" title="Battle view" style="visibility:hidden" onload="this.style.visibility=this.srcdoc?'visible':'hidden'"></iframe></div>
+
+<div class="ov" id="ov-signin">
+  <form class="card" onsubmit="submitForm(event)">
+    <h2 id="si-title">Sign in</h2>
+    <input id="username" placeholder="Callsign" maxlength="32" autocomplete="username" hidden>
+    <input id="identifier" placeholder="Email or callsign" autocomplete="email">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="btn" id="go" type="submit">Sign in</button>
+    <div class="err" id="si-err"></div>
+    <div class="row" style="justify-content:space-between">
+      <button class="lnk" type="button" id="si-switch" onclick="pick(mode === 'login' ? 'register' : 'login')">Create account</button>
+      <button class="lnk" type="button" onclick="drawer(true)">Server: <span id="si-srv"></span></button>
+    </div>
+  </form>
+</div>
+
+<div class="ov" id="ov-cert">
+  <div class="card">
+    <h2>Trust server certificate</h2>
+    <div class="path" id="cert-name"></div>
+    <div class="fp" id="cert-fp"></div>
+    <button class="btn" id="cert-go" onclick="installCert()">Trust</button>
+    <div class="err" id="cert-err"></div>
+    <button class="lnk" onclick="afterCert()">Later</button>
+  </div>
+</div>
+
+<div class="ov" id="ov-game">
+  <div class="card">
+    <h2>Game location</h2>
+    <div class="path missing">Not found</div>
+    <button class="btn" onclick="pickGame('game-err')">Browse…</button>
+    <div class="row typed" hidden style="margin-top:8px"><input id="game-typed" placeholder="C:\Games\Dreadnought" spellcheck="false">
+      <button class="btn sec" style="width:auto;padding:9px 12px" onclick="typedGameDir('game-typed', 'game-err')">OK</button></div>
+    <div class="err" id="game-err"></div>
+  </div>
+</div>
+
+<aside id="set">
+  <div class="row" style="justify-content:space-between"><div class="cap" style="margin:0">Settings</div>
+    <button class="icon" onclick="drawer(false)">&#10005;</button></div>
+  <div class="cap">Server</div>
+  <div id="srv-list"></div>
+  <div class="row"><input id="srv-addr" placeholder="Address" spellcheck="false">
+    <button class="btn sec" style="width:auto;padding:9px 12px" onclick="addServer()">Add</button></div>
+  <div class="err" id="srv-err"></div>
+  <div class="cap">Game location</div>
+  <div class="path" id="gamepath"></div>
+  <div class="row"><button class="btn sec" onclick="pickGame('set-err')">Browse…</button>
+    <button class="btn sec" id="autogame" onclick="autoGame()" hidden>Auto</button></div>
+  <div class="row typed" hidden style="margin-top:6px"><input id="set-typed" placeholder="C:\Games\Dreadnought" spellcheck="false">
+    <button class="btn sec" style="width:auto;padding:9px 12px" onclick="typedGameDir('set-typed', 'set-err')">OK</button></div>
+  <div class="err" id="set-err"></div>
+  <div class="cap">Options</div>
+  <label class="tog"><input type="checkbox" id="opt-logWindow" onchange="setOpt('logWindow', this)">Log window</label>
+  <label class="tog"><input type="checkbox" id="opt-verboseLog" onchange="setOpt('verboseLog', this)">Detailed log</label>
+  <label class="tog"><input type="checkbox" id="opt-battleViewer" onchange="setOpt('battleViewer', this); state.battleViewer = this.checked; showViewBtn()">Battle view</label>
+  <button class="lnk" onclick="openLogs()">Open logs</button>
+  <div class="cap">Logo border</div>
+  <select id="lgset" onchange="saveLogoFx()"><option value="">Outline</option><option value="rgb">RGB (gay)</option><option value="aurora">Aurora</option>
+    <option value="trans">Trans</option><option value="bi">Bi</option><option value="lesbian">Lesbian</option><option value="custom">Custom</option></select>
+  <div class="lgc"><input type="color" id="lgc0" onchange="saveLogoFx()"><input type="color" id="lgc1" onchange="saveLogoFx()"><input type="color" id="lgc2" onchange="saveLogoFx()"></div>
+  <div class="cap">Skin</div>
+  <select id="skin" onchange="setSkin(this.value)"></select>
+  <div class="cap">Account</div>
+  <button class="btn sec" id="skiptut" onclick="skipTutorial()">Skip tutorial</button>
+  <button class="btn sec" id="signout" onclick="signOut()">Sign out</button>
+</aside>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let state = {}, mode = 'login', serverBusy = false, playing = false;
+  const err = (id, t, good) => { $(id).textContent = t || ''; $(id).className = 'err' + (good ? ' good' : ''); };
+  const say = (t, kind) => { $('msg').textContent = t || ''; $('msg').className = kind || ''; };
+  function overlay(which) {
+    for (const o of ['signin', 'cert', 'game']) $('ov-' + o).classList.toggle('on', o === which);
+    if (which === 'signin') setTimeout(() => $(mode === 'register' ? 'username' : 'identifier').focus(), 50);
+    updatePlay();
+  }
+  const shown = () => ['signin', 'cert', 'game'].find(o => $('ov-' + o).classList.contains('on'));
+  function drawer(on) { $('set').classList.toggle('on', on); }
+  function updatePlay() { $('play').disabled = playing || !!shown() || !state.signedIn; }
+
+  // ---- art ----
+  let bgs = [], bgFlip = 0, bgLast = -1;
+
+  // The game's own face and its resource glyphs. Both come from the client's
+  // paks through media/ (scripts/gen-launcher-media.py); if either is missing
+  // the page simply keeps its fallback font and its plain wallet text.
+  async function loadDreadnoughtUI() {
+    const faces = [['Quantico-Regular.ttf', 400], ['Quantico-Bold.ttf', 700]];
+    const css = [];
+    for (const [file, weight] of faces) {
+      const uri = await dnMedia(file);
+      if (uri) css.push(`@font-face{font-family:'Dreadnought UI';src:url(${uri}) format('truetype');font-weight:${weight};font-display:swap}`);
+    }
+    $('dnfont').textContent = css.join('');
+    for (const [id, file] of [['fl-jup', 'fl_jup.png'], ['fl-akv', 'fl_akv.png'], ['fl-obe', 'fl_obe.png']]) {
+      const uri = await dnMedia(file);
+      if (uri) $(id).src = uri;
+    }
+    for (const [id, file] of [['ico-cr', 'credit.png'], ['ico-gold', 'gold.png'], ['ico-freexp', 'freexp.png']]) {
+      const uri = await dnMedia(file);
+      if (uri) $(id).src = uri;
+      else $(id).hidden = true;
+    }
+  }
+  async function nextBg() {
+    if (!bgs.length) return;
+    // A random one each time, never the same twice in a row.
+    let k;
+    do k = Math.floor(Math.random() * bgs.length); while (bgs.length > 1 && k === bgLast);
+    bgLast = k;
+    const uri = await dnMedia(bgs[k]);
+    const el = $('bg' + (bgFlip ^= 1)), other = $('bg' + (bgFlip ^ 1));
+    el.style.backgroundImage = 'url(' + uri + ')';
+    el.classList.add('on'); other.classList.remove('on');
+  }
+
+  // ---- flow: certificate -> game -> sign-in -> home ----
+  function next() {
+    if (state.cert && !state.certLater) return showCert();
+    if (!(state.game && state.game.path)) return overlay('game');
+    if (!state.signedIn) return overlay('signin');
+    overlay(null);
+    dnLive();
+  }
+  function showCert() {
+    $('cert-name').textContent = state.cert.name || '';
+    $('cert-fp').textContent = state.cert.fingerprint;
+    err('cert-err');
+    overlay('cert');
+  }
+  function afterCert() { state.certLater = true; next(); }
+  async function installCert() {
+    $('cert-go').disabled = true;
+    err('cert-err', '…', true);
+    const r = await dnInstallCert();
+    $('cert-go').disabled = false;
+    if (!r.ok) return err('cert-err', r.error);
+    state.cert = null;
+    next();
+  }
+
+  // ---- sign-in ----
+  function pick(m) {
+    mode = m;
+    $('username').hidden = m !== 'register';
+    $('identifier').placeholder = m === 'register' ? 'Email' : 'Email or callsign';
+    $('si-title').textContent = $('go').textContent = m === 'register' ? 'Create account' : 'Sign in';
+    $('si-switch').textContent = m === 'register' ? 'Sign in' : 'Create account';
+    err('si-err');
+  }
+  function submitForm(e) {
+    e.preventDefault();
+    $('go').disabled = true;
+    err('si-err', '…', true);
+    dnSubmit(mode, $('username').value, $('identifier').value, $('password').value);
+  }
+  function dnAuthResult(r) {
+    $('go').disabled = false;
+    if (!r.ok) return err('si-err', r.error || 'Failed');
+    $('password').value = '';
+    state.signedIn = true; state.username = r.username;
+    if (!state.setupDone) { state.setupDone = true; dnFinishSetup(); }
+    showAccount();
+    next();
+  }
+  function signOut() {
+    dnSignOut();
+    state.signedIn = false;
+    drawer(false);
+    $('acct').hidden = true;
+    pick('login');
+    next();
+  }
+  async function skipTutorial() {
+    const r = await dnSkipTutorial();
+    if (r && r.ok) tutorialDone();
+    say(r && r.ok ? 'Tutorial marked done' : 'Skip failed' + (r && r.error ? ': ' + r.error : ''), r && r.ok ? '' : 'bad');
+  }
+  function tutorialDone() {
+    const b = $('skiptut');
+    b.textContent = 'Tutorial done';
+    b.disabled = true;
+  }
+  function showAccount() {
+    $('acct').hidden = !state.signedIn;
+    if (!state.signedIn) { inBattle = false; closeViewer(); }
+    showViewBtn();
+    $('name').textContent = state.username || '';
+    // The rank title belongs to the account that is signed in: a signed-out
+    // card (or a fresh account, before the first card arrives) shows none.
+    $('ptitle').hidden = true;
+  }
+
+  // ---- live data ----
+  function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
+  // ---- battle view ----
+  // The server's map of your battle, from your side, with match chat
+  // (mmogbrain launcher_viewer.go). Offered when the server has it on and the
+  // Battle view option is on; the page runs in a frame and its requests go
+  // through dnViewerAPI (the frame cannot reach the server itself).
+  // A VIEW button on each live battle (above Server Status).
+  let viewerOn = false, inBattle = false;
+  function showViewBtn() {
+    const on = viewerOn && state.signedIn && state.battleViewer !== false;
+    for (const b of document.querySelectorAll('#battles .vbtn')) { b.hidden = !on; b.classList.toggle('live', inBattle); }
+  }
+  // The backdrop behind either page: a loading screen, by file name.
+  async function vwBackdrop(file, blur) {
+    $('vw').classList.toggle('blur', blur);
+    const uri = await dnMedia(file);
+    $('vw').style.setProperty('--vbg', uri ? `url(${uri})` : 'none');
+  }
+  function openViewer() {
+    $('vw').hidden = false;
+    vwBackdrop('bg_elysium_night.jpg', true);
+    $('vwf').srcdoc = '<meta name="color-scheme" content="dark"><body style="background:transparent;color:#aab;font:14px sans-serif;padding:20px">Loading battle view…</body>';
+    dnViewerPage();
+  }
+  function dnViewerPageResult(r) {
+    if ($('vw').hidden) return;
+    if (r.ok) { $('vwf').srcdoc = r.html; return; }
+    closeViewer(); say('Battle view: ' + r.error, 'bad');
+  }
+  function closeViewer() { $('vw').hidden = true; $('vwf').srcdoc = ''; }
+  // ---- fleet ----
+  // Ships, LOADOUT A/B and a library of saved loadouts (mmogbrain
+  // launcher_fleet.go), in the battle view's frame and through the same
+  // dnViewerAPI; reply id -1 is the page itself, with the game font added.
+  function openFleet() {
+    $('vw').hidden = false;
+    vwBackdrop('bg_skybridge_night.jpg', false);
+    $('vwf').srcdoc = '<meta name="color-scheme" content="dark"><body style="background:transparent;color:#aab;font:14px sans-serif;padding:20px">Loading fleet…</body>';
+    Promise.resolve(window.dnArtBase ? dnArtBase() : '').catch(() => '').then((b) => { fleetArt = b || ''; dnViewerAPI(-1, 'GET', '/fleet/page', ''); });
+  }
+  // The launcher's loopback copy of the server's /admin/art (the 3D view's meshes).
+  let fleetArt = '';
+  window.addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || $('vw').hidden || e.source !== $('vwf').contentWindow) return;
+    if (m.dnvClose) closeViewer();
+    else if (m.dnv) dnViewerAPI(m.dnv, String(m.method || 'GET'), String(m.path || ''), String(m.body || ''));
+  });
+  function dnViewerReply(r) {
+    if (r.id === -1) {
+      if ($('vw').hidden) return;
+      if (r.status === 200) {
+        const art = fleetArt ? '<script>window.DN_ART=' + JSON.stringify(fleetArt) + '<\/script>' : '';
+        $('vwf').srcdoc = (fleetArt ? r.body.split('/admin/art/').join(fleetArt) : r.body).replace('<head>', '<head>' + art + '<style>' + $('dnfont').textContent + '</style>');
+        return;
+      }
+      closeViewer(); say('Fleet: ' + (r.status ? 'error ' + r.status : r.body), 'bad'); return;
+    }
+    const f = $('vwf').contentWindow;
+    if (f && !$('vw').hidden) f.postMessage({ dnvReply: r.id, status: r.status, body: r.body }, '*');
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('vw').hidden) closeViewer(); });
+
+  function dnLiveResult(r) {
+    const st = r.status;
+    if (st) viewerOn = !!st.viewer;
+    if (r.me || !state.signedIn) inBattle = !!(r.me && r.me.in_battle);
+    if (st) { $('st-on').textContent = st.online; $('st-bat').textContent = (st.battles || []).length; }
+    if (r.ms != null) $('st-ping').textContent = r.ms + 'ms';
+    const box = $('battles');
+    box.textContent = '';
+    for (const b of (st && st.battles) || []) {
+      const el = document.createElement('div');
+      el.className = 'battle';
+      const t = document.createElement('b'); t.textContent = (b.mode || '?') + ' · ' + (b.map || '?');
+      const s = document.createElement('small'); s.textContent = b.players + (b.players === 1 ? ' player' : ' players');
+      const v = document.createElement('button');
+      v.className = 'vbtn'; v.textContent = 'VIEW'; v.title = 'Watch this battle on the map, with chat'; v.onclick = openViewer;
+      el.append(t, s, v);
+      box.append(el);
+    }
+    showViewBtn();
+    const me = r.me;
+    if (me && me.tutorial) tutorialDone();
+    if (me && !me.new) {
+      if (me.name) $('name').textContent = me.name;
+      // The server sends the rank's own name, or nothing at all: no title is
+      // better than one we made up.
+      $('ptitle').textContent = me.title || '';
+      $('ptitle').hidden = !me.title;
+      $('rank').textContent = me.rank;
+      const ft = Math.min(3, Math.max(1, me.fleet_tier || 1));
+      if ($('fleetb').dataset.t !== String(ft)) {
+        $('fleetb').dataset.t = ft;
+        $('fleetb').className = 't' + ft;
+        dnMedia('fl_t' + ft + '.png').then(u => { $('fl-bd').hidden = !u; if (u) $('fl-bd').src = u; });
+      }
+      $('xp').style.width = (me.next ? Math.min(100, 100 * me.xp / me.next) : 100) + '%';
+      $('stats').hidden = $('wallet').hidden = false;
+      $('s-m').textContent = fmt(me.matches);
+      $('s-w').textContent = me.matches ? Math.round(100 * me.wins / me.matches) : '–';
+      $('s-k').textContent = fmt(me.kills);
+      $('s-kd').textContent = me.deaths ? (me.kills / me.deaths).toFixed(2) : (me.kills ? '∞' : '–');
+      $('cr').textContent = fmt(me.credits);
+      $('gold').textContent = fmt(me.gold);
+      $('freexp').textContent = fmt(me.freexp);
+      const rec = $('recent');
+      rec.textContent = '';
+      for (const m of (me.recent || []).slice().reverse()) {
+        const i = document.createElement('i');
+        i.className = m.outcome;
+        i.title = [m.outcome, m.mode, m.map, m.kills + '/' + m.deaths].filter(Boolean).join(' · ');
+        rec.append(i);
+      }
+    }
+  }
+  function dnNewsResult(r) {
+    $('st-state').textContent = r.online ? 'Connected' : 'Unreachable';
+    if (!r.online) say('Server unreachable', 'bad');
+    else if ($('msg').textContent === 'Server unreachable') say('');
+  }
+
+  // ---- play ----
+  function play() {
+    if ($('play').disabled) return;
+    playing = true; updatePlay();
+    say('Launching…');
+    dnPlay();
+  }
+  function dnPlayResult(r) {
+    if (r.ok) return say('Good hunting, Captain.', 'good');
+    playing = false; updatePlay();
+    say(r.error, 'bad');
+    if (r.cert) { state.certLater = false; return next(); }
+    if (r.game) { state.game = {}; return next(); }
+    if (r.signIn) signOut();
+  }
+
+  // ---- settings ----
+  function showGame(g) {
+    state.game = g = g || {};
+    $('gamepath').textContent = g.path || 'Not found';
+    $('gamepath').classList.toggle('missing', !g.path);
+    $('autogame').hidden = g.source !== 'chosen';
+  }
+  async function pickGame(errId) {
+    err(errId);
+    const r = await dnPickGame();
+    if (r.ok) { showGame(r.game); err(errId, 'Saved', true); if (shown() === 'game') next(); }
+    else if (r.error) err(errId, r.error);
+  }
+  async function typedGameDir(input, errId) {
+    const r = await dnSetGameDir($(input).value);
+    if (r.ok) { showGame(r.game); err(errId, 'Saved', true); if (shown() === 'game') next(); }
+    else err(errId, r.error);
+  }
+  async function autoGame() {
+    const r = await dnAutoGame();
+    if (r.ok) { showGame(r.game); err('set-err', r.game.path ? 'Auto' : 'Not found', !!r.game.path); }
+    else err('set-err', r.error);
+  }
+  async function setOpt(name, box) {
+    if (!(await dnSetOption(name, box.checked))) { box.checked = !box.checked; err('set-err', 'Not saved'); }
+  }
+  async function openLogs() {
+    const r = await dnOpenLogs();
+    err('set-err', r.ok ? r.path : r.error, r.ok);
+  }
+  // ---- logo border ----
+  const LOGO_FX = {
+    rgb: ['#ff2a2a', '#ffb02a', '#f5ff2a', '#2aff6a', '#2ae0ff', '#4a5aff', '#e02aff'],
+    aurora: ['#00ff9c', '#00c3ff', '#7a5cff', '#ff4fd8'],
+    trans: ['#5bcefa', '#f5a9b8', '#ffffff', '#f5a9b8'],
+    bi: ['#d60270', '#9b4f96', '#0038a8'],
+    lesbian: ['#d52d00', '#ff9a56', '#ffffff', '#d362a4', '#a30262'],
+    custom: ['#f0a23a', '#ffffff', '#3ac0f0'],
+  };
+  const LOGO_ORDER = ['', 'rgb', 'aurora', 'trans', 'bi', 'lesbian', 'custom'];
+  let lgAt = 0;
+  function logoFx(step) {
+    lgAt = (lgAt + step) % LOGO_ORDER.length;
+    const k = LOGO_ORDER[lgAt], fx = $('lgfx');
+    fx.hidden = false;
+    fx.classList.toggle('plain', !k);
+    if (!k) return;
+    const c = LOGO_FX[k];
+    fx.style.setProperty('--lgg', `linear-gradient(90deg, ${c.join(', ')}, ${c[0]})`);
+    const f = $('lgf');
+    if (!f.children.length) {
+      // Growing the shape by r: three rectangles (r x .41r, .41r x r,
+      // .77r x .77r) together approximate a disc, so the rings stay round.
+      // The glow should read GLOW[i] at 5+i px out; ring r goes on at the
+      // alpha that, stacked over the rings outside it, gives exactly that:
+      // 1 - (1 - t_r) / (1 - t_{r+1}).
+      // Colours grow by the per-channel max, which across a 420px gradient
+      // is the local colour.
+      const grow = (r, src, out) => {
+        const a = Math.max(1, Math.round(r * 0.41)), m = Math.max(1, Math.round(r * 0.77));
+        return [[r, a], [a, r], [m, m]].map(([x, y], i) => `<feMorphology in="${src}" operator="dilate" radius="${x} ${y}" result="${out}_${i}"/>`).join('') +
+          `<feMerge result="${out}"><feMergeNode in="${out}_0"/><feMergeNode in="${out}_1"/><feMergeNode in="${out}_2"/></feMerge>`;
+      };
+      const GLOW = [0.9, 0.7, 0.5, 0.3, 0.1], t = (r) => GLOW[r - 5] || 0;
+      let h = '', merge = '';
+      for (let r = 4 + GLOW.length; r >= 5; r--) {
+        const a = 1 - (1 - t(r)) / (1 - t(r + 1));
+        h += grow(r, 'SourceGraphic', 'u' + r) + `<feColorMatrix in="u${r}" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 ${a.toFixed(4)} 0" result="g${r}"/>`;
+        merge += `<feMergeNode in="g${r}"/>`;
+      }
+      h += grow(4, 'SourceGraphic', 'c4') + '<feMorphology in="SourceAlpha" operator="dilate" radius="1" result="k1"/>';
+      f.innerHTML = h + `<feMerge>${merge}<feMergeNode in="c4"/><feMergeNode in="k1"/></feMerge>`;
+    }
+  }
+  async function saveLogoFx() {
+    const cols = [0, 1, 2].map(i => $('lgc' + i).value);
+    LOGO_FX.custom = cols;
+    lgAt = LOGO_ORDER.indexOf($('lgset').value); logoFx(0);
+    if (!(await dnSetLogoFx($('lgset').value, cols.join(',')))) err('set-err', 'Not saved');
+  }
+  async function setSkin(name) {
+    if (!(await dnSetSkin(name))) { $('skin').value = state.skin; err('set-err', 'Not saved'); }
+  }
+  function renderServers() {
+    const box = $('srv-list');
+    box.textContent = '';
+    const info = state.servers || { list: [] };
+    for (const s of info.list) {
+      const b = document.createElement('button');
+      b.className = 'srv' + (s.selected ? ' sel' : '');
+      const n = document.createElement('span'); n.textContent = s.name;
+      const a = document.createElement('small'); a.textContent = s.address || '';
+      b.append(n, a);
+      if (s.kind === 'custom') {
+        const x = document.createElement('span'); x.className = 'x'; x.textContent = '\u2715';
+        x.onclick = async e => {
+          e.stopPropagation();
+          if (confirm('Remove ' + s.name + '?')) dnServerResult(await dnRemoveServer(s.id));
+        };
+        b.append(x);
+      }
+      b.onclick = () => { if (!s.selected && !serverBusy) { serverBusy = true; err('srv-err', '…', true); dnUseServer(s.id); } };
+      box.append(b);
+    }
+    $('st-srv').textContent = $('si-srv').textContent = (info.current || 'Default').replace(/ server$/, '');
+  }
+  function addServer() {
+    if (serverBusy) return;
+    serverBusy = true;
+    err('srv-err', '…', true);
+    dnAddServer('', $('srv-addr').value);
+  }
+  function dnServerResult(r) {
+    serverBusy = false;
+    if (!r.ok) return err('srv-err', r.error || 'Failed');
+    const keep = { setupDone: state.setupDone };
+    state = Object.assign(r, keep);
+    $('srv-addr').value = '';
+    err('srv-err');
+    renderServers();
+    showGame(r.game);
+    showAccount();
+    if (!state.signedIn) $('acct').hidden = true;
+    dnNews();
+    next();
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') drawer(false);
+    if (e.key === 'Enter' && !shown() && !$('set').classList.contains('on')) play();
+  });
+  (async () => {
+    pick('login');
+    dnMedia('logo.png').then(u => { $('logo').src = u; $('lgfx').style.setProperty('--lgm', `url(${u})`); });
+    loadDreadnoughtUI();
+    dnBackgrounds().then(l => {
+      bgs = l || [];
+      nextBg(); setInterval(nextBg, 45000);
+    });
+    state = await dnInit();
+    if (window.dnBrowser) document.querySelectorAll('.typed').forEach(e => e.hidden = false);
+    showGame(state.game);
+    renderServers();
+    showAccount();
+    $('opt-logWindow').checked = !!state.logWindow;
+    $('opt-verboseLog').checked = !!state.verboseLog;
+    $('opt-battleViewer').checked = state.battleViewer !== false;
+    const cc = (state.logoCustom || '').split(',').filter(Boolean);
+    LOGO_FX.custom = cc.length >= 2 ? cc : LOGO_FX.custom;
+    LOGO_FX.custom.slice(0, 3).forEach((c, i) => $('lgc' + i).value = c);
+    $('lgset').value = state.logoFx || '';
+    lgAt = Math.max(0, LOGO_ORDER.indexOf(state.logoFx || ''));
+    logoFx(0);
+    for (const k of state.skins || []) $('skin').add(new Option(k[0].toUpperCase() + k.slice(1), k, false, k === state.skin));
+    next();
+    dnNews();
+    dnLive();
+    setInterval(dnLive, 30000);
+  })();
+</script>

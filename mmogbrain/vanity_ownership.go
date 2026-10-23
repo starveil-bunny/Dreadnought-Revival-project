@@ -257,9 +257,11 @@ func isOtherShipsHull(id int32) bool {
 //
 // And an owned REGULAR ship's own hull parts, on its whole line (restored
 // 2026-10-09, operator decision). The client can only own a ship cosmetic per
-// hull line: the customizer lists a hull line's parts (0x140AA0260: the asset
-// table, every blueprint of the line -- heroes included -- and the store, all
-// by the EYShipClass byte, never by maker) and marks one usable iff its
+// hull line: the customizer lists a hull line's parts (GUESS: by the
+// EYShipClass byte, never by maker -- the old citation "0x140AA0260: the asset
+// table" was wrong: 0xAA0260 is code, the function right after the
+// single-entry builder 0xA9FFD0-0xAA0253, and where a line's alternatives
+// are enumerated is not pinned, 2026-10-17) and marks one usable iff its
 // per-line id is in Items (0x140548860; a loadout does not count). From
 // 2026-10-07 to 10-09 these were withheld (Monarch's "Tyr" hull on a Jutland
 // was reported as another maker's), so a ship's own hull, once swapped away,

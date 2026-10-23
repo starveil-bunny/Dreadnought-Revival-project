@@ -132,11 +132,14 @@ func TestBaseShipRosterMatchesCookedBlueprints(t *testing.T) {
 	for id, hull := range server {
 		c, ok := cooked[id]
 		if !ok {
-			// Brutus (AssaultLight T5) is missing from the dump only: its
+			// Brutus (AssaultLight T5) was missing from the dump only: its
 			// blueprint, pawn, AI pawn and tier art are all in the Content tree,
 			// and its 10 slots are exactly the assets that blueprint references
 			// (checked 2026-09-28). See gen-base-ship-loadouts.py
-			// blueprint_on_disk.
+			// blueprint_on_disk. FIXED 2026-10-20: bpdump's glob
+			// *PrecastLoadout_BP.uasset skipped its ..._PrecastLoadout_T5_BP;
+			// the row is in the dump now (and gave it its blueprint look,
+			// Minotaurus parts). Kept for older dumps.
 			if id == 33489299 {
 				continue
 			}

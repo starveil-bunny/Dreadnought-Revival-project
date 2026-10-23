@@ -29,15 +29,38 @@ type GameMap struct {
 //
 // The previous list -- Charon, Medusa, Procyon, DS-75, Onyx, Vesta, Kylo, Spree
 // -- was invented. None of those names appears anywhere in the game, so every
-// match was formed against a map that does not exist. Only the five flagged
-// m_avaliableTM are used here; the rest of the table is night variants, Havoc
-// maps and the tutorial.
+// match was formed against a map that does not exist. Only the ten flagged
+// m_avaliableTM (five maps, day and night) are used here; the rest of the
+// table is Havoc maps, unreleased maps and the tutorial.
 var availableMaps = []GameMap{
 	{Name: "Highlands", Path: "/Game/Maps/MP/Highlands/MP_Highlands_P"},
 	{Name: "Glacier", Path: "/Game/Maps/MP/Glacier/MP_Glacier_P"},
 	{Name: "Gorge", Path: "/Game/Maps/MP/Gorge/MP_Gorge_P"},
 	{Name: "Space", Path: "/Game/Maps/MP/Space01/MP_Space01_P"},
 	{Name: "Skybridge", Path: "/Game/Maps/MP/Skybridge/MP_Skybridge_P"},
+	// The night twins, also m_avaliableTM in the same table: the same package
+	// with "?ylevelvariation=1" in m_mapPath, which picks the streaming
+	// table's variation-1 sublevels (Light02, INTRO02, VFX_VAR01;
+	// LevelStreaming/*_Streaming_DT m_levelVariationIndex). The option rides
+	// in Path and dn-dedicated keeps it ahead of "?listen". Left out until
+	// 2026-10-17 (operator: "night variants ... seem to not really spawn").
+	{Name: "Highlands_Night", Path: "/Game/Maps/MP/Highlands/MP_Highlands_P?ylevelvariation=1"},
+	{Name: "Glacier_Night", Path: "/Game/Maps/MP/Glacier/MP_Glacier_P?ylevelvariation=1"},
+	{Name: "Gorge_Night", Path: "/Game/Maps/MP/Gorge/MP_Gorge_P?ylevelvariation=1"},
+	{Name: "Space_Night", Path: "/Game/Maps/MP/Space01/MP_Space01_P?ylevelvariation=1"},
+	{Name: "Skybridge_Night", Path: "/Game/Maps/MP/Skybridge/MP_Skybridge_P?ylevelvariation=1"},
+	// The rest of the table's MP maps, m_avaliableTM=False there (names from
+	// m_mapName): in rotation on the operator's word (2026-10-17: "put those
+	// all up for matchmaking, if I see a broken one I'll mention it"). GUESS:
+	// whether each is finished is unknown -- drop one when reported broken.
+	{Name: "Elysium", Path: "/Game/Maps/MP/Paradise/MP_Paradise_P"},
+	{Name: "Elysium_Night", Path: "/Game/Maps/MP/Paradise/MP_Paradise_P?ylevelvariation=1"},
+	{Name: "Thebe", Path: "/Game/Maps/MP/DansMap/MP_DansMap_P"},
+	{Name: "Juno", Path: "/Game/Maps/MP/Space03/MP_Space03_P"},
+	{Name: "Space04", Path: "/Game/Maps/MP/Space04/MP_Space04_P"},
+	{Name: "Space02", Path: "/Game/Maps/MP/Space02/MP_Space02_P"},
+	{Name: "Amirani", Path: "/Game/Maps/MP/Amirani/MP_Amirani_P"},
+	{Name: "Derelict", Path: "/Game/Maps/MP/Derelict/MP_Derelict_P"},
 }
 
 // GameModeConfig is the mmogbrain game-mode row shape consumed by the client.
@@ -65,9 +88,9 @@ var gameModeAliases = map[string]string{
 	"TeamElimination":  "TE",
 	"TerritoryControl": "TER",
 	"BootCamp":         "BC",
-	"HAVOC":            "Onslaught",
+	"HAVOC":            HavocGameMode,
 	"PvE_Standard":     "Onslaught",
-	"PvE_Havoc":        "Onslaught",
+	"PvE_Havoc":        HavocGameMode,
 	"PvE_Onslaught":    "Onslaught",
 	"PvE_Coop":         "Onslaught",
 	"Training":         "BC",
@@ -79,6 +102,7 @@ var validGameModes = buildValidGameModes()
 func buildValidGameModes() map[string]bool {
 	modes := make(map[string]bool, len(clientGameModeConfigs)+len(gameModeAliases)+1)
 	modes[PvEGameMode] = true
+	modes[HavocGameMode] = true
 	for _, mode := range clientGameModeConfigs {
 		modes[mode.Name] = true
 	}
@@ -152,8 +176,9 @@ var conquestMaps = []GameMap{
 // So Onslaught uses the regular rotation plus Amirani (a regular PvP map since
 // update 1.9.0). GUESS: which maps the original Onslaught queue used is not
 // in the client; Derelict is left out on the tester's word.
-var onslaughtMaps = append(append([]GameMap{}, availableMaps...),
-	GameMap{Name: "Amirani", Path: "/Game/Maps/MP/Amirani/MP_Amirani_P"})
+// Since 2026-10-17 the rotation itself carries Amirani (and every other MP
+// map, Derelict included), so Onslaught is the rotation.
+var onslaughtMaps = availableMaps
 
 var mapsByGameMode = map[string][]GameMap{
 	"Onslaught": onslaughtMaps,
@@ -162,6 +187,7 @@ var mapsByGameMode = map[string][]GameMap{
 	"TER":       conquestMaps,
 	"Territory": conquestMaps,
 	"PodTDM":    {{Name: "Space02", Path: "/Game/Maps/MP/Space02/MP_Space02_P"}},
+	"Havoc":     havocMaps,
 }
 
 var pveMaps = []GameMap{
@@ -190,8 +216,35 @@ func GameModeConfigs() []GameModeConfig {
 	if _, ok := ActivePvEEvent(); ok {
 		out = append(out, GameModeConfig{Name: PvEGameMode, TeamSize: pveTeamSize})
 	}
+	if havocListed() {
+		out = append(out, GameModeConfig{Name: havocClientName, TeamSize: pveTeamSize})
+	}
 	return out
 }
+
+// Havoc: the wave-defence mode (GameMode_Havoc_BP, YGMT_HAVOC). The client's
+// own mode list (GlobalUI.uasset) has an entry named "HAVOC" with
+// UI_GameMode_Icon_Havoc and an m_havocMaps list; the tile unlocks when the
+// server lists that name, and the client queues as "HAVOC". It used to alias
+// Onslaught and was never listed, so the tile stayed locked. From PR #80.
+// Listed only with DN_HAVOC=1 until a client has played it through here: the
+// wave loop is server code this exe lacks, rebuilt by the battle-server mod's
+// Havoc director.
+// GUESS: team size 5 like the PvE episodes; the client data read so far does
+// not say how many played a Havoc run.
+const (
+	HavocGameMode   = "Havoc"
+	havocClientName = "HAVOC"
+)
+
+// GlobalUI's m_havocMaps also names HVC_Map3_P, but no Map3 package ships in
+// the build -- only Map1 and Map2 exist under /Game/Maps/Havoc.
+var havocMaps = []GameMap{
+	{Name: "HVC_Map1", Path: "/Game/Maps/Havoc/Map1/HVC_Map1_P"},
+	{Name: "HVC_Map2", Path: "/Game/Maps/Havoc/Map2/HVC_Map2_P"},
+}
+
+func havocListed() bool { return os.Getenv("DN_HAVOC") == "1" }
 
 // PvE season events (mmogbrain's pve_seasons.go).
 //
@@ -426,7 +479,18 @@ func (m *Matchmaker) pollBattleServers() {
 				Debug("instance poll failed; YA_Connect will fall back to the fixed delay")
 			continue
 		}
-		if state.gone && m.seenInstance[p.instanceID] {
+		if state.gone && (m.seenInstance[p.instanceID] || p.alreadyReady) {
+			// alreadyReady is persisted evidence of the same kind seenInstance
+			// holds in memory: server_ready_at is only ever written after a
+			// real 200-and-ready poll, so a stamped match whose instance now
+			// 404s was definitely once live. Live case 2026-10-05 21:51 (S61):
+			// the operator stopped the stack 5 minutes into a match; on the
+			// 22:00:11 restart seenInstance was empty, every later poll hit
+			// `if !state.known` and the dead match stayed 'active' -- so both
+			// of the player's logins that evening were told "match ready" and
+			// pushed at a server that had been gone for 9 minutes, each ending
+			// in their 180 s loading timeout (client-reported
+			// NetworkFailureClient ConnectionTimeout, isLoading:1).
 			m.endMatchWithNoHost(p.matchID, p.instanceID)
 			continue
 		}
@@ -617,7 +681,7 @@ func (m *Matchmaker) tick() error {
 			continue
 		}
 		maxSize := m.PlayersPerMatch
-		if b.GameMode == PvEGameMode && maxSize > pveTeamSize {
+		if (b.GameMode == PvEGameMode || b.GameMode == HavocGameMode) && maxSize > pveTeamSize {
 			maxSize = pveTeamSize // one cooperative team
 		}
 		size := maxSize
@@ -977,6 +1041,12 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 		}).Info("running the match in a spawnable game mode; the queued mode cannot spawn a pawn on a battle server with no backend")
 	}
 	gameMode = runMode
+	pin, pinned := takeMatchPin()
+	if pinned {
+		m.Log.WithFields(logrus.Fields{"queued": gameMode, "mode": pin.Mode, "map": pin.Map, "path": pin.Path}).
+			Warn("DN_MATCH_PIN_FILE: match pinned (test hook)")
+		gameMode = pin.Mode
+	}
 
 	// A PvE event match runs the event's own map in its own game mode, and is
 	// recorded as mode "PVE" with the event id as its map.
@@ -1010,6 +1080,14 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	if pveMap != nil {
 		chosen = *pveMap
 	}
+	if pinned {
+		if pin.Path != "" {
+			chosen = GameMap{Name: pin.Map, Path: pin.Path}
+		}
+		if pin.Launch != "" {
+			launchMode = pin.Launch
+		}
+	}
 	mapName := chosen.Name
 
 	// Request a game instance from the game manager
@@ -1026,6 +1104,9 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 			}
 		}
 		return fmt.Errorf("request game instance: %w", err)
+	}
+	if pinned && pin.FFA && OnPinnedFFA != nil {
+		OnPinnedFFA(battleMatchID)
 	}
 	serverIP = battleServerIPv4(serverIP, m.Log)
 
@@ -1227,7 +1308,7 @@ func battleServerIPv4(host string, log *logrus.Logger) string {
 // alternate 1, 2.
 func matchTeam(gameMode string, i int) int {
 	switch gameMode {
-	case "BC", "Onslaught", "TM", PvEGameMode:
+	case "BC", "Onslaught", "TM", PvEGameMode, HavocGameMode:
 		return 1
 	}
 	return i%2 + 1

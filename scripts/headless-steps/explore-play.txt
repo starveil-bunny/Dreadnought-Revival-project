@@ -1,0 +1,14 @@
+# explore: hangar -> PLAY -> Recruit (coordinates for 1280x720)
+wait-log ActivateLevel /Game/Maps/Menu/MN_HGR_
+sleep 45          # the hangar presents ~20-40s after its ActivateLevel line
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+shot after-recruit
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot after-mode
+click 640 155     # PLAY on the Recruit / Proving Grounds fleet screen
+sleep 8
+shot queued

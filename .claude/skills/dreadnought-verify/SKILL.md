@@ -54,6 +54,26 @@ weapons, VFX, persistence, matchmaking. So any bug that survives `DN_INERT=1` is
 the server's, and any bug that disappears is ours. Check this **before**
 investigating, not after.
 
+## Server side: what a smoke host proves, and what it doesn't
+
+On this Linux box a battle-server DLL is smoke-tested by running one headless
+host under Wine (recipe in `dreadnought-stack`). That proves the DLL loads, every
+hook installs, and the match reaches `InProgress`. It does **not** prove
+anything that needs a pawn or a player: with nobody joined, the pre-match
+countdown never runs and no bots spawn. The Turbo TDM feats hook installed in
+the smoke test and was only shown to work by a played match.
+
+So report a smoke test as "loads and installs", then name the exact mod log line
+the operator's match will produce (for example
+`turbo modifiers: AddFeat(ModifierSpeed) on … -> added`, or
+`ribbons: event N -> ribbon popup`). For anything on screen, ask the operator
+what they saw.
+
+Server-side confirmation without the player: compare the host's per-host log
+(`run/battle-logs/battle-*-portN.log`) with mmogbrain's `battle result` line
+and the database row. For ribbons, the host's `ribbons: event N -> … sent`,
+mmogbrain's `ribbons=map[...]` and `player_ribbons.updated_at` must agree.
+
 ## The headless harness
 
 `scripts/bisect.ps1` hosts a map with no renderer and reports whether the
@@ -75,6 +95,62 @@ Six runs on separate ports, which is what a real answer looks like:
 ```
 
 Set `DREADGAME_EXE` if the binary isn't at the default path.
+
+## The headless client (Linux): `dn live` and `dn headless`
+
+The real, unmodified client against the local stack, on a private display, no
+operator needed. Every run is a bundle in `run/cycles/<id>/` (client log, log
+slices of every service + battle host, shots, contact sheet, summary with
+milestones / crash markers / VERDICT).
+
+```console
+$ dn live start probe              # boots, passes the title, waits for the hangar
+$ dn live click 107 288            # -> shot path + notable new log lines
+$ dn live hold w 4                 # held keys fly the ship
+$ dn live down Tab; dn live shot; dn live up Tab   # key held across a shot (in-match scoreboard)
+$ dn live scroll X Y N     # mouse wheel over X,Y (N>0 down); hover names need `dn live move X Y --wait 1`
+$ dn live wait 'ClientLoadingCompleted' 120
+$ dn live stop                     # bundle + steps.txt (replayable)
+$ dn headless pg --steps scripts/headless-steps/pg-battle.txt --expect 'Starting game music'
+```
+
+Read each shot before the next action. Coordinates are game-window pixels,
+straight off the 1280x720 PNG. Recording keeps only time the game needed
+(settle/wait durations), never your thinking time.
+
+Traps, each one cost a run (2026-10-12):
+- **Display = headless sway + rootful Xwayland on :97, NOT Xvfb.** On Xvfb,
+  wined3d falls to llvmpipe and UE's RenderThread aborts loading the hangar
+  (exit rc=3 = `abort()`; find the thread with
+  `DN_WINEDEBUG=+threadname,+seh`). The operator's client is wined3d too
+  (ATI HD 5600 id), so no DXVK (`--dxvk` dies at device creation).
+- **The X screen is 16 rows taller than the window on purpose**: a window
+  covering the whole root gets present-flipped and x11grab returns a frozen
+  frame for minutes while the game runs. If shots look stuck, compare the UE
+  frame counter `[NNN]` in the client log before blaming the game. The client
+  itself grows the window to the full screen on entering a match (no WM);
+  `cycle.grab_input` shrinks it back to 1280x720 before every shot
+  (2026-10-23).
+- **Audio goes to a pactl null sink**; `-nosound` and `taskset` both break
+  Wwise init (page fault).
+- **`wait-log` matches the whole log**: `Match State Changed to InProgress`
+  is logged on join, before the ship picker exists — wait on
+  `ClientLoadingCompleted` / `Starting game music` instead.
+- **Warm starts present the hangar with its ActivateLevel line**; there is no
+  later screen change to wait for.
+- **A dead battle host ends the run** (`battle host crashed (...)` stop reason,
+  live prints `BATTLE HOST CRASHED`) instead of sitting out UE's 180 s timeout.
+- **Timers on everything (2026-10-20: one test ran 1 h 23 min unnoticed).**
+  A match is 20 min; most checks need 3-6 min. `dn headless` refuses
+  `--secs` over 900 without `--long`, prints `hard stop by HH:MM:SS`, and
+  starts a detached watchdog (`watchdog.log` in the bundle) that kills the
+  client, companion and per-run switches if dn dies or overruns. Agent rules:
+  run `dn headless` itself in the background and wait on *its* completion,
+  not on a hand-written loop; any extra wait loop gets `timeout N` around it;
+  never `pgrep -f` a pattern that is in the loop's own command line (it
+  matches itself forever); use `scripts/headless-steps/spawn-fight.txt`
+  (~9 min cap) for /spawn checks, not mode-matrix.txt (27 min). If a run
+  outlives its hard-stop time, `dn headless-clear -y` and investigate.
 
 ### Bisecting which hook breaks something
 

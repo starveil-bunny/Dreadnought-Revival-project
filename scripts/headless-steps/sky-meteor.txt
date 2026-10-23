@@ -1,0 +1,64 @@
+# Sky meteor: spawn, screenshots while sky-meteor.sh sends /meteor 12 at wave 1 t+10.
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 172 585     # first ship card (Havoc lobby layout)
+sleep 3
+click 500 690     # READY toggle (Havoc lobby)
+sleep 3
+shot ready
+wait-log Wave 1 starts now   # spawn lands with the wave 1 announcement (headless 10-16 20:24), so watch wave 2
+sleep 5
+shot spawned
+sleep 3
+shot k-01
+sleep 3
+shot k-02
+sleep 3
+shot k-03
+sleep 3
+shot k-04
+sleep 3
+shot k-05
+sleep 3
+shot k-06
+sleep 3
+shot k-07
+sleep 3
+shot k-08
+sleep 3
+shot k-09
+sleep 3
+shot k-10
+sleep 3
+shot k-11
+sleep 3
+shot k-12
+sleep 3
+shot k-13
+sleep 3
+shot k-14
+sleep 3
+shot k-15
+sleep 3
+shot k-16
+sleep 3
+shot k-17
+sleep 3
+shot k-18
+sleep 3
+shot k-19
+sleep 3
+shot k-20

@@ -71,3 +71,27 @@ func TestPvESeasonReachesTheClient(t *testing.T) {
 		t.Error("YA_Connect lacks the PvE event")
 	}
 }
+
+func TestPvESeasonRotation(t *testing.T) {
+	t.Setenv("DN_PVE_SEASON", "rotate")
+	t.Setenv("DN_PVE_EVENT_DAYS", "7")
+	week := 7 * 24 * time.Hour
+	n1, n3 := len(pveSeasonEvents("PVE_Season1")), len(pveSeasonEvents("PVE_Season3"))
+	if n1 == 0 || n3 == 0 {
+		t.Skip("season tables not loaded")
+	}
+	for i := 0; i < 2*(n1+n3); i++ {
+		season, events, active := pveSchedule(pveScheduleAnchor.Add(time.Duration(i)*week + time.Hour))
+		k := i % (n1 + n3)
+		want, slot := "PVE_Season1", k
+		if k >= n1 {
+			want, slot = "PVE_Season3", k-n1
+		}
+		if season != want || active != slot || len(events) != len(pveSeasonEvents(want)) {
+			t.Fatalf("week %d: got %s slot %d (%d events), want %s slot %d", i, season, active, len(events), want, slot)
+		}
+		if ev := events[active]; ev.id != pveSeasonEvents(want)[slot] || !ev.start.Equal(pveScheduleAnchor.Add(time.Duration(i)*week)) {
+			t.Fatalf("week %d: active event %s starts %v", i, ev.id, ev.start)
+		}
+	}
+}

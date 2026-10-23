@@ -1,0 +1,1 @@
+havoc-map2      {"mode":"Havoc","map":"HVC_Map2","path":"/Game/Maps/Havoc/Map2/HVC_Map2_P","launch":"Havoc"}

@@ -12,7 +12,7 @@ package main
 import (
 	"bufio"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +27,15 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 )
+
+//go:embed admin_viewer.html
+var adminViewerHTML []byte
+
+// Ship-class icons for the viewer: the client's UI_ShipClass_<class> textures
+// (UserInterface/Textures/ShipIcons), decoded with tools/tex2png.py, 64 px.
+//
+//go:embed viewer_icons/*.png
+var viewerIcons embed.FS
 
 //go:embed admin_dashboard.html
 var adminDashboardHTML []byte
@@ -65,6 +74,32 @@ func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKe
 		_, _ = w.Write(adminDashboardHTML)
 	}).Methods(http.MethodGet)
 
+	r.HandleFunc("/admin/viewer", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		// DN_VIEWER_HTML: serve the page from that file, read per request,
+		// so the viewer can be iterated on without restarting mmogbrain.
+		if p := os.Getenv("DN_VIEWER_HTML"); p != "" {
+			if b, err := os.ReadFile(p); err == nil {
+				_, _ = w.Write(b)
+				return
+			}
+		}
+		_, _ = w.Write(adminViewerHTML)
+	}).Methods(http.MethodGet)
+	r.HandleFunc("/admin/viewer/icons/{kind:[A-Za-z]+}.png", func(w http.ResponseWriter, r *http.Request) {
+		b, err := viewerIcons.ReadFile("viewer_icons/" + mux.Vars(r)["kind"] + ".png")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "max-age=86400")
+		_, _ = w.Write(b)
+	}).Methods(http.MethodGet)
+
+	r.PathPrefix("/admin/art/").HandlerFunc(handleAdminArt).Methods(http.MethodGet, http.MethodHead) // admin_waves.go
+
 	api := r.PathPrefix("/admin/api").Subrouter()
 	api.Use(constantTimeKeyMiddleware(adminKey))
 	api.HandleFunc("/overview", adminAPIOverview).Methods(http.MethodGet)
@@ -78,8 +113,15 @@ func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKe
 	api.HandleFunc("/logs", adminAPILogs).Methods(http.MethodGet)
 	api.HandleFunc("/battle-logs", adminAPIBattleLogs).Methods(http.MethodGet)
 	api.HandleFunc("/metrics", adminAPIMetrics).Methods(http.MethodGet)
+	api.HandleFunc("/battles", adminAPIBattles).Methods(http.MethodGet)     // match_viewer.go
+	api.HandleFunc("/battles/{id}", adminAPIBattle).Methods(http.MethodGet) // match_viewer.go
+	api.HandleFunc("/battles/{id}/command", adminAPIBattleCommand).Methods(http.MethodPost)
+	api.HandleFunc("/battles/{id}/terrain", adminAPIBattleTerrain).Methods(http.MethodGet)
 	registerAdminPlayerManagement(api)
 	registerAdminModeration(api)
+	registerAdminBosses(api)  // admin_bosses.go
+	registerAdminHunters(api) // admin_hunters.go
+	registerAdminWaves(api)   // admin_waves.go
 }
 
 func writeAdminJSON(w http.ResponseWriter, v any) {

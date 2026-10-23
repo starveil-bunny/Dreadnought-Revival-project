@@ -346,9 +346,15 @@ func adminAPIPlayerMatches(w http.ResponseWriter, r *http.Request) {
 
 // adminMapName shortens a map path (/Game/Maps/MP/X/MP_X_P) to its folder.
 func adminMapName(path string) string {
+	// Night maps carry "?ylevelvariation=1" (matchmaker availableMaps).
+	path, opts, _ := strings.Cut(path, "?")
+	night := strings.Contains(opts, "ylevelvariation=1")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) >= 2 {
-		return parts[len(parts)-2]
+		path = parts[len(parts)-2]
+	}
+	if night {
+		path += " (night)"
 	}
 	return path
 }

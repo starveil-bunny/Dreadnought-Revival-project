@@ -49,7 +49,10 @@ func (a *launcherAPI) Init() map[string]any {
 	}
 	settings := loadSettings()
 	out := map[string]any{"signedIn": a.token != "", "username": a.username, "server": server,
-		"game": gameInfo(a.exeDir, a.cfg), "logWindow": settings.LogWindow, "verboseLog": settings.VerboseLog}
+		"game": gameInfo(a.exeDir, a.cfg), "logWindow": settings.LogWindow, "verboseLog": settings.VerboseLog, "battleViewer": !settings.ViewerOff,
+		"logoFx": settings.LogoFx, "logoCustom": settings.LogoCustom,
+		"servers": a.serverInfo(), "setupDone": settings.SetupDone,
+		"skin": skinName(settings), "skins": skins}
 	if pendingCA != nil && !caTrusted(pendingCA) {
 		name, fp := caSummary(pendingCA)
 		out["cert"] = map[string]any{"name": name, "fingerprint": fp}
@@ -112,9 +115,32 @@ func (a *launcherAPI) SetOption(name string, on bool) bool {
 		settings.LogWindow = on
 	case "verboseLog":
 		settings.VerboseLog = on
+	case "battleViewer":
+		settings.ViewerOff = !on
 	default:
 		return false
 	}
+	return saveSettings(settings) == nil
+}
+
+// SetLogoFx saves the wordmark border's default style and custom colours.
+func (a *launcherAPI) SetLogoFx(style, custom string) bool {
+	switch style {
+	case "", "rgb", "aurora", "trans", "bi", "lesbian", "custom":
+	default:
+		return false
+	}
+	var cols []string
+	for _, c := range strings.Split(custom, ",") {
+		if c = strings.TrimSpace(c); len(c) == 7 && c[0] == '#' && strings.Trim(strings.ToLower(c[1:]), "0123456789abcdef") == "" {
+			cols = append(cols, c)
+		}
+	}
+	if len(cols) > 6 {
+		cols = cols[:6]
+	}
+	settings := loadSettings()
+	settings.LogoFx, settings.LogoCustom = style, strings.Join(cols, ",")
 	return saveSettings(settings) == nil
 }
 

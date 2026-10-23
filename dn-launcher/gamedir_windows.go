@@ -26,18 +26,53 @@ type launcherSettings struct {
 	// VerboseLog raises the client log to Verbose (see startGame), for bug
 	// reports. Much larger log files.
 	VerboseLog bool `json:"verbose_log"`
+	// ViewerOff hides the battle view (the server's map of your battle, with
+	// match chat). On by default; the server must also offer it.
+	ViewerOff bool `json:"viewer_off,omitempty"`
+	// LogoFx is the wordmark's border at start ("" off, rgb, aurora, trans,
+	// bi, lesbian, custom; clicking the logo cycles them for the session) and
+	// LogoCustom the custom gradient's colours, "#rrggbb,#rrggbb[,...]".
+	LogoFx     string `json:"logo_fx,omitempty"`
+	LogoCustom string `json:"logo_custom,omitempty"`
+	// Server is the server picked in the window (savedServer.id; empty =
+	// the default) and Servers the ones the player added (servers_windows.go).
+	Server  string        `json:"server,omitempty"`
+	Servers []savedServer `json:"servers,omitempty"`
+	// SetupDone: the setup bunny has run (or was skipped) for this user.
+	SetupDone bool `json:"setup_done"`
+	// Skin is the launcher page (skins_windows.go); empty = the default.
+	Skin string `json:"skin,omitempty"`
 }
 
 func settingsPath() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "DreadnoughtPrivateServer", "settings.json")
 }
 
+// settingsSet records which keys settings.json actually carries, because a
+// bool that is absent and one that is false look identical once unmarshalled
+// and the difference matters here: an option the launcher window never touched
+// must not override dn-launcher.json or the DN_* environment, while one the
+// player turned OFF has to stay off (see startGame's log-window handling).
+var settingsSet map[string]bool
+
 func loadSettings() launcherSettings {
 	var s launcherSettings
 	//nolint:gosec // fixed file under the user's own LOCALAPPDATA.
-	if data, err := os.ReadFile(settingsPath()); err == nil {
-		_ = json.Unmarshal(data, &s)
+	data, err := os.ReadFile(settingsPath())
+	if err != nil {
+		settingsSet = nil
+		return s
 	}
+	var present map[string]json.RawMessage
+	if json.Unmarshal(data, &present) == nil {
+		settingsSet = make(map[string]bool, len(present))
+		for k := range present {
+			settingsSet[k] = true
+		}
+	} else {
+		settingsSet = nil
+	}
+	_ = json.Unmarshal(data, &s)
 	return s
 }
 

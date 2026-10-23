@@ -938,6 +938,12 @@ func buildMmogChatPayload(requestName string, playerPID string, payload []byte) 
 		channel = "global"
 	}
 	message := protocol.FirstNonEmptyString(payload, "message", "Message", "content", "Content", "text", "Text")
+	// The client routes "/..." lines here as admin commands ("Sending admin
+	// command: /online", type 0, empty recpt — live client 2026-10-15), not as
+	// chat.channel.message. Answer them on the social socket like "!" lines.
+	if message != "" && answerMmogChatCommand(normalizedPlayerStatePID(playerPID), message) {
+		message = ""
+	}
 	if message != "" {
 		persistMmogChatMessage(normalizedPlayerStatePID(playerPID), channel, message)
 	}
@@ -3216,6 +3222,11 @@ func techTreeBaseItemsWith(noModules bool) []techTreeItem {
 		// ...and its modules, which go into the OTHER array of the same record.
 		if !noModules {
 			items = append(items, techTreeModuleItems(hull, manufacturerID)...)
+			// Single-hull vanity A/B (plan Phase 1 step 2): blob rows ONLY on
+			// the probe hull, so the cycle can compare it against every other.
+			if vanityProbeEnabled() && hull.loadoutID == vanityProbeHullID {
+				items = append(items, vanityProbeTechTreeItems(hull, manufacturerID)...)
+			}
 		}
 	}
 	// The unlock gate: N modules of the parent must be BOUGHT first. Capped at
@@ -3379,7 +3390,15 @@ func buildMmogTechTreeDocumentWith(noModules bool) []byte {
 	limit := techTreeItemLimit()
 	byManufacturer := map[int32][]techTreeItem{}
 	nextPosition := map[int32]map[bool]int32{}
-	for _, item := range append(techTreeBaseItemsWith(noModules), techTreeHeroItems()...) {
+	treeItems := append(techTreeBaseItemsWith(noModules), techTreeHeroItems()...)
+	briefingSeen := map[int32]int{}
+	for _, item := range treeItems {
+		if isOfficerBriefing(item.id) {
+			briefingSeen[item.id]++
+		}
+	}
+	logBriefingEmissions("techtrees", briefingSeen)
+	for _, item := range treeItems {
 		if nextPosition[item.manufacturer] == nil {
 			nextPosition[item.manufacturer] = map[bool]int32{}
 		}
@@ -4686,6 +4705,21 @@ func clientOwnedItemIDs(playerPID string) []int32 {
 	for _, id := range officerBriefingsOwnedThroughShips(playerPID) {
 		add(id)
 	}
+	if idMirrorEnabled() {
+		// DN_ID_MIRROR (plan Phase 1, AGENT-CHAT S55): the gate queries ids in
+		// the per-ship (inflated) form the TechTrees document carries, so every
+		// id the document emits for an owned hull — plus loadout/prereq ids
+		// (category 1) and the shared forms of every fitted id — goes out here
+		// too. GetTechTreeItemState (0x543890) checks PurchasesData FIRST and
+		// returns state 4 on an exact match, so a mirrored id is owned for the
+		// equip gate regardless of form.
+		mirror, counts := techTreeMirrorIDs(playerPID, fittedByLoadout)
+		for _, id := range mirror {
+			add(id)
+		}
+		logrus.WithFields(counts.fields()).WithField("player", playerPID).
+			Info("id_mirror: granted ids mirrored into purchasesdata (DN_ID_MIRROR)")
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
@@ -4699,19 +4733,32 @@ func buildMmogStaticCareerDataPayload() []byte {
 	return b
 }
 
+// buildMmogScoringDataPayload answers YA_GetScoringData with the scoring
+// table, the one the host gets (scoringDocument), at the ROOT.
+//
+// The reply arm (0x2A2C7FC) hands the DOCUMENT ROOT to the scoring parser
+// 0x2A75740 (into player data +0x43F8), which reads root "ScoringTable" and
+// "ScoringParamsTable". We sent five PvE tables under "result" instead, so
+// the client's scoring table was always empty -- and the Ribbons screen
+// (0xAC2060) draws one ribbon per row of that table that has a ribbon name,
+// with the amount from YA_PlayerGet "Ribbons": no rows, no ribbons, only the
+// widget's placeholder ("ribbon name x999", operator 2026-10-15). The PvE
+// tables were read by nothing here. DN_CLIENT_SCORING_TABLE=0 restores them.
 func buildMmogScoringDataPayload() []byte {
 	var b []byte
-	var stack []int
-
 	b = protocol.AppendStringField(b, "RT", "YA_GetScoringData")
-	b, stack = protocol.AppendObjectStart(b, stack, "result")
-	b = protocol.AppendStringField(b, "YScoringDataTableRow", dreadconfig.MedalScoringTuneJSON())
-	b = protocol.AppendStringField(b, "m_defendScoringDataTable", dreadconfig.DefendScoringTuneJSON())
-	b = protocol.AppendStringField(b, "m_remainingPlayerScoringDataTable", dreadconfig.RemainingPlayerScoringTuneJSON())
-	b = protocol.AppendStringField(b, "m_killScoringDataTable", dreadconfig.KillScoringTuneJSON())
-	b = protocol.AppendStringField(b, "m_waveScoringDataTable", dreadconfig.WaveScoringTuneJSON())
-	b, _ = protocol.AppendObjectEnd(b, stack)
-	return b
+	if os.Getenv("DN_CLIENT_SCORING_TABLE") == "0" {
+		var stack []int
+		b, stack = protocol.AppendObjectStart(b, stack, "result")
+		b = protocol.AppendStringField(b, "YScoringDataTableRow", dreadconfig.MedalScoringTuneJSON())
+		b = protocol.AppendStringField(b, "m_defendScoringDataTable", dreadconfig.DefendScoringTuneJSON())
+		b = protocol.AppendStringField(b, "m_remainingPlayerScoringDataTable", dreadconfig.RemainingPlayerScoringTuneJSON())
+		b = protocol.AppendStringField(b, "m_killScoringDataTable", dreadconfig.KillScoringTuneJSON())
+		b = protocol.AppendStringField(b, "m_waveScoringDataTable", dreadconfig.WaveScoringTuneJSON())
+		b, _ = protocol.AppendObjectEnd(b, stack)
+		return b
+	}
+	return append(b, scoringDocumentFields(true)...)
 }
 
 func buildMmogDailyContractsDataPayload() []byte {
@@ -5482,28 +5529,26 @@ func buildMmogPlayerScoresPayloadForPlayer(playerPID string) []byte {
 	var b []byte
 	var stack []int
 
+	// The reply is dispatched by request id (slot +0x3610; 0x2A25B4B), which
+	// reads the root "result" as an ARRAY of {GameMode, TimeSpan, Score}
+	// objects (0x2A73250) into FYPlayerScoreData. The client looks up only
+	// ("HAVOC", "LIFETIME") and ("HAVOC", "LIFETIMESUM") -- see havoc.go. The
+	// old reply sent a leaderboard-shaped "result" OBJECT, which the array read
+	// skipped, so the score data never initialized ("Player score data not
+	// initialized").
+	lifetime, sum, weekly := havocPlayerScores(playerPID)
 	b = protocol.AppendStringField(b, "RT", "YA_GetPlayerScores")
-	b = protocol.AppendStringField(b, "modename", "TeamElimination")
-	b = protocol.AppendInt32Field(b, "fleettier", 1)
-	b = protocol.AppendStringField(b, "timespan", "alltime")
-	b = protocol.AppendBoolField(b, "prevweek", false)
-	b, stack = protocol.AppendObjectStart(b, stack, "result")
-	b, stack = protocol.AppendArrayStart(b, stack, "leaderboard")
-	b, stack = protocol.AppendObjectEnd(b, stack)
-	b, stack = protocol.AppendObjectStart(b, stack, "playerrank")
-	// The client's per-entry parser (FUN_142a6f280) reads PID/Rank/SID/Score,
-	// not UserName (which it never looks up). The decompile suggests PID is
-	// read there as int64, but this protocol has no confirmed int64 wire tag
-	// anywhere (parser.go only decodes string/bool/int32/object/array), and
-	// playerPID is a string identifier elsewhere in this codebase (e.g. the
-	// "PID" field in buildMmogPlayerDataPayload) — sending it as a string
-	// here matches that established, working convention rather than
-	// guessing at an unconfirmed wire type.
-	b = protocol.AppendStringField(b, "PID", playerPID)
-	b = protocol.AppendInt32Field(b, "Rank", 0)
-	b = protocol.AppendStringField(b, "SID", "local_session")
-	b = protocol.AppendInt32Field(b, "Score", 0)
-	b, stack = protocol.AppendObjectEnd(b, stack)
+	b, stack = protocol.AppendArrayStart(b, stack, "result")
+	for _, e := range []struct {
+		span  string
+		score int32
+	}{{"LIFETIME", lifetime}, {"LIFETIMESUM", sum}, {"WEEKLY", weekly}} {
+		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+		b = protocol.AppendStringField(b, "GameMode", havocGameModeKey)
+		b = protocol.AppendStringField(b, "TimeSpan", e.span)
+		b = protocol.AppendInt32Field(b, "Score", e.score)
+		b, stack = protocol.AppendObjectEnd(b, stack)
+	}
 	b, _ = protocol.AppendObjectEnd(b, stack)
 	return b
 }
@@ -5919,9 +5964,9 @@ func buildMmogTuneDocument() []byte {
 // AssistNum, DoubleKillNum, FirstStrikeNum, DestroyerTimeSec,
 // ArtilleryCruiserTimeSec, DreadnoughtTimeSec, TacticalCruiserTimeSec,
 // CorvetteTimeSec, TotalGameTimeSec, through the scalar reader (0x238000):
-// numeric strings. Filled from the match results this server records; what
-// it does not record (score, healing, double kills, first strikes, time per
-// ship class) is 0.
+// numeric strings. Filled from the match results this server records, and
+// since 2026-10-15 score, healing, double kills, first strikes and time per
+// ship type from battle_result_stats (match_statistics.go).
 func buildMmogPlayerStatisticsPayload(playerPID string, payload []byte) []byte {
 	var pids []string
 	for _, sc := range protocol.Scalars(payload) {
@@ -5941,15 +5986,20 @@ func buildMmogPlayerStatisticsPayload(playerPID string, payload []byte) []byte {
 	b, stack = protocol.AppendArrayStart(b, stack, "stats")
 	for _, pid := range pids {
 		st := playerMatchStatistics(pid)
+		more := playerStatTotals(currentMmogPlayerStateDB(), pid)
 		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
 		for _, f := range []struct {
 			name  string
 			value int64
 		}{
-			{"WinNum", st.wins}, {"LoseNum", st.losses}, {"ScoreSum", 0}, {"KillNum", st.kills},
-			{"DeathNum", st.deaths}, {"HealPoints", 0}, {"AssistNum", st.assists}, {"DoubleKillNum", 0},
-			{"FirstStrikeNum", 0}, {"DestroyerTimeSec", 0}, {"ArtilleryCruiserTimeSec", 0},
-			{"DreadnoughtTimeSec", 0}, {"TacticalCruiserTimeSec", 0}, {"CorvetteTimeSec", 0},
+			{"WinNum", st.wins}, {"LoseNum", st.losses}, {"ScoreSum", more[statScore]}, {"KillNum", st.kills},
+			{"DeathNum", st.deaths}, {"HealPoints", more[statHealing]}, {"AssistNum", st.assists},
+			{"DoubleKillNum", more[statDoubleKills]}, {"FirstStrikeNum", more[statFirstStrikes]},
+			{"DestroyerTimeSec", more[statTimePrefix+"Destroyer"]},
+			{"ArtilleryCruiserTimeSec", more[statTimePrefix+"ArtilleryCruiser"]},
+			{"DreadnoughtTimeSec", more[statTimePrefix+"Dreadnought"]},
+			{"TacticalCruiserTimeSec", more[statTimePrefix+"TacticalCruiser"]},
+			{"CorvetteTimeSec", more[statTimePrefix+"Corvette"]},
 			{"TotalGameTimeSec", st.seconds},
 		} {
 			b = protocol.AppendStringField(b, f.name, strconv.FormatInt(f.value, 10))
@@ -6405,6 +6455,12 @@ func buildMmogPurchasePayload(requestName string, playerPID string, payload []by
 	// A per-ship weapon/module is bought only AFTER it is researched: research
 	// with XP first, then buy with credits (the original game, per the
 	// operator). That is the claim path, which also covers YA_ClaimItem.
+	// A Havoc unlockable hero bought on its own: the same gate as its bundle.
+	if why := havocUnlockRefusal(pid, itemID); why != "" {
+		var balance int32
+		_ = database.QueryRow(`SELECT soft_currency FROM player_state WHERE user_id=?`, pid).Scan(&balance)
+		return reply("failed", why, 0, balance)
+	}
 	if bundle, ok := marketBundleByID(itemID); ok {
 		charged, heroes, reason := grantMarketBundle(database, pid, bundle)
 		var balance int32
@@ -7086,8 +7142,41 @@ func appendOwnedInventoryEntriesCounted(b []byte, stack []int, playerPID string)
 	// ShipLoadouts.
 	purchased := purchasedInventoryItemIDs(playerPID)
 	// Briefings owned through ships are inventory items like bought ones; the
-	// officer slots offer what the owned list holds.
-	purchased = append(purchased, officerBriefingsOwnedThroughShips(playerPID)...)
+	// officer slots offer what the owned list holds. One copy per id though:
+	// P0-7's live measurement (2026-10-05, logBriefingEmissions) had every
+	// briefing id emitted exactly 2x in this list whenever it was both a
+	// purchase row and ship-owned — UnlockAll's grant puts them in
+	// player_purchases, and officerBriefingsOwnedThroughShips (which never sees
+	// the purchase list) re-added the same ids. The PurchasesData leg dedupes
+	// through clientOwnedItemIDs' seen map; this leg had no such guard.
+	boughtBriefing := map[int32]bool{}
+	for _, id := range purchased {
+		if isOfficerBriefing(id) {
+			boughtBriefing[id] = true
+		}
+	}
+	for _, id := range officerBriefingsOwnedThroughShips(playerPID) {
+		if !boughtBriefing[id] {
+			purchased = append(purchased, id)
+		}
+	}
+	briefingSeen := map[int32]int{}
+	for _, itemID := range purchased {
+		if isOfficerBriefing(itemID) {
+			briefingSeen[itemID]++
+		}
+	}
+	logBriefingEmissions("inventory", briefingSeen)
+	// NO id-mirror leg here (plan-hangar-20261005 Phase 1, trimmed after
+	// measurement): mirroring the same ids into the Items list was redundant —
+	// GetTechTreeItemState (0x543890) checks the PurchasesData array
+	// (+0x3F90, exact int32) FIRST, and the mirror puts every mirrored id in
+	// PurchasesData, so the +0x39E8 leg is never even reached for them — and
+	// it cost real budget: on a fully-fitted small account it added 28 ids and
+	// pushed the YA_PushInventory remainder past the 28000 frame budget
+	// (inventory_push_test), where the push's own truncation would DROP those
+	// ids — a loss, not a deferral. Briefings already ride this list through
+	// their real ownership path above.
 	isShip := func(id int32) bool {
 		category := (id >> 24) & 0xff
 		return category == mmogItemCategoryShipLoadoutPrecast || category == mmogItemCategoryShipLoadoutHero

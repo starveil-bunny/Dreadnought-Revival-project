@@ -164,21 +164,75 @@ Worked example, the in-match spawn fix:
 3. Hooking `0x370970` covered both paths with one hook. Hooking the logger would
    have covered neither.
 
+### When `callers.py` says `none`: the function is virtual
+
+RPC `_Implementation`s, `OnRep_`s and engine overrides are only reached through
+a vtable. The build has **no RTTI**, so classes can't be named from their
+tables; go through the exec thunk instead:
+
+```console
+$ python vtslot.py 5AFEA0
+0x5AFEA0: vtable at rva 0x2FD3C68 (279 entries), slot 0x698
+$ grep -rl "\*param_1 + 0x698))(param_1" <decompile>/functions/7*/   # exec thunks live ~0x73xxxx-0x77xxxx
+.../74/140745200_FUN_140745200.c
+$ grep -rh "FUN_140745200" <decompile> | grep d03140
+  thunk_FUN_140d03140(uVar1,"ClientEventResult",FUN_140745200);
+```
+
+So `0x5AFEA0` is `ClientEventResult_Implementation`. The same trick in reverse
+answers "what does the client do when this RPC arrives?". Read the thunk's
+`*param_1 + SLOT` call, then `vtslot.py` the function you suspect, or read the
+slot of the class's vtable directly. On the client, `ClientAddAchievement`
+(slot `0x350`) turned out to be the same `0x4171E0` the server runs, which
+files the ribbon without touching the UI.
+
+**To find who sends an RPC or calls a Blueprint event**, use its FName global:
+`strxref.py <Name>` finds a LEA of the UTF-16 literal inside the static-init
+region (around `0xCB000-0xD0000`, `NO UNWIND RECORD`). Disassembling there
+shows `lea rcx, [global]` before `jmp FName ctor`. Grep the decompile for
+`DAT_14<global>`: the hit is the sender stub (`FindFunction(FName)` +
+`ProcessEvent` through `vtable +0x1A8`), and its callers are the real senders.
+That is how `BP_EventAddScoringEvent` (HUD popup) led back to
+`ClientEventResult` (sender `0x5E5280`).
+
 ## 3. Batch decompile with headless Ghidra
 
 `DumpFuncs.java` decompiles **and** disassembles a list of RVAs in one run.
 Both matter: the decompiler invents locals and loses field offsets, while the
 raw disassembly keeps `[rcx+0x3898]` intact.
 
+On Linux (Arch package `ghidra`, /opt/ghidra) use the wrapper, which keeps one
+analysed project in `~/ghidra_projects/dreadnought` and prints only the C by default:
+
 ```console
-analyzeHeadless.bat <project_dir> <project_name> \
+dn rva decompile --import          # once; full analysis, hours -- background it
+dn rva decompile 370970 382530     # pseudo-C, ~20-40 s Ghidra start-up per call
+dn rva decompile 370970 --asm      # plus the disassembly
+```
+
+Raw form (Windows or by hand):
+
+```console
+analyzeHeadless <project_dir> <project_name> \
   -process "DreadGame-Win64-Shipping.exe" -noanalysis \
   -scriptPath <path>/scripts -postScript DumpFuncs 370970 382530
 ```
 
 Writes `dump_<RVA>.txt` per function into `./ghidra_output`, or
-`$GHIDRA_DUMP_DIR`. `-noanalysis` reuses the existing analysis — full analysis
+`$GHIDRA_DUMP_DIR`. `-noanalysis` reuses the existing analysis -- full analysis
 of this binary takes a long time, so let it finish once and never repeat it.
+Pseudo-C is a reading aid, not evidence: confirm offsets in the disassembly.
+
+## 4. Blueprint name → native entry (`nativefns.py`)
+
+Every native `UFUNCTION` is registered in the static-init tables as
+`lea r8,<impl>; lea rdx,<name>; call registrar` (first hit `exe+0x627419`).
+`python nativefns.py Name ...` scans that shape and prints the RVA, or
+`(no native entry)` — which is the useful answer for the BP legs
+(`StartFire`, `SetFireAtActor`, `TriggerAbilityOne..Four` have none, so they can
+only be reached through `ProcessEvent` by name). See the script's docstring for
+the two caveats (exec stubs that tail-call the real impl; literals referenced
+from the middle).
 
 ## Reporting what you find
 

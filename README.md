@@ -243,6 +243,44 @@ credentials.
 Because the account lives on the server rather than being derived from the
 machine, the same login works from any PC.
 
+The first start runs a short setup wizard (the "setup bunny"): pick a server,
+find the game, trust the certificate, sign in. **Server: … · Change…** on the
+home screen reopens the server list later. It always offers the built-in
+default and **This PC** (127.0.0.1, for someone hosting the stack on the same
+machine), plus any `address[:port]` the player adds. For an added server the
+launcher fetches the CA from the gateway's `/dn/ca.crt`, accepts it only if it
+signed the certificate that very connection presented, and shows its
+fingerprint before installing it. Each server keeps its own sign-in. The list
+and the choice live in `%LOCALAPPDATA%\DreadnoughtPrivateServer\settings.json`;
+an unreachable saved server falls back to the default at start.
+
+### 7. Admin dashboard
+
+Open `http://<server>:8083/admin/dashboard` in a browser and enter the
+`ADMIN_KEY` from `run/secrets.env`. It covers what `admin-cli` does and more:
+service health, running battle servers (stop one), queue and online players,
+match history and metrics, crash reports and battle-server logs, and per
+player: balances (credits, GP, free XP), hero-ship grants, daily-contract
+reset, cosmetic removal, kick, ban/unban and password reset.
+
+**Battle viewer**: each battle host posts its live ships to mmogbrain every
+2 s (loopback only; `DN_HOST_NO_VIEWER=1` on the host turns it off). The tab
+draws them in a wireframe 3D view (drag to orbit, scroll to zoom; team colour,
+health, player names) and runs chat commands (`/meteor`, `/say`, …) against
+that one match. The terrain grid and the projectile points in that view do not
+come from this 2 s post: the fine terrain pass is uploaded once it finishes, and
+the projectile list is revalidated into each snapshot, both from the host's
+per-frame path -- see **Frame tick** in `battle-server-mod/README.md`.
+
+Access model: the page itself is static; every piece of data and every action
+goes through `/admin/api/*`, which refuses any request without the admin key
+(compared in constant time; mmogbrain will not start the routes with an empty
+key). There is no player-token path to it. Port 8083 must **not** be forwarded
+from the router, so the dashboard is reachable only from the server or the LAN.
+Every change is written to the `admin_audit` table with the caller's address
+and shown under "Admin actions". Changes to an online player reach their game
+at once, except cosmetic removal, which shows at their next login.
+
 ---
 
 ## Current state
@@ -332,6 +370,7 @@ Set in `run/secrets.env` unless noted.
 | `MASTER_URL` | game-manager | `http://127.0.0.1:8084` | Master server URL |
 | `GAME_MGR_URL` | mmogbrain | `http://127.0.0.1:8085` | Game manager URL |
 | `DN_FORCE_GAME_MODE` | mmogbrain | *(unset — the queued mode runs)* | Forces every match into one game mode. A mode name, or `1` for `TM`. Off by default: TM is the only mode whose host logs `no orbit spawn locations set!`, and a player in it never reaches the ship selection screen. TM is also the only mode that supplies a loadout, so the two failures are mutually exclusive — see `docs/battle-server-data-path.md` |
+| `DN_HAVOC` | mmogbrain | off | `1` lists the client's `HAVOC` tile (wave defence on `HVC_Map1`/`HVC_Map2`). The wave loop is rebuilt by the battle-server mod; a run does not end on its own yet and reports no rewards -- see `battle-server-mod/README.md` "Havoc" |
 | `DN_CONNECT_PUSH_DELAY` | mmogbrain | `75s` (`45s` from `start-services.sh`) | **Fallback only.** How long to hold the `YA_Connect` travel push back when the control plane never reports the battle server ready. Normally the matchmaker polls `GET /instances/<id>` and pushes as soon as the engine is hosting; the push's log line records which gate opened as `gate=ready` or `gate=delay` |
 | `DN_GAME_MGR_TIMEOUT` | mmogbrain | `30s` | How long the matchmaker waits for game-manager to answer `POST /instances`. The matchmaker ticks on one goroutine, so a control plane that accepts the connection and never replies would otherwise stop matchmaking for everyone. Raise it if your control plane waits for the engine to report ready before answering |
 | `DN_REWARD_WIN_CREDITS` / `_LOSS_CREDITS` / `_KILL_CREDITS` | mmogbrain | `1500` / `750` / `100` | Credits per match result reported by the battle-server mod (`/battle/result`). **Placeholders** — the original reward tables are lost. A draw or unknown result pays the loss value |
@@ -340,6 +379,7 @@ Set in `run/secrets.env` unless noted.
 | `FIRMAMENT_ADDR` / `FIRMAMENT_CERT` / `FIRMAMENT_KEY` | mmogbrain | `:48843`, `certs/firmament.*` | Social/presence socket. Uses its **own** certificate: the client pins this connection, and `gen-certs.sh` builds `certs/firmament.*` with an "Amazon RSA 2048 M01" issuer to satisfy the pin |
 | `HTTP_ADDR` / `HTTPS_ADDR` | gateway | `:80`, `:443` | Proxy listen addresses |
 | `TLS_CERT` / `TLS_KEY` | gateway | `certs/server.crt`, `.key` | Proxy certificate |
+| `CA_CERT` | gateway | `certs/ca.crt` | Served at `/dn/ca.crt` so the launcher's server picker can fetch and verify it; missing file = not served |
 | `CRASH_RECEIVER_ADDR` / `CRASH_REPORT_DIR` | gateway | `:57005`, `crash-reports` | UE4 crash-report receiver |
 
 ## Security notes
@@ -382,6 +422,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: this is a server for 
 - **Legojedi** — the launcher icon.
 - **gwog** ([@SyST3MDeV](https://github.com/SyST3MDeV)) — the Dreadnought SDK from the original [Dreadnought Revival Patch](https://github.com/SyST3MDeV/Dreadnought), which much of the client reverse engineering here builds on.
 - **House of Bards** ([@HouseOfBards101](https://github.com/HouseOfBards101)) — the client-side half of the work in [AGENT-CHAT.md](AGENT-CHAT.md): reverse engineering of the game client, the injected test mod (DreadnoughtTestBench), and in-match client behaviour.
+- **starveil-bunny** ([@starveil-bunny](https://github.com/starveil-bunny)) — fixes from [PR #80](https://github.com/darkace1998/Dreadnought-Revival-project/pull/80): service key hardening, the gateway idle timeout, ending dead matches after a restart, owned bundles, captain appearance in matches, Turbo TDM modifiers, and the Linux (clang) build of the battle-server mod.
 - **The Dreadnought community on Discord** — testing, bug reports and advice.
 
 ## Licence

@@ -8,17 +8,18 @@
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
   --accent: #2f6fdd; --good: #1f8a4c; --warn: #b86e00; --bad: #c43636; --chip: #eef1f5;
+  --icofilter: invert(.85);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #111418; --panel: #191d23; --ink: #e6e9ed; --muted: #97a1ad; --line: #2a3038;
-    --accent: #6a9cff; --good: #47c07a; --warn: #e2a33b; --bad: #f06a6a; --chip: #232932;
+    --accent: #6a9cff; --good: #47c07a; --warn: #e2a33b; --bad: #f06a6a; --chip: #232932; --icofilter: none;
   }
 }
 :root[data-theme="dark"] {
   --bg: #111418; --panel: #191d23; --ink: #e6e9ed; --muted: #97a1ad; --line: #2a3038;
-  --accent: #6a9cff; --good: #47c07a; --warn: #e2a33b; --bad: #f06a6a; --chip: #232932;
+  --accent: #6a9cff; --good: #47c07a; --warn: #e2a33b; --bad: #f06a6a; --chip: #232932; --icofilter: none;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -30,7 +31,7 @@ nav button, .btn { border: 1px solid var(--line); background: var(--panel); colo
 nav button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
 .btn:disabled { opacity: .5; cursor: default; }
-main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+main { padding: 16px 24px; }
 .muted { color: var(--muted); }
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
@@ -78,6 +79,189 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .banner { border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line)); color: var(--bad); border-radius: 8px; padding: 8px 10px; margin: 10px 0 0; }
 @media (max-width: 640px) { input[type=search] { min-width: 0; width: 100%; } .charts { grid-template-columns: 1fr; } }
+.vbtns { display: flex; flex-wrap: wrap; gap: 6px; }
+.wcards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.wcards .wc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.wcards h3 { margin: 0; font-size: 16px; }
+.wcards .wr { display: grid; grid-template-columns: 1fr 150px; align-items: center; gap: 10px; font-size: 13px; }
+.wcards .wr .step { height: 34px; }
+.wacts { margin-top: 14px; } .wacts .btn { min-width: 110px; } .wacts .btn.ok { background: #2e7d32; border-color: #2e7d32; color: #fff; } .wacts .btn.bad { background: #b3261e; border-color: #b3261e; color: #fff; }
+.bgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.bgrid label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.bgrid select, .bgrid input { width: 100%; }
+.bfeat { display: grid; grid-template-columns: 1fr 80px auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.bnote { font-size: 12px; color: var(--muted); white-space: normal; }
+.btree { border: 1px solid var(--line); background: var(--panel); }
+.bt-h { font-size: 16px; font-weight: 650; padding: 8px 12px; border-bottom: 2px solid var(--ink); }
+.bt-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; cursor: pointer; user-select: none; }
+.bt-row:hover { background: var(--chip); }
+.bt-n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bt-box { margin: 10px 0; border-radius: 10px; }
+.bt-box.grp { border: 2px solid var(--p0, var(--line)); box-shadow: 0 0 0 1px var(--p2, transparent) inset, 0 0 14px -6px var(--p1, transparent); --glow: var(--p0, transparent); }
+/* The colour spills out of the badge and is gone by half the row. */
+.bt-box > .bt-row { --a: 24%; background: radial-gradient(ellipse 50% 160% at 0 50%, color-mix(in srgb, var(--glow) var(--a), transparent), transparent); border-radius: 8px 8px 0 0; }
+.bt-box > .bt-row:hover { --a: 42%; background: radial-gradient(ellipse 50% 160% at 0 50%, color-mix(in srgb, var(--glow) var(--a), transparent), transparent); }
+.bt-box.man > .bt-row { font-size: 16px; font-weight: 600; }
+.bt-box.grp > .bt-row { font-size: 18px; font-weight: 650; padding: 8px 14px; }
+.bt-box.grp > .bt-body { padding: 0 12px 12px; }
+.bt-box.man { border: 1px solid var(--p0, var(--line)); border-left: 6px solid var(--p0, var(--line)); --glow: var(--p1, transparent); }
+.bt-box.man > .bt-body { padding: 0 12px 12px; }
+.bt-badge { height: 40px; } .bt-logo { height: 40px; } .bt-word { height: 18px; }
+.trow { margin-top: 10px; } .trow-h { display: flex; align-items: center; gap: 8px; padding: 4px 2px 8px; font-size: 15px; }
+.bt-num { height: 18px; filter: var(--icofilter, none); }
+.ccard-t { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 16px; } .ccard-t .sep { color: var(--muted); }
+.ccard-h img.bt-cls { width: auto; height: 20px; filter: var(--icofilter, none); }
+.ccard-n { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.ccard.none { opacity: .45; }
+.bt-chev { width: 12px; text-align: center; font-weight: 700; }
+.bt-leaf { padding: 5px 12px 5px 78px; border-bottom: 1px solid var(--line); }
+.bmodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: 40px 16px; }
+.bbox { background: var(--panel); border: 1px solid var(--line); width: min(980px, 100%); padding: 16px; }
+.bbox h3 { margin: 14px 0 4px; font-size: 14px; }
+.bbox label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.bprev { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+.bship { width: 256px; }
+.bship img { width: 256px; height: 160px; object-fit: contain; background: radial-gradient(ellipse at center, #2b3646, #0e1218); border-radius: 8px; display: block; }
+.blook { display: flex; gap: 6px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+.blook img { width: 40px; height: 40px; object-fit: contain; background: #1d2733; border-radius: 6px; }
+.swatch { display: flex; height: 40px; min-width: 56px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.swatch i { flex: 1; }
+.slotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.slotbtn { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; cursor: pointer; min-height: 54px; background: var(--panel); text-align: left; }
+.slotbtn:hover { border-color: var(--accent); }
+.slotbtn .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.slotbtn .n { font-size: 13px; }
+.ico { width: 44px; height: 44px; flex: none; object-fit: contain; background: #1d2733; border-radius: 6px; }
+.ico.ship { width: 72px; height: 45px; background: radial-gradient(ellipse at center, #2b3646, #0e1218); }
+.ico.blank { display: inline-block; }
+.gpgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; max-height: 72vh; overflow: auto; margin-top: 10px; padding: 2px; }
+.gphead { grid-column: 1 / -1; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px; cursor: pointer; text-align: center; font-size: 12px; background: var(--panel); display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.tile:hover { border-color: var(--accent); }
+.tile.on { outline: 2px solid var(--accent); }
+.tile .ico { width: 64px; height: 64px; }
+.tile .ico.ship { width: 116px; height: 72px; }
+.tile .swatch { width: 100%; height: 44px; }
+.tile .sub { color: var(--muted); font-size: 11px; }
+.tile > div, .slotbtn .n { overflow-wrap: anywhere; }
+.tile.wide { text-align: left; align-items: stretch; grid-column: span 2; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+.wcard { display: flex; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.wcard table { font-size: 12px; } .wcard td { padding: 1px 8px 1px 0; border: 0; white-space: normal; }
+.ccards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.ccard { border: 1px solid var(--line); border-radius: 10px; background: var(--bg, #0e1218); overflow: hidden; }
+.ccard-h { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.ccard-h img, .ccard-h .ico { width: 96px; height: 60px; object-fit: contain; background: none; }
+.ccard-h b { font-size: 16px; } .ccard-h .muted { font-size: 12px; }
+.mcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 10px; }
+.mcard { border: 1px solid var(--line); border-radius: 8px; padding: 6px; cursor: pointer; background: var(--panel); display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.mcard:hover { border-color: var(--accent); }
+.mcard img, .mcard .ico { width: 100%; height: 62px; object-fit: contain; background: none; }
+.mcard.draft { border-style: dashed; border-color: var(--accent); }
+.mcard b { font-size: 13px; overflow-wrap: anywhere; } .mcard .muted { font-size: 11px; }
+.mcard.off { opacity: .55; }
+.mcard.add { align-items: center; justify-content: center; font-size: 28px; color: var(--muted); min-height: 100px; border-style: dashed; }
+.bbox.wide { width: 100%; height: 100%; display: flex; flex-direction: column; padding: 16px 20px; }
+#bEdit { padding: 24px; align-items: stretch; }
+.bhead { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(140px, 1fr); gap: 16px; align-items: end; }
+.bhead .bship-h { display: flex; gap: 12px; align-items: center; grid-column: span 2; min-width: 0; align-self: center; }
+.bhead label > input, .bhead .step, .bhead .btn { height: 38px; box-sizing: border-box; margin: 0; }
+.bhead .btn.ok { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+.bhead .btn.bad { background: #b3261e; border-color: #b3261e; color: #fff; }
+.bhead img { width: 40%; max-width: 200px; aspect-ratio: 16 / 10; object-fit: contain; background: none; }
+.bhead .shipname { font-size: 22px; font-weight: 650; } .bhead .shipsub { color: var(--muted); }
+.bhead label { width: auto; min-width: 0; } .bhead label > input { width: 100%; box-sizing: border-box; }
+.bhead .wide2 { grid-column: span 2; }
+.bacts { display: flex; gap: 8px; grid-column: span 2; } .bacts .btn { flex: 1; } .bacts #bCancel { flex: 0 0 auto; }
+.step { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.step button { background: none; border: 0; color: var(--ink); width: 34px; font-size: 16px; cursor: pointer; }
+.step button:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.step input { flex: 1; min-width: 0; width: 100%; text-align: center; border: 0; border-left: 1px solid var(--line); border-right: 1px solid var(--line); border-radius: 0; -moz-appearance: textfield; background: none; }
+.step input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.btabs { display: flex; gap: 4px; margin: 12px 0 0; border-bottom: 1px solid var(--line); }
+.btabs button { background: none; border: 0; border-bottom: 3px solid transparent; color: var(--muted); padding: 8px 18px; font-size: 15px; cursor: pointer; }
+.btabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.bpane { flex: 1; overflow: auto; padding-top: 12px; min-height: 0; }
+.combat { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 18px; align-items: stretch; }
+.combat > .cell { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.combat > .cell > .wcard, .combat > .cell > .slotbtn, .combat > .cell > .oslot { flex: 1; }
+.combat > .rowh { grid-column: 1 / 5; margin: 6px 0 -6px; font-size: 15px; font-weight: 650; }
+.combat > .boosts { grid-column: 5; grid-row: 1 / span 7; display: flex; flex-direction: column; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; overflow: hidden; align-self: start; max-height: 100%; }
+.boosts .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: color-mix(in srgb, var(--accent) 14%, transparent); border-bottom: 1px solid var(--line); font-weight: 650; font-size: 14px; }
+.boosts .bar .muted { font-weight: 400; }
+.boosts .list { display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow: auto; }
+.boosts .fcard { margin: 0; background: var(--panel); }
+.boosts .add { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 64px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 14px; }
+.boosts .add b { font-size: 26px; font-weight: 400; }
+.boosts .add:hover { border-color: var(--accent); color: var(--ink); }
+.combat .slotbtn { align-items: flex-start; }
+.combat .slotbtn table { font-size: 12px; margin-top: 4px; } .combat .slotbtn td { padding: 1px 8px 1px 0; border: 0; white-space: normal; }
+.wcard { cursor: pointer; } .wcard:hover { border-color: var(--accent); }
+.stats { width: 100%; }
+.combat h3:first-child, .cosm h3:first-child { margin-top: 0; }
+.stats td { padding: 4px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.stats td:first-child { color: var(--muted); } .stats td:last-child { text-align: right; white-space: normal; }
+.calc { color: var(--accent); font-weight: 600; }
+.wcard.fixed { cursor: default; } .wcard.fixed:hover { border-color: var(--line); }
+.tile .ts { font-size: 11px; color: var(--muted); line-height: 1.35; text-align: left; align-self: stretch; }
+.tile .ts b { color: var(--ink); font-weight: 600; }
+.fx { font-size: 12px; line-height: 1.5; }
+.fx .dur { color: var(--muted); }
+.fcard { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.fcard .body { flex: 1; min-width: 0; cursor: pointer; }
+.fcard .body b { font-size: 13px; }
+.fcard input { width: 64px; }
+.osgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.oslot { border: 1px solid var(--line); border-radius: 8px; padding: 8px; cursor: pointer; display: flex; gap: 10px; min-height: 76px; }
+.oslot:hover { border-color: var(--accent); }
+.oslot .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.cosm { display: grid; grid-template-columns: minmax(0, 1fr) 560px; gap: 18px; height: 100%; }
+#bView { position: relative; min-height: 480px; height: 100%; background: radial-gradient(ellipse at center, #2b3646, #0e1218); border-radius: 10px; overflow: hidden; }
+#bView canvas { display: block; width: 100%; height: 100%; }
+#bViewMsg { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px; }
+.cosm .slotgrid { grid-template-columns: 1fr 1fr; }
+/* Fleet: the launcher's player page (DN_FLEET, launcher_fleet.go) -- the boss
+   tree and editor over the launcher's backdrop, read-only, the player's ships. */
+/* color-scheme matches the launcher's (dark), else WebView2 paints the frame's canvas white. */
+html.fleet { color-scheme: dark; }
+html.fleet, html.fleet body { background: transparent; }
+html.fleet header, html.fleet #login, html.fleet main > [id^="tab-"]:not(#tab-fleet) { display: none !important; }
+html.fleet main { padding: 14px 18px; max-width: none; }
+html.fleet .btree { background: rgba(17, 20, 24, .72); backdrop-filter: blur(6px); border-radius: 10px; }
+html.fleet .bt-h { display: flex; align-items: center; gap: 12px; }
+html.fleet .bt-h .fmsg { font-size: 13px; font-weight: 400; color: var(--muted); } html.fleet .bt-h .fmsg.bad { color: var(--bad); }
+html.fleet .bt-h .btn { margin-left: auto; font-size: 13px; letter-spacing: .06em; }
+html.fleet .ccard, html.fleet .mcard { background: rgba(14, 18, 24, .7); }
+html.fleet .bmodal { background: rgba(0, 0, 0, .35); }
+html.fleet .bbox { background: rgba(25, 29, 35, .97); backdrop-filter: blur(8px); border-radius: 10px; }
+.combat.fc { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.combat.fc > .rowh { grid-column: 1 / -1; }
+.combat.fc > .cell.w2 { grid-column: span 2; }
+.combat.fc .wcard, .combat.fc .slotbtn, .combat.fc .oslot { cursor: default; } .combat.fc :is(.wcard, .slotbtn, .oslot):hover { border-color: var(--line); }
+.flib { display: flex; flex-direction: column; gap: 8px; }
+.flib .fl { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.flib .fl .icos { display: flex; gap: 4px; } .flib .fl .icos .ico { width: 34px; height: 34px; }
+.flib .fl .nm { min-width: 180px; } .flib .fl .nm b { display: block; }
+.flib .fl .acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.flib .fl input { width: 180px; }
+.mcard { position: relative; }
+html.fleet .mcard.infl { border: 2px solid var(--fc); box-shadow: 0 0 12px -4px var(--fc); padding: 5px; }
+.mcard .fbadges { position: absolute; top: 4px; right: 4px; display: flex; gap: 2px; align-items: center; z-index: 1; }
+.mcard .fbadges img { width: auto; height: 30px; filter: drop-shadow(0 1px 2px #000); }
+.mcard .fbadges .star { color: #ffd54a; font-size: 16px; text-shadow: 0 1px 2px #000; }
+html.fleet .mcard.hero { border-color: #d4af37; background: linear-gradient(160deg, rgba(212, 175, 55, .22), rgba(14, 18, 24, .75) 55%, rgba(212, 175, 55, .14)); overflow: hidden; }
+html.fleet .mcard.hero.infl { border-color: var(--fc); }
+html.fleet .mcard.hero b { color: #f3d27a; }
+html.fleet #fEdit.bmodal { padding: 5vh 10vw; align-items: stretch; overflow: hidden; }
+html.fleet #fEdit .bbox.wide { width: 100%; height: 100%; margin: 0; box-sizing: border-box; }
+html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts .btn { flex: 0 0 auto; padding: 0 18px; }
+.combat.fc.ed :is(.wcard, .slotbtn, .oslot) { cursor: pointer; } .combat.fc.ed :is(.wcard, .slotbtn, .oslot):hover { border-color: var(--accent); }
+.bacts #fCancel { flex: 0 0 auto; }
+.btabs.sub { margin-top: 8px; } .btabs.sub button { font-size: 13px; padding: 6px 14px; }
+.fview { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; height: 100%; background: radial-gradient(ellipse at center, #2b3646, #0e1218); border-radius: 10px; overflow: hidden; }
+.fview img { max-width: 90%; max-height: 80%; object-fit: contain; }
+.fspin { width: 56px; height: 56px; border: 5px solid #ffffff22; border-top-color: var(--accent); border-radius: 50%; animation: fspin .9s linear infinite; }
+@keyframes fspin { to { transform: rotate(360deg); } } .fview canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 </style>
 </head>
 <body>
@@ -100,6 +284,10 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="instances">Battle servers</button>
     <button data-tab="players">Players</button>
     <button data-tab="moderation">Moderation</button>
+    <button data-tab="bosses">Bosses</button>
+    <button data-tab="hunters">Hunters</button>
+    <button data-tab="waves">Waves</button>
+    <button data-tab="stutters">Stutters</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
     <button data-tab="telemetry">Telemetry</button>
@@ -148,8 +336,79 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     </section>
   </div>
 
+  <div id="tab-bosses" class="hidden">
+    <div id="bTree" class="btree"></div>
+    <div class="row"><span id="bListMsg" class="muted"></span></div>
+  </div>
+  <div id="tab-hunters" class="hidden">
+    <div id="hTree" class="btree"></div>
+    <div class="row"><span id="hListMsg" class="muted"></span></div>
+  </div>
+  <div id="tab-waves" class="hidden">
+    <div class="wcards" id="wFields"></div>
+    <div class="row wacts"><button class="btn on" id="wSave">Save</button><button class="btn" id="wReset">Defaults</button></div>
+  </div>
+  <div id="tab-stutters" class="hidden">
+    <div class="row"><button class="btn" id="sRefresh">Refresh</button></div>
+    <section><h2>Suspect</h2>
+      <div class="table-wrap"><table><thead><tr><th>Suspect</th><th>Gaps</th><th>Total ms</th><th>Worst ms</th></tr></thead><tbody id="sSumRows"></tbody></table></div></section>
+    <section><h2>Self</h2>
+      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Times</th><th>Total ms</th><th>Worst ms</th></tr></thead><tbody id="sZoneRows"></tbody></table></div></section>
+    <section><h2>Recent</h2>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Match</th><th>Gap ms</th><th>Suspect</th><th>Ours ms</th><th>Biggest job</th><th>Last command</th><th>Cmd age s</th><th>NPCs</th><th>Projectiles</th></tr></thead><tbody id="sRows"></tbody></table></div></section>
+  </div>
+  <div id="tab-fleet" class="hidden"><div id="fTree" class="btree"></div></div>
+  <div id="fEdit" class="bmodal hidden"><div class="bbox wide">
+    <div class="bhead">
+      <div class="bship-h"><img id="fShipImg" alt=""><div style="min-width:0"><div class="shipname" id="fShipName"></div><div class="shipsub" id="fShipSub"></div></div></div>
+      <label class="wide2">Save shown loadout as<input id="fName" maxlength="32"></label>
+      <div class="bacts">
+        <button class="btn" id="fRevert">Revert</button>
+        <button class="btn on" id="fApply">Apply</button>
+        <button class="btn on" id="fSave">Save</button>
+        <button class="btn" id="fCancel">&#x2715;</button>
+      </div>
+    </div>
+    <div class="btabs" id="fTabs"></div>
+    <div class="btabs sub" id="fSub"></div>
+    <div class="bpane" id="fPane"></div>
+  </div></div>
+  <div id="bEdit" class="bmodal hidden"><div class="bbox wide">
+    <div class="bhead">
+      <div class="bship-h"><img id="bShipImg" alt=""><div style="min-width:0"><div class="shipname" id="bShipName"></div><div class="shipsub" id="bShipSub"></div></div></div>
+      <label class="wide2">Name<input id="bName" maxlength="30"></label>
+      <label id="bMultL">Multiplier<div class="step" id="bMultS"></div></label>
+      <label id="bWeightL">Pick weight<div class="step" id="bWeightS"></div></label>
+      <label class="wide2">Notes<input id="bNotes" maxlength="200"></label>
+      <div class="bacts">
+        <button class="btn on" id="bSave">Save</button>
+        <button class="btn" id="bSpawn">Spawn</button>
+        <button class="btn" id="bRevert">Revert</button>
+        <button class="btn danger" id="bDelete">Delete</button>
+        <button class="btn" id="bCancel">&#x2715;</button>
+      </div>
+    </div>
+    <div class="btabs"><button id="bTabCombat" class="on">Combat</button><button id="bTabCos">Cosmetics</button></div>
+    <div class="bpane" id="bPaneCombat"><div class="combat" id="bCombat"></div></div>
+    <div class="bpane hidden" id="bPaneCos"><div class="cosm">
+      <div id="bView"><span id="bViewMsg"></span></div>
+      <div>
+        <h3>Coating</h3><div class="slotgrid" id="bCos"></div>
+        <h3>Ship parts</h3><div class="slotgrid" id="bParts"></div>
+      </div>
+    </div></div>
+  </div></div>
+  <div id="gp" class="bmodal hidden" style="z-index:11"><div class="bbox" style="width:min(1600px,96vw)">
+    <div class="row" style="justify-content:space-between;margin:0;gap:8px">
+      <h2 id="gpTitle" style="margin:0">Pick</h2>
+      <input id="gpSearch" type="search" placeholder="Search" style="flex:1;max-width:320px">
+      <label id="gpAllL" style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" id="gpAll"> all classes</label>
+      <button class="btn" id="gpClose">&#x2715;</button>
+    </div>
+    <div id="gpGrid" class="gpgrid"></div>
+  </div></div>
   <div id="tab-instances" class="hidden">
-    <div class="row"><span class="muted">Every battle server the control plane is running. A crashed server can stay listed until it is stopped.</span></div>
+    <div class="row"><button class="btn" id="vOpen">Battle viewer</button><span class="muted">Every battle server the control plane is running. A crashed server can stay listed until it is stopped.</span></div>
     <div class="table-wrap"><table><thead><tr><th>Port</th><th>Mode</th><th>Map</th><th>Players</th><th>State</th><th>Up for</th><th></th></tr></thead><tbody id="instRows"></tbody></table></div>
   </div>
 
@@ -181,6 +440,10 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       <section><h2>Hero ships</h2>
         <div class="row"><select id="mHero"></select><button class="btn" id="mGrant">Grant ship</button></div>
         <div class="muted" id="mShips"></div>
+      </section>
+      <section><h2>Cosmetics</h2>
+        <div class="table-wrap"><table><thead><tr><th>Item</th><th>Id</th><th class="num">Paid</th><th>Bought</th><th></th></tr></thead><tbody id="mCosmetics"></tbody></table></div>
+        <div class="muted">Removing deletes the cosmetic from the player's purchases with no refund (use Balances for that). It disappears in game at the player's next login.</div>
       </section>
       <section><h2>Moderation</h2>
         <div class="row">
@@ -267,6 +530,12 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   try { const t = localStorage.getItem('adminTheme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 
   let key = store.get('adminKey');
+  // Fleet mode: the launcher's Fleet page (mmogbrain launcherFleetPage sets
+  // DN_FLEET). The player's own ships in the boss tree, their loadouts in the
+  // editor, read-only, plus their saved-loadout library. The launcher frames
+  // this page and carries its requests, like the battle view's.
+  const FLEET = window.DN_FLEET || null;
+  if (FLEET) { document.documentElement.classList.add('fleet'); document.documentElement.dataset.theme = 'dark'; }
   let tab = 'overview';
   let timer = null;
 
@@ -385,6 +654,11 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     free.forEach((h) => sel.append(el('option', { value: h.id }, `T${h.tier} ${h.name}`)));
     if (!free.length) sel.append(el('option', { value: '' }, 'owns every hero ship'));
     $('mGrant').disabled = !free.length;
+    fill('mCosmetics', (d.cosmetics || []).map((c) => el('tr', {}, el('td', {}, c.name || '?'), el('td', { class: 'muted' }, c.hex),
+      el('td', { class: 'num' }, c.price ? `${fmt(c.price)} ${c.currency}` : c.currency), el('td', {}, ago(c.purchased_at) + ' ago'),
+      el('td', {}, el('button', { class: 'btn danger', onclick: () => {
+        if (confirm(`Remove ${c.name || c.hex} from ${d.name || d.pid}?`)) post(`/players/${managed}/items/remove`, { item_id: c.id }, 'Cosmetic removed.');
+      } }, 'Remove')))), 'No cosmetics owned.', 5);
     const heroes = d.ships.filter((s) => s.hero).map((s) => `T${s.tier} ${s.name}`);
     $('mShips').textContent = `${d.ships.length} ships owned` + (heroes.length ? ` · heroes: ${heroes.join(', ')}` : ' · no hero ships');
   }
@@ -606,6 +880,663 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       el('td', { class: 'results' }, auditText(x.details)), el('td', { class: 'muted' }, x.actor))), 'No admin actions yet.', 5);
   }
 
+  // --- bosses and hunters (admin_bosses.go, admin_hunters.go) --------------
+  // One editor for both: bKind says which store it saves to. Pictures and
+  // stats come from /admin/art (scripts/gen-admin-art.py, the client's files).
+  let bCat = null, bArt = null, bDefs = [], hDefs = [], bCur = null, bOrig = null, bOrigId = 0, bKind = 'boss', bKey = '';
+  let bDrafts = {}; try { bDrafts = JSON.parse(localStorage.getItem('bDrafts') || '{}'); } catch (e) {}
+  const ART = FLEET ? '' : '/admin/art/';
+  async function bLoadCat() {
+    if (!bCat) bCat = await api('/bosses/catalog');
+    if (!bArt) { try { const r = await fetch(ART + 'art.json'); bArt = r.ok ? await r.json() : {}; } catch (e) { bArt = {}; } }
+    for (const k of ['ships', 'modules', 'weapons', 'paints', 'vanity', 'feats', 'officers', 'pawns', 'previews', 'patterns', 'models', 'markers']) bArt[k] = bArt[k] || {};
+    for (const k of ['base', 'parts', 'emblems']) bArt.models[k] = bArt.models[k] || {};
+  }
+  async function loadBosses() {
+    await bLoadCat();
+    bDefs = (await api('/bosses')).bosses;
+    bTree();
+  }
+  const bOpenKeys = new Set();
+  const clsLabel = (id) => (bCat.classes.find((c) => c.ID === id) || {}).Label || id;
+  const manName = (p) => (bCat.manufacturers.find((m) => m.path === p) || {}).name || p;
+  function bTree() { kTree('boss', $('bTree'), 'Bosses', bDefs); }
+  function kTree(kind, tree, title, defs) {
+    tree.replaceChildren(el('div', { class: 'bt-h' }, title, ...(FLEET ? fHead : [])));
+    const redraw = () => kTree(kind, tree, title, defs);
+    const classes = ['Scout', 'Support', 'Assault', 'Sniper', 'Dreadnought'].map((id) => bCat.classes.find((c) => c.ID === id)).filter(Boolean);
+    const U = bArt.ui || {}, uimg = (k, key) => ((U[k] || {})[key] || {}).img, upal = (k, key) => ((U[k] || {})[key] || {}).pal || [];
+    const node = (key, cls, head, n, kids, pal) => {
+      const open = bOpenKeys.has(kind + key), box = el('div', { class: 'bt-box ' + cls });
+      if (pal && pal.length) box.style.cssText = `--p0:${pal[0]};--p1:${pal[Math.min(2, pal.length - 1)]};--p2:${pal[pal.length - 1]}`;
+      box.append(el('div', { class: 'bt-row', onclick: () => { open ? bOpenKeys.delete(kind + key) : bOpenKeys.add(kind + key); redraw(); } },
+        el('span', { class: 'bt-chev' }, open ? '⌄' : '›'), ...head, el('span', { class: 'bt-n' }, String(n))));
+      if (open) { const body = el('div', { class: 'bt-body' }); kids().forEach((k) => body.append(k)); box.append(body); }
+      return box;
+    };
+    const img = (src, c) => (!src ? el('span', {}) : FLEET ? fPic(src, c) : el('img', { class: c, src: ART + src, alt: '' }));
+    const shipTier = (d) => (FLEET ? d.stier : (bBase(d.base) || {}).tier);
+    for (const t of bCat.tiers) {
+      // A player's ship sits in every group its tier flies in (tier 2: Recruit and Veteran).
+      const inT = defs.filter((d) => (FLEET ? t.Tiers.includes(d.stier) : d.tier === t.ID));
+      tree.append(node(t.ID, 'grp', [img(uimg('groups', t.ID), 'bt-badge'), el('span', { class: 'bt-l' }, t.Label)], inT.length, () => bCat.manufacturers.map((m) => {
+        const inM = inT.filter((d) => d.manufacturer === m.path);
+        return node(t.ID + '/' + m.path, 'man', [img(uimg('manufacturers', m.path), 'bt-logo'), el('span', { class: 'bt-l' }, m.name)], inM.length, () => t.Tiers.map((n, ti) => {
+          // Builds whose base is outside the group's tiers sit in its last row.
+          const inN = inM.filter((d) => shipTier(d) === n || (ti === t.Tiers.length - 1 && !t.Tiers.includes(shipTier(d))));
+          return el('div', { class: 'trow' },
+            el('div', { class: 'trow-h' }, img(uimg('tiers', String(n)), 'bt-num'), el('b', {}, 'Tier ' + n)),
+            el('div', { class: 'ccards' }, ...classes.map((c) => {
+              const inC = inN.filter((d) => d.class === c.ID), b = FLEET ? inC[0] : bBase(bDeriveBase(t.ID, c.ID, m.path, n));
+              const preset = { tier: t.ID, manufacturer: m.path, class: c.ID, stier: n };
+              if (FLEET) return el('div', { class: 'ccard' + (b ? '' : ' none') },
+                el('div', { class: 'ccard-h' }, b ? fPic(b.hull_img, 'ico') : ico(''), el('div', { class: 'ccard-t' },
+                  el('b', {}, b ? fHull(b) : '—'), el('span', { class: 'sep' }, '–'), el('span', {}, c.Label), el('span', { class: 'sep' }, '–'),
+                  el('span', { class: 'ccard-n' }, String(inC.length), img(uimg('classes', c.ID), 'bt-cls')))),
+                el('div', { class: 'mcards' }, ...inC.map((d) => fCard(d, t))));
+              return el('div', { class: 'ccard' + (b ? '' : ' none') },
+                el('div', { class: 'ccard-h' }, ico(bShipArt(b)), el('div', { class: 'ccard-t' },
+                  el('b', {}, b ? bHullName(b) : '—'), el('span', { class: 'sep' }, '–'), el('span', {}, c.Label), el('span', { class: 'sep' }, '–'),
+                  el('span', { class: 'ccard-n' }, String(inC.length), img(uimg('classes', c.ID), 'bt-cls')))),
+                el('div', { class: 'mcards' }, ...inC.map((d) => el('div', { class: 'mcard' + (kind === 'hunter' && !(d.weight > 0) ? ' off' : '') + (bDrafts[draftKey(kind, d)] ? ' draft' : ''), onclick: () => bOpen(kind, d) },
+                  ico(bShipArt(bBase(d.base))), el('b', {}, d.name || '—'),
+                  el('div', { class: 'muted' }, `#${d.id} · ×${d.mult || 1}` + (kind === 'hunter' ? (d.weight > 0 ? ` · weight ${d.weight}` : ' · benched') : '')))),
+                b ? el('div', { class: 'mcard add' + (bDrafts[draftKey(kind, null, preset)] ? ' draft' : ''), onclick: () => bOpen(kind, null, preset) }, '+') : el('span', {})));
+            })));
+        }), upal('manufacturers', m.path));
+      }), upal('groups', t.ID)));
+    }
+  }
+
+  // Art lookups.
+  const bBase = (id) => bCat.bases.find((x) => x.id === id);
+  // The AI behind a slot: the highest-tier Havoc ship of the hull line in the tier group.
+  function bDeriveBase(tier, cls, man, n) {
+    const hull = cls && man ? (bCat.hull_lines[cls] || {})[man] : '';
+    const tiers = n ? [n] : (bCat.tiers.find((t) => t.ID === tier) || { Tiers: [1, 2, 3, 4, 5] }).Tiers;
+    const bases = bCat.bases.filter((b) => b.hull_line === hull && tiers.includes(b.tier));
+    if (!bases.length) return '';
+    // The plain "<line>T<n>" pawn first, then any other of the highest tier.
+    const top = Math.max(...bases.map((b) => b.tier));
+    return (bases.find((b) => b.id === hull + 'T' + top) || bases.find((b) => b.tier === top)).id;
+  }
+  const bHullName = (b) => (b.hulls && b.hulls[0]) || `${clsLabel(b.hull_line.replace(/(Heavy|Medium|Light)$/, ''))} ${b.hull_line.match(/(Heavy|Medium|Light)$/)?.[0] || ''}`.trim();
+  const bLineKey = (b) => b.hull_line.replace(/^Dreadnought/, 'Dread').replace(/(Heavy|Medium|Light)$/, (w) => w[0]);
+  function bShipArt(b) {
+    // Hangar tier art is "<Class><H|M|L>_T<n>"; take the nearest tier there is.
+    if (!b || !b.hull_line) return '';
+    const stem = b.hull_line.replace(/(Heavy|Medium|Light)$/, (w) => w[0]) + '_T';
+    for (const d of [0, 1, -1, 2, -2, 3, -3, 4, -4]) { const k = stem + (b.tier + d); if (bArt.ships[k]) return ART + bArt.ships[k]; }
+    return '';
+  }
+  const bPawn = (b) => (b ? bArt.pawns[bLineKey(b) + (b.ai_pawn_t ? '_T' + b.tier : '')] || bArt.pawns[bLineKey(b)] || {} : {});
+  const bModArt = (path) => bArt.modules[path] || {};
+  const bModLabel = (m) => (bModArt(m.path).name && !/^AB_/.test(bModArt(m.path).name) ? bModArt(m.path).name : m.name);
+  function bModName(path) {
+    const m = bCat.modules.find((x) => x.path === path), a = bModArt(path);
+    return m ? bModLabel(m) : a.name || path.split('.').pop();
+  }
+  const bVanityImg = (id) => (id && bArt.vanity[id] ? ART + 'vanity/' + bArt.vanity[id] : '');
+  function swatch(id) {
+    const c = bArt.paints[id];
+    return c ? el('div', { class: 'swatch' }, ...c.map((x) => el('i', { style: 'background:' + (x || 'transparent') }))) : null;
+  }
+  const ico = (src, cls = '') => (src ? el('img', { class: 'ico ' + cls, src, alt: '', loading: 'lazy' }) : el('span', { class: 'ico blank ' + cls }));
+  const tipText = (a) => [a.desc, ...(a.tips || []).map(([n, v]) => `${n}: ${v}`),
+    a.cooldown ? `Cooldown ${a.cooldown} s` : '', a.active ? `Active ${a.active} s` : '', a.range ? `Range ${Math.round(a.range / 100)} m` : ''].filter(Boolean).join('\n');
+  const featTitle = (path) => (bArt.feats[path] || {}).title || path.replace(/^HVC_Boost_/, '').replace(/_/g, ' ');
+  const featSize = (path) => (path.match(/_(Small|Medium|Large)$/) || [])[1] || '';
+  const offArt = (feat) => bArt.officers[feat] || {};
+  const offName = (feat) => offArt(feat).name || (bCat.officers.find((o) => o.path === feat) || {}).name || feat;
+
+  // Feat effect strings (OTS m_effects): "AM(Stat +10% | CC(cond)) : Stacks(99) : D(2.0)".
+  // Stacks(n) is the most stacks the feat takes; D(s) a timed buff, none =
+  // for as long as the feat is held. Stacks compound: 40 HpInc stacks took a
+  // boss's GetMaxHealth from 236000 to 10681192 = 1.1^40 (headless 2026-10-16).
+  // GUESS: AM (additive-modifier) stacks compound the same way; only RM
+  // MaxHealth was measured.
+  const STAT = { maxhealth: 'Hull', health: 'Hull repair on gain', energy: 'Energy', pawnmaxenergymodifier: 'Energy',
+    pawndamagemodifier: 'Weapon damage', pawnabilitydamagemodifier: 'Module damage', pawndamageshieldmodifier: 'Damage to shields',
+    pawndamageresistance: 'Damage resistance', pawnhealthregenerationmodifier: 'Hull regen', pawnenergyconsumptionratemodifier: 'Energy use',
+    pawnabilitycooldowntimemodifier: 'Module cooldown', pawnforwardforcemodifier: 'Forward thrust', pawnreverseforcemodifier: 'Reverse thrust',
+    pawnverticalforcemodifier: 'Vertical thrust', pawnstrafeforcemodifier: 'Strafe thrust', pawnsteerforcemodifier: 'Turn rate',
+    pawnreloadtimeprimodifier: 'Primary reload time', pawnreloadtimesecmodifier: 'Secondary reload time',
+    pawnprimaryweaponcooldownmodifier: 'Primary cooldown', pawnweaponscooldownmodifier: 'Weapon cooldown',
+    pawnhealthregenerationdelaymodifier: 'Hull regen delay' };
+  const statLabel = (s) => STAT[s.toLowerCase()] || s.replace(/^Pawn|Modifier$/g, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+  function condText(c) {
+    if (!c) return '';
+    const w = c.match(/EnergyWheelSelection\s*==\s*YEWS_(\w+)/);
+    if (w) return 'power to ' + ({ SHIELD: 'shields', THRUSTER: 'engines', WEAPON: 'weapons' }[w[1]] || w[1].toLowerCase());
+    const h = c.match(/HealthPercentage\s*([<>]=?)\s*([\d.]+)%?/);
+    if (h) return `hull ${h[1][0] === '<' ? 'below' : 'above'} ${h[2]}%`;
+    if (/Energy\s*==\s*0/.test(c)) return 'energy empty';
+    const a = c.match(/DamageSourceAngle\s*>=?\s*(\d+)/);
+    if (a) return +a[1] >= 135 ? 'hit from behind' : 'hit from the side';
+    const f = c.match(/DamageSourceAngle\s*<=?\s*(\d+)/);
+    if (f) return 'hit from the front';
+    return c;
+  }
+  function parseFx(s) {
+    const out = [];
+    for (const part of (s || '').split(';')) {
+      const m = part.match(/^\s*(AM|RM)\(\s*(\w+)\s+([^|)]*?)\s*(?:\|\s*CC\(([^)]*)\)\s*)?\)(.*)$/i);
+      if (!m) continue;
+      const v = m[3].replace(/\s+/g, '').match(/^([+-]?[\d.]+)(%?)$/);
+      if (!v || !parseFloat(v[1]) || !v[2]) continue; // +0% markers, flat amounts
+      const st = m[5].match(/Stacks\((\d+)\)/i), d = m[5].match(/\bD\(([-\d.]+)\)/);
+      out.push({ stat: m[2].toLowerCase(), label: statLabel(m[2]), val: parseFloat(v[1]), cond: condText(m[4]), raw: m[4] || '', max: st ? +st[1] : 1, dur: d ? +d[1] : 0 });
+    }
+    return out;
+  }
+  // Same bonus on the primary and secondary reload -> one "Weapon reload time" line;
+  // the same bonus at HealthPercentage<90%, <80%, ... <10% -> "per 10% hull missing".
+  function mergeFx(fx) {
+    const out = [], used = new Set();
+    fx.forEach((e, i) => {
+      if (used.has(i)) return;
+      if (e.stat === 'pawnreloadtimeprimodifier') {
+        const j = fx.findIndex((x, k) => !used.has(k) && k !== i && x.stat === 'pawnreloadtimesecmodifier' && x.val === e.val && x.raw === e.raw && x.dur === e.dur);
+        if (j >= 0) { used.add(j); e = { ...e, stat: 'reload', label: 'Weapon reload time' }; }
+      }
+      used.add(i); out.push(e);
+    });
+    const res = [], done = new Set();
+    out.forEach((e, i) => {
+      if (done.has(i)) return;
+      const hp = (x) => +((x.raw.match(/^\s*HealthPercentage\s*<\s*([\d.]+)%?\s*$/) || [])[1] || NaN);
+      if (!isNaN(hp(e))) {
+        const grp = out.map((x, k) => [x, k]).filter(([x, k]) => !done.has(k) && x.label === e.label && x.val === e.val && x.dur === e.dur && !isNaN(hp(x)));
+        const th = grp.map(([x]) => hp(x)).sort((a, b) => b - a), stp = th.length > 2 ? th[0] - th[1] : 0;
+        if (stp > 0 && th[0] === 100 - stp && th.every((t, k) => Math.abs(t - (th[0] - k * stp)) < 1e-6)) {
+          grp.forEach(([, k]) => done.add(k));
+          res.push({ ...e, text: `${e.label} ${pct(e.val)} per ${stp}% hull missing, up to ${pct(e.val * th.length)}` });
+          return;
+        }
+      }
+      done.add(i); res.push(e);
+    });
+    return res;
+  }
+  // Officer feat triggers (DN_Officers_OTS_DT m_triggers).
+  const TRIG = { BeHitPerHitPoint: 'damage taken', BeShieldHitPerHitPoint: 'shield damage taken', BeHealedPerHitPoint: 'healing received', DoHealPerHitPoint: 'healing done' };
+  const TRIG_WHEN = { DoKill: 'on a kill', DoKillWithAbility: 'on a kill with a module', OnAbilityFinishedCooldown: 'when a module finishes its cooldown', BeHit: 'when hit' };
+  function trigCond(c) {
+    const h = c.match(/HealthPercentage&(?:Target|Attacker)\s*<\s*([\d.]+)/);
+    if (h) return `below ${Math.round(+h[1] * 100)}% hull`;
+    if (/ActiveFeat==EnergyOnThrust/.test(c)) return 'with power to engines';
+    return condText(c);
+  }
+  function trigParse(t) {
+    const per = [], when = [], conds = new Set();
+    for (const part of (t || '').split(';')) {
+      const m = part.trim().match(/^(\w+)\((.*)\)$/); if (!m || m[1] === 'OnEnable') continue;
+      // DamageSourceAngle>50 | <130 is one band, "from the side".
+      const band = /DamageSourceAngle\s*>/.test(m[2]) && /DamageSourceAngle\s*</.test(m[2]);
+      const cs = band ? ['from the side'] : [...m[2].matchAll(/CC\(([^)]*)\)/g)].map((x) => trigCond(x[1]));
+      [...new Set(cs)].forEach((c) => conds.add(c.replace(/^hit /, '')));
+      if (TRIG[m[1]]) per.push(TRIG[m[1]]); else when.push(TRIG_WHEN[m[1]] || m[1]);
+    }
+    const c = [...conds].join(', ');
+    return { per: per.length ? per.join(' or ') + (c ? ' ' + c : '') : '', when: when.length ? when.join(' or ') + (c ? ', ' + c : '') : '' };
+  }
+  // Lines for one officer feat: its own effects plus each EFS(<row>) it calls
+  // (shared_feats, by the ship's class), each under that row's own trigger.
+  function offLines(o) {
+    const it = bCat.officers.find((x) => x.path === o) || {}, sf = bCat.shared_feats || {}, cls = bCur ? bCur.class : '';
+    const lines = [];
+    let own = it.effects || '';
+    own = own.replace(/EFS\((\w+)\)\s*;?/g, (_, n) => { const r = (sf[cls] || {})[n] || (sf[''] || {})[n]; if (r) lines.push(...fxDescribe(r.effects, r.triggers)); return ''; });
+    return [...fxDescribe(own, it.triggers), ...lines];
+  }
+  function fxDescribe(eff, trig) {
+    const t = trigParse(trig), out = [];
+    const tail = (s) => (t.per ? `${s} per ${t.per}` : t.when ? `${s}, ${t.when}` : s);
+    const perN = (v, unit) => { const n = Math.round(1 / Math.abs(v)); return `${unit.replace('{}', v < 0 ? '−1' : '+1')} per ${n.toLocaleString('en-US')} ${t.per}`; };
+    for (const part of (eff || '').split(';')) {
+      const p = part.trim(); let m;
+      if ((m = p.match(/^AbilityCool[Dd]own\(\)\s*:\s*D\(([-\d.]+)\)/))) {
+        const v = +m[1];
+        out.push({ text: t.per ? perN(v, 'Module cooldowns {} s') : tail(`Module cooldowns ${v < 0 ? '−' : '+'}${Math.abs(v)} s`) });
+      } else if ((m = p.match(/^RM\(\s*Energy\s+(\w+\s+)?([+-]?[\d.]+)\s*\)/i))) {
+        const v = +m[2];
+        // FeedbackLoop: "Gain 0.3 energy per second of the module's total cooldown time" (officer tip).
+        if (m[1] && m[1].trim() === 'FeedbackLoop') out.push({ text: tail(`Energy +${v} per second of the module's cooldown`) });
+        else out.push({ text: t.per ? perN(v, 'Energy {}') : tail(`Energy ${v > 0 ? '+' : ''}${v}`) });
+      } else if (/^DFSB\(/.test(p)) {
+        // GUESS: DFSB(<feat list>) clears those feats' buffs; the briefing text says "Removes debuffs".
+        out.push({ text: tail('Removes debuffs') });
+      }
+    }
+    for (const e of mergeFx(parseFx(eff))) out.push({ text: tail(e.text || `${e.label} ${pct(e.val)}${e.cond ? ', ' + e.cond : ''}`), dur: e.dur });
+    return out;
+  }
+  const offLinesEl = (o) => { const ls = offLines(o), a = offArt(o);
+    // Nothing in the tables (MrFixitFeat has no row): the briefing's own tips.
+    const rows = ls.length ? ls : (a.tips || []).filter(([n, v]) => v && n !== 'Perk Type').map(([n, v]) => ({ text: `${n}: ${v}` }));
+    return el('div', { class: 'fx' }, ...rows.map((l) => el('div', {}, l.text, l.dur > 0 ? el('span', { class: 'dur' }, ` · ${l.dur} s`) : ''))); };
+  const featFx = (path) => parseFx((bCat.feats.find((x) => x.path === path) || {}).note);
+  const offFx = (feat) => parseFx((bCat.officers.find((o) => o.path === feat) || {}).effects);
+  const pct = (x) => `${x > 0 ? '+' : ''}${Math.abs(x) >= 100 ? Math.round(x) : +x.toFixed(1)}%`;
+  const total = (e, n) => (Math.pow(1 + e.val / 100, Math.min(n, e.max)) - 1) * 100;
+  function fxLines(fx, n) {
+    return el('div', { class: 'fx' }, ...fx.map((e) => el('div', {}, `${e.label} ${pct(e.val)}`, n > 1 && e.max > 1 ? ` × ${Math.min(n, e.max)} = ${pct(total(e, n))}` : '',
+      e.cond ? `, ${e.cond}` : '', ' ', el('span', { class: 'dur' }, e.dur > 0 ? `${e.dur} s` : 'permanent'))));
+  }
+  // Elite multiplier -> hidden boost stacks (dn_host_loadout.cpp ApplyElite).
+  const eliteStacks = (mult) => (mult > 1 ? { hp: Math.min(99, Math.round(Math.log(mult) / Math.log(1.1))),
+    dmg: Math.min(99, Math.round(Math.log(1 + (mult - 1) / 4) / Math.log(1.1))) } : { hp: 0, dmg: 0 });
+  // Every permanent, unconditional effect on the ship -> stat -> factor.
+  function bFactors() {
+    const d = bCur, f = {}, mul = (fx, n) => { for (const e of fx) if (!e.cond && !e.dur && e.stat !== 'health') f[e.stat] = (f[e.stat] || 1) * (1 + total(e, n) / 100); };
+    const es = eliteStacks(d.mult || 1);
+    mul(featFx('HVC_Boost_Def_HpInc_Large'), es.hp); mul(featFx('HVC_Boost_Off_DmgInc_Large'), es.dmg);
+    for (const x of d.feats) mul(featFx(x.name), x.stacks);
+    for (const o of d.officers || []) mul(offFx(o), 1);
+    return f;
+  }
+  const num = (x) => (Math.abs(x) >= 100 ? Math.round(x).toLocaleString('en-US') : String(+x.toFixed(2)));
+  const bc = (base, calc, unit = '') => (Math.abs(calc - base) < 1e-9 ? [num(base) + unit] : [num(base) + unit, ' ', el('span', { class: 'calc' }, `(${num(calc)}${unit})`)]);
+
+  // Grid picker: items {key, label, sub, img, imgCls, swatch, tip, group}; key '' = keep/empty.
+  let gpState = null;
+  function gpOpen(title, items, cur, onPick, allItems) {
+    gpState = { items, cur, onPick, allItems };
+    $('gpTitle').textContent = title; $('gpSearch').value = ''; $('gpAll').checked = false;
+    $('gpAllL').classList.toggle('hidden', !allItems);
+    $('gp').classList.remove('hidden'); gpRender(); $('gpSearch').focus();
+  }
+  function gpRender() {
+    const g = gpState, q = $('gpSearch').value.trim().toLowerCase(), box = $('gpGrid');
+    const items = $('gpAll').checked && g.allItems ? g.allItems() : g.items;
+    box.replaceChildren();
+    let group = null, n = 0;
+    for (const it of items) {
+      if (q && it.key !== '' && it.key !== 0 && !(`${it.label} ${it.sub || ''} ${it.tip || ''} ${it.find || ''}`).toLowerCase().includes(q)) continue;
+      if ((it.group || '') !== group) { group = it.group || ''; if (group) box.append(el('div', { class: 'gphead' }, group)); }
+      const t = el('div', { class: 'tile' + (String(it.key) === String(g.cur) ? ' on' : ''), title: it.tip || it.label, onclick: () => { $('gp').classList.add('hidden'); g.onPick(it.key); } },
+        it.swatch || (it.icoEl ? it.icoEl() : it.img !== undefined ? ico(it.img, it.imgCls || '') : null), el('div', {}, it.label), it.sub ? el('div', { class: 'sub' }, it.sub) : null,
+        it.stats && it.stats.length ? el('div', { class: 'ts' }, ...it.stats.map((l) => el('div', {}, ...(Array.isArray(l) ? [el('b', {}, l[0]), ' ' + l[1]] : [l])))) : null);
+      box.append(t); n++;
+    }
+    if (!n) box.append(el('div', { class: 'muted' }, 'Nothing matches.'));
+  }
+  $('gpSearch').oninput = gpRender; $('gpAll').onchange = gpRender;
+  $('gpClose').onclick = () => $('gp').classList.add('hidden');
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('gp').classList.contains('hidden')) $('gp').classList.add('hidden'); });
+
+  function bSlot(k, label, imgEl, onclick, ...more) {
+    return el('div', { class: 'slotbtn', onclick }, imgEl, el('div', { style: 'min-width:0' }, k ? el('div', { class: 'k' }, k) : null, el('div', { class: 'n' }, label), ...more));
+  }
+  // (-)[n](+): writes through set(n), clamped to min..max.
+  function step(box, min, max, get, set) {
+    const inp = el('input', { type: 'number', min: String(min), max: String(max), value: String(get()) });
+    const put = (n) => { n = Math.max(min, Math.min(max, Math.round(+n || 0))); inp.value = String(n); if (n !== get()) set(n); };
+    inp.onchange = () => put(inp.value);
+    box.replaceChildren(el('button', { type: 'button', onclick: (e) => { e.stopPropagation(); put(get() - 1); } }, '−'), inp,
+      el('button', { type: 'button', onclick: (e) => { e.stopPropagation(); put(get() + 1); } }, '+'));
+    return box;
+  }
+  // A picture rendered from the client's mesh (dnViewer.thumb), filled in when ready.
+  function thumbIco(models, paint) {
+    const i = el('img', { class: 'ico', alt: '' });
+    if (window.dnViewer && models.length) window.dnViewer.thumb(models, paint).then((u) => { if (u) i.src = u; });
+    return i;
+  }
+  const kvTable = (rows) => el('table', {}, el('tbody', {}, ...rows.map(([k, ...v]) => el('tr', {}, el('td', { class: 'muted' }, k), el('td', {}, ...v)))));
+  const NONE = (what) => ART + 'vanity/UI_Vanity_' + what + '.png';
+
+  function bRender() {
+    const d = bCur;
+    if (!bBase(d.base)) d.base = bDeriveBase(d.tier, d.class, d.manufacturer);
+    const b = bBase(d.base), src = bShipArt(b);
+    $('bShipImg').src = src; $('bShipImg').style.visibility = src ? '' : 'hidden';
+    $('bShipName').textContent = b ? bHullName(b) : '—';
+    $('bShipSub').textContent = `${clsLabel(d.class)} · ${manName(d.manufacturer)}${b ? ' · Tier ' + b.tier : ''}`;
+    if (b) d.weapons[0] = b.weapons[0] || '';
+    $('bName').value = d.name || ''; $('bNotes').value = d.notes || '';
+    step($('bMultS'), 1, bKind === 'boss' ? 10 : 3, () => bCur.mult, (n) => { bCur.mult = n; bRenderCombat(); if (!bCur.paint) bRenderView(); });
+    step($('bWeightS'), 0, 100, () => bCur.weight ?? 1, (n) => { bCur.weight = n; });
+    bRenderCombat(); bRenderCos();
+  }
+
+  // Combat tab: 5 columns. Row 1 stats / main gun / secondary gun / - ;
+  // modules (main + extra per slot); Officer Briefings; boosts down the right.
+  const MOD_SLOTS = [['primary', 'Primary'], ['secondary', 'Secondary'], ['perimeter', 'Perimeter'], ['internal', 'Internal']];
+  function bRenderCombat() {
+    const cell = (title, ...kids) => el('div', { class: 'cell' }, title ? el('h3', {}, title) : null, ...kids);
+    $('bCombat').replaceChildren(
+      cell('Ship stats', bStatsTable()), cell('Main gun', bWeaponCard(0)), cell('Secondary gun', bWeaponCard(1)),
+      bKind === 'boss' ? cell('Marker', bMarkerSlot()) : el('div', {}), bBoostsCell(),
+      el('div', { class: 'rowh' }, 'Modules'),
+      ...MOD_SLOTS.map(([, label], k) => cell(label, bModSlot(k))),
+      ...MOD_SLOTS.map((_, k) => cell('', bModSlot(4 + k))),
+      el('div', { class: 'rowh' }, 'Officer Briefings'),
+      ...OFF_TYPES.map((t) => cell(t[1], bOfficerSlot(t))));
+  }
+  function bStatsTable() {
+    const p = bPawn(bBase(bCur.base)), f = bFactors(), g = (k) => f[k] || 1, rows = [];
+    const row = (k, ...v) => rows.push([k, ...v]);
+    if (p.hull) row('Hull', ...bc(p.hull, p.hull * g('maxhealth')));
+    if (p.regen) row('Hull regen', ...bc(p.regen, p.regen * g('pawnhealthregenerationmodifier')));
+    if (p.regen_delay) row('Hull regen delay', ...bc(p.regen_delay, p.regen_delay * g('pawnhealthregenerationdelaymodifier'), ' s'));
+    if (p.energy) row('Energy', ...bc(p.energy, p.energy * g('pawnmaxenergymodifier')));
+    if (p.energy_regen) row('Energy regen', ...bc(p.energy_regen, p.energy_regen));
+    const shown = new Set(['maxhealth', 'pawnhealthregenerationmodifier', 'pawnhealthregenerationdelaymodifier', 'pawnmaxenergymodifier']);
+    for (const k of ['pawndamagemodifier', 'pawnabilitydamagemodifier', 'pawndamageresistance', ...Object.keys(f)]) {
+      if (shown.has(k)) continue; shown.add(k);
+      row(statLabel(k), ...bc(100, 100 * g(k), '%'));
+    }
+    return el('div', { class: 'wcard fixed' }, kvTable(rows));
+  }
+
+  // Weapons: [primary, secondary] WP_*_BP; '' secondary = none. The primary
+  // follows the hull's weight (H/M/L), the secondary is per class.
+  const bWpName = (w) => { const a = bArt.weapons[w]; return a && a.name && !/^WP_/.test(a.name) ? a.name : w.replace(/^WP_|_BP$/g, ''); };
+  const bClassOf = (b) => b.hull_line.replace(/(Heavy|Medium|Light)$/, '');
+  function bWpItems(i, all) {
+    const b = bBase(bCur.base); if (!b) return [];
+    const wl = (b.hull_line.match(/(Heavy|Medium|Light)$/) || [''])[0][0], cur = bCur.weapons[i] || '';
+    const list = (bCat.weapons || []).filter((w) => w.path === cur || (w.class === bClassOf(b) && w.slot === (i ? 'secondary' : 'primary') &&
+      (i || all || w.note === wl) && (all || w.tier === b.tier || w.tier === b.tier - 1)))
+      .sort((x, y) => y.tier - x.tier || bWpName(x.path).localeCompare(bWpName(y.path)));
+    const items = list.map((w) => { const a = bArt.weapons[w.path] || {};
+      return { key: w.path, label: bWpName(w.path), img: a.icon ? ART + a.icon : '', stats: bWpMini(a), tip: [a.desc, ...(a.tips || []).filter((t) => t[1]).map(([n, v]) => `${n}: ${v}`)].filter(Boolean).join('\n'), find: w.path }; });
+    return i ? [{ key: '', label: 'None', img: '' }, ...items] : items;
+  }
+  function bWpMini(a) {
+    const s = a.stats || {}, out = [];
+    if (s.m_damageLow || s.m_damageHigh) out.push(['Damage', [s.m_damageLow, s.m_damageMedium, s.m_damageHigh].map((x) => num(x || 0)).join(' / ')]);
+    if (s.m_maxRange) out.push(['Range', Math.round(s.m_maxRange / 100) + ' m']);
+    for (const [n, v] of (a.tips || []).filter((t) => t[1])) if (out.length < 4) out.push([n, String(v)]);
+    return out;
+  }
+  // The main gun comes with the hull (display only); the secondary is picked.
+  function bWeaponCard(i) {
+    const w = bCur.weapons[i] || '', pick = i ? () => gpOpen('Secondary gun', bWpItems(i, false), w,
+      (k) => { bCur.weapons[i] = k; bRenderCombat(); }, () => bWpItems(i, true)) : null;
+    if (!w) return el('div', { class: 'wcard' + (i ? '' : ' fixed'), onclick: pick }, ico(''), el('div', {}, el('b', {}, 'None')));
+    const a = bArt.weapons[w] || { tips: [], stats: {} }, s = a.stats || {}, dmg = bFactors().pawndamagemodifier || 1, rows = [];
+    const add = (k, ...v) => { if (v.length && v[0] !== undefined && v[0] !== null && v[0] !== '' && v[0] !== 0) rows.push([k, ...v.map((x) => (typeof x === 'number' ? String(x) : x))]); };
+    for (const [n, v] of a.tips || []) if (v) add(n, String(v));
+    const trio = (...v) => v.flatMap((x, k) => [k ? ' / ' : '', ...bc(x || 0, (x || 0) * dmg)]);
+    if (s.m_damageLow || s.m_damageHigh) add('Damage far / mid / close', ...trio(s.m_damageLow, s.m_damageMedium, s.m_damageHigh));
+    if (s.m_lowHealing || s.m_highHealing) add('Healing far / mid / close', `${s.m_lowHealing} / ${s.m_mediumHealing} / ${s.m_highHealing}`);
+    if (s.m_maxRange) add('Max range', Math.round(s.m_maxRange / 100) + ' m');
+    if (s.m_damageRadius) add('Splash radius', Math.round(s.m_damageRadius / 100) + ' m');
+    if (!(a.tips || []).length) { add('Magazine', s.m_ammoMagazinSize); if (s.m_ammoMagazinReloadTime) add('Reload', s.m_ammoMagazinReloadTime + ' s'); }
+    if (s.m_initialSpeed) add('Projectile speed', Math.round(s.m_initialSpeed / 100) + ' m/s');
+    if (s.m_ignoreShields) add('Ignores shields', 'yes');
+    return el('div', { class: 'wcard' + (i ? '' : ' fixed'), title: a.desc || '', onclick: pick }, ico(a.icon ? ART + a.icon : ''), el('div', { style: 'min-width:0' }, el('b', {}, bWpName(w)), kvTable(rows)));
+  }
+
+  // Modules: positional [Primary, Secondary, Perimeter, Internal, Extra 1-4]; '' = none.
+  const ROMAN = { I: 1, II: 2, III: 3, IV: 4, V: 5 };
+  const bModTier = (m) => ROMAN[((bModArt(m.path).name || '').match(/\b(I|II|III|IV|V)$/) || [])[1]] || m.tier || 0;
+  const bModSlotOf = (p) => (bCat.modules.find((m) => m.path === p) || {}).slot;
+  function bSlotMods(list) {
+    // Mains first by slot type, the rest into the extra under their slot, else any free extra.
+    const out = Array(8).fill(''), S = MOD_SLOTS.map((s) => s[0]), rest = [];
+    for (const p of list.filter(Boolean)) { const s = S.indexOf(bModSlotOf(p)); if (s >= 0 && !out[s]) out[s] = p; else rest.push([p, s]); }
+    for (const [p, s] of rest) { const j = s >= 0 && !out[4 + s] ? 4 + s : out.indexOf('', 4); if (j >= 4) out[j] = p; }
+    return out;
+  }
+  function bModItems(i, all) {
+    const b = bBase(bCur.base), t = b ? b.tier : 5, slot = i < 4 ? MOD_SLOTS[i][0] : '', cur = bCur.modules[i] || '';
+    const order = MOD_SLOTS.map((s) => s[0]);
+    const mods = bCat.modules.filter((m) => m.path === cur || (all ? true : m.class === bCur.class && (!slot || m.slot === slot) && [t, t - 1].includes(bModTier(m))))
+      .sort((x, y) => order.indexOf(x.slot) - order.indexOf(y.slot) || bModLabel(x).localeCompare(bModLabel(y)));
+    return [{ key: '', label: 'None', img: '' }, ...mods.map((m) => {
+      const a = bModArt(m.path);
+      const st = (a.tips || []).filter((x) => x[1] !== '' && x[1] != null).slice(0, 3).map(([n, v]) => [n, String(v)]);
+      if (a.cooldown && !st.some((x) => /cooldown/i.test(x[0]))) st.push(['Cooldown', a.cooldown + ' s']);
+      return { key: m.path, label: bModLabel(m), sub: all ? clsLabel(m.class) : '', find: m.name, img: a.icon ? ART + a.icon : '', tip: tipText(a), stats: st,
+        group: (MOD_SLOTS.find((s) => s[0] === m.slot) || [0, 'Other'])[1] };
+    })];
+  }
+  function bModStats(a) {
+    const rows = (a.tips || []).filter((t) => t[1] !== '' && t[1] != null).map(([n, v]) => [n, String(v)]);
+    const has = (re) => rows.some((r) => re.test(r[0]));
+    if (a.cooldown && !has(/cooldown/i)) rows.push(['Cooldown (s)', String(a.cooldown)]);
+    if (a.active && !has(/duration/i)) rows.push(['Duration (s)', String(a.active)]);
+    if (a.range && !has(/range/i)) rows.push(['Range (m)', String(Math.round(a.range / 100))]);
+    return rows.length ? kvTable(rows) : null;
+  }
+  function bModSlot(i) {
+    const p = bCur.modules[i] || '', a = bModArt(p);
+    const s = bSlot(i < 4 ? '' : 'Extra ' + MOD_SLOTS[i - 4][1], p ? bModName(p) : 'None', ico(a.icon ? ART + a.icon : ''),
+      () => gpOpen(i < 4 ? MOD_SLOTS[i][1] : 'Extra', bModItems(i, false), p, (k) => { bCur.modules[i] = k; bRenderCombat(); }, () => bModItems(i, true)),
+      p ? bModStats(a) : null);
+    if (p) s.title = a.desc || '';
+    return s;
+  }
+
+  const OFF_TYPES = [['com', 'Communications'], ['eng', 'Engineering'], ['nav', 'Navigation'], ['wpn', 'Weapons']];
+  function bOfficerSlot([type, label]) {
+    const cur = bCur.officers.find((o) => (bCat.officers.find((x) => x.path === o) || {}).slot === type) || '';
+    const a = offArt(cur);
+    const items = [{ key: '', label: 'None', img: '' }, ...bCat.officers.filter((o) => o.slot === type).map((o) => {
+      const oa = offArt(o.path);
+      return { key: o.path, label: offName(o.path), img: oa.icon ? ART + oa.icon : '', tip: tipText(oa), find: o.path, stats: offLines(o.path).map((l) => l.text + (l.dur > 0 ? ` · ${l.dur} s` : '')) };
+    })];
+    return el('div', { class: 'oslot', title: cur ? tipText(a) : '', onclick: () => gpOpen(label, items, cur, (k) => {
+      bCur.officers = bCur.officers.filter((o) => o !== cur); if (k) bCur.officers.push(k); bRenderCombat();
+    }) }, ico(a.icon ? ART + a.icon : ''), el('div', { style: 'min-width:0' }, el('div', {}, el('b', {}, cur ? offName(cur) : 'None')),
+      cur ? el('div', { class: 'fx muted' }, a.desc || '') : null, cur ? offLinesEl(cur) : null));
+  }
+  // Boss HUD marker: DN_QuestMarker_DT rows (fixed icon per row), Spotted (a player's mark) or None.
+  const markName = (k) => { const m = bArt.markers[k]; return k === 'Spotted' ? 'Spotted' : k === 'None' ? 'None' : (m && m.text) || (k || 'HostileTarget').replace(/([a-z])([A-Z])/g, '$1 $2'); };
+  const markImg = (k) => { const m = bArt.markers[k || 'HostileTarget']; return m && m.icon ? ART + m.icon : ''; };
+  function bMarkerSlot() {
+    const cur = bCur.marker || '';
+    const items = [{ key: '', label: markName('HostileTarget'), img: markImg('') },
+      ...Object.keys(bArt.markers).filter((k) => k !== 'HostileTarget').sort().map((k) => ({ key: k, label: markName(k), img: markImg(k), find: k })),
+      { key: 'Spotted', label: 'Spotted', img: '' }, { key: 'None', label: 'None', img: '' }];
+    return bSlot('', markName(cur), ico(cur === 'Spotted' || cur === 'None' ? '' : markImg(cur)),
+      () => gpOpen('Marker', items, cur, (k) => { bCur.marker = k || undefined; bRenderCombat(); }));
+  }
+  function bBoostsCell() {
+    const cats = { defensive: 'Defensive', offensive: 'Offensive', utility: 'Utility' };
+    const items = ['defensive', 'offensive', 'utility', ''].flatMap((cat) => bCat.feats.filter((x) => (x.slot || '') === cat).map((x) => {
+      const a = bArt.feats[x.path] || {};
+      return { key: x.path, label: featTitle(x.path), sub: featSize(x.path), img: a.icon ? ART + a.icon : '', stats: featFx(x.path).map((e) => `${e.label} ${pct(e.val)}${e.max > 1 ? ' per stack' : ''}${e.cond ? ', ' + e.cond : ''}`), tip: [a.desc, ...featFx(x.path).map((e) => `${e.label} ${pct(e.val)} per stack${e.cond ? ', ' + e.cond : ''}`)].filter(Boolean).join('\n'), find: x.path, group: cats[cat] || 'Other' };
+    }));
+    const list = el('div', { class: 'list' });
+    const box = el('div', { class: 'boosts' }, el('div', { class: 'bar' }, 'Boosts', el('span', { class: 'muted' }, String(bCur.feats.length))), list);
+    bCur.feats.forEach((f, i) => {
+      const a = bArt.feats[f.name] || {}, fx = featFx(f.name), max = Math.min(40, Math.max(1, ...fx.map((e) => e.max)));
+      list.append(el('div', { class: 'fcard' }, ico(a.icon ? ART + a.icon : ''),
+        el('div', { class: 'body', title: a.desc || '', onclick: () => gpOpen('Boost', items, f.name, (k) => { f.name = k; bRenderCombat(); }) },
+          el('b', {}, featTitle(f.name)), featSize(f.name) ? el('span', { class: 'muted' }, ' ' + featSize(f.name)) : null, fxLines(fx, f.stacks),
+          max > 1 ? step(el('div', { class: 'step', style: 'margin-top:6px;max-width:140px', onclick: (e) => e.stopPropagation() }), 1, max, () => f.stacks, (n) => { f.stacks = n; bRenderCombat(); }) : null),
+        el('button', { class: 'btn', onclick: () => { bCur.feats.splice(i, 1); bRenderCombat(); } }, '✕')));
+    });
+    list.append(el('div', { class: 'add', onclick: () => gpOpen('Boost', items, '', (k) => { bCur.feats.push({ name: k, stacks: 1 }); bRenderCombat(); }) }, el('b', {}, '+'), 'Add boost'));
+    return box;
+  }
+
+  // Cosmetics. Unset coating: bosses fly gold (x5 and up red-gold), hunters their own paint.
+  const paintByNote = (note) => (bCat.paints.find((p) => p.note === note) || {}).id || 0;
+  function bShownPaint() {
+    if (bCur.paint) return bArt.paints[bCur.paint];
+    if (bKind === 'boss') return bArt.paints[paintByNote((bCur.mult || 1) >= 5 ? 'VAN_PN_Red_Gold_DA' : 'VAN_PN_Dev_Gold_DA')];
+    return null;
+  }
+  const PART_SLOTS = [['forecastle', 'Forecastle'], ['hull', 'Hull'], ['bridge', 'Bridge'], ['stern', 'Stern']];
+  // A real picture: the market icon unless it is a generic UI_Vanity_ one, else the decoded texture.
+  function bVanPic(id) {
+    const f = bArt.vanity[id];
+    if (f && !/^UI_Vanity_/.test(f)) return ART + 'vanity/' + f;
+    return bArt.previews[id] ? ART + bArt.previews[id] : f ? ART + 'vanity/' + f : '';
+  }
+  const bModel = (m, pattern) => ({ glb: ART + m.glb, mats: bPatMats(m.mats, pattern).map((x) => ({ d: x.d ? ART + x.d : '', mc: x.mc ? ART + x.mc : '' })) });
+  // Hull pattern = colour masks swapping the base's _ID01_/_ID02_ masks.
+  function bPatMats(mats, pid) {
+    const p = pid && bArt.patterns[pid];
+    if (!p) return mats;
+    return mats.map((x) => {
+      const id = ((x.mc || '').match(/_(ID0[12])_/) || [])[1];
+      // GUESS: a mask with no ID token covers every material of the hull.
+      const r = (id && p.mc[id]) || p.mc[''];
+      return r ? { ...x, mc: r } : x;
+    });
+  }
+  const bBaseModel = () => { const b = bBase(bCur.base); return b && bArt.models.base[bLineKey(b)]; };
+  function bVanPicIco(k, id) {
+    // Hull patterns and emblems render from the mesh; decals and shared patterns use their texture.
+    const bm = bBaseModel();
+    if (k === 'pattern' && bArt.patterns[id] && bm) return thumbIco([bModel(bm, id)], bShownPaint());
+    if (k === 'emblem' && bArt.models.emblems[id]) return thumbIco([bModel(bArt.models.emblems[id])], bShownPaint());
+    return ico(bVanPic(id));
+  }
+  function bRenderCos() {
+    const box = $('bCos'); box.replaceChildren();
+    const b = bBase(bCur.base), line = b ? bLineKey(b) : '';
+    const paint = bCat.paints.find((x) => x.id === bCur.paint);
+    box.append(bSlot('Paint', paint ? paint.name : 'None', swatch(bCur.paint) || ico(NONE('Coating')), () => gpOpen('Paint',
+      [{ key: 0, label: 'None', img: NONE('Coating') }, ...bCat.paints.map((x) => ({ key: x.id, label: x.name, find: x.note, swatch: swatch(x.id) || ico('') }))],
+      bCur.paint, (k) => { bCur.paint = +k; bRenderCos(); })));
+    const fits = (k, x) => k !== 'pattern' || !bArt.patterns[x.id] || bArt.patterns[x.id].line === line;
+    for (const [k, label, list, none] of [['pattern', 'Pattern', bCat.patterns, 'Pattern'], ['decal', 'Decal', bCat.decals, 'Decal'], ['emblem', 'Emblem', bCat.emblems, 'Emblem']]) {
+      const cur = list.find((x) => x.id === bCur[k]);
+      const items = (all) => [{ key: 0, label: 'None', img: NONE(none) }, ...list.filter((x) => all || x.id === bCur[k] || fits(k, x)).map((x) => ({ key: x.id, label: x.name.trim(), find: x.note, icoEl: () => bVanPicIco(k, x.id) }))];
+      box.append(bSlot(label, cur ? cur.name : 'None', cur ? bVanPicIco(k, cur.id) : ico(NONE(none)), () => gpOpen(label, items(false),
+        bCur[k], (v) => { bCur[k] = +v; bRenderCos(); }, k === 'pattern' ? () => items(true) : null)));
+    }
+    const pbox = $('bParts'); pbox.replaceChildren();
+    PART_SLOTS.forEach(([slot, label], i) => {
+      const cur = bCat.parts.find((x) => x.id === bCur.parts[i]), pic = (id) => (bArt.models.parts[id] ? thumbIco([bModel(bArt.models.parts[id])], bShownPaint()) : ico(bVanPic(id)));
+      const items = [{ key: 0, label: 'None', img: NONE(label) }, ...bCat.parts.filter((x) => x.slot === slot && x.class === (b ? b.hull_line : '') && x.name.trim() !== 'None').map((x) => ({ key: x.id, label: x.name, find: x.note, icoEl: () => pic(x.id) }))];
+      pbox.append(bSlot(label, cur ? cur.name : 'None', cur ? pic(cur.id) : ico(NONE(label)), () => gpOpen(label, items, bCur.parts[i], (v) => { bCur.parts[i] = +v; bRenderCos(); })));
+    });
+    bRenderView();
+  }
+  function bRenderView() {
+    if ($('bPaneCos').classList.contains('hidden') || !window.dnViewer) return;
+    // Parts sit on the base hull; the camera stays unless the hull changes.
+    const bm = bBaseModel(), models = [...(bm ? [bModel(bm, bCur.pattern)] : []), ...bCur.parts.filter(Boolean).map((id) => bArt.models.parts[id]).filter(Boolean).map((m) => bModel(m))];
+    window.dnViewer.show($('bView'), models, bShownPaint(), bCur.base);
+  }
+  function bTab(cos) {
+    $('bTabCombat').classList.toggle('on', !cos); $('bTabCos').classList.toggle('on', cos);
+    $('bPaneCombat').classList.toggle('hidden', cos); $('bPaneCos').classList.toggle('hidden', !cos);
+    if (cos) bRenderView();
+  }
+  document.addEventListener('dnviewer', () => { if (bCur) bRenderView(); });
+  $('bTabCombat').onclick = () => bTab(false); $('bTabCos').onclick = () => bTab(true);
+  $('bName').oninput = () => { if (bCur) bCur.name = $('bName').value; };
+  $('bNotes').oninput = () => { if (bCur) bCur.notes = $('bNotes').value; };
+
+  // Drafts: closing without saving keeps the edit (localStorage) until saved or reverted.
+  const draftKey = (kind, d, preset) => (d ? `${kind}:${d.id}` : `${kind}:new:${preset.tier}/${preset.manufacturer}/${preset.class}/${preset.stier}`);
+  const saveDrafts = () => localStorage.setItem('bDrafts', JSON.stringify(bDrafts));
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  function bOpen(kind, d, preset) {
+    bKind = kind; bKey = draftKey(kind, d, preset);
+    let o = clone(d || { id: 0, name: '', tier: 'legendary', class: 'Dreadnought', manufacturer: 'JupiterArms', base: '',
+      mult: kind === 'boss' ? 3 : 1, weight: 1, modules: [], weapons: [], paint: 0, pattern: 0, decal: 0, emblem: 0, feats: [], parts: [0, 0, 0, 0], officers: [], notes: '', ...preset });
+    if (preset) { o.base = bDeriveBase(o.tier, o.class, o.manufacturer, o.stier); delete o.stier; }
+    const b = bBase(o.base) || bBase(bDeriveBase(o.tier, o.class, o.manufacturer));
+    // The default build is the base ship itself: its guns and modules, no parts.
+    const mods = o.modules || [];
+    o.modules = mods.length > 4 || mods.includes('') ? Array.from({ length: 8 }, (_, i) => mods[i] || '') : bSlotMods(mods.length ? mods : (b ? b.modules : []));
+    o.weapons = o.weapons && o.weapons.length ? [o.weapons[0] || '', o.weapons[1] || ''] : b ? [b.weapons[0] || '', b.weapons[1] || ''] : ['', ''];
+    o.feats = o.feats || []; o.officers = o.officers || []; o.parts = [0, 1, 2, 3].map((i) => (o.parts || [])[i] || 0);
+    bOrig = o; bOrigId = d ? d.id : 0;
+    bCur = clone(bDrafts[bKey] || o);
+    $('bEdit').classList.remove('hidden');
+    $('bWeightL').classList.toggle('hidden', kind !== 'hunter');
+    $('bDelete').disabled = !d && !bDrafts[bKey];
+    bTab(false); bRender();
+  }
+  async function bSend(method, path, body) {
+    const res = await fetch('/admin/api' + path, { method, headers: { 'X-Admin-Key': key || '', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    const text = await res.text();
+    if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m); }
+    return JSON.parse(text);
+  }
+  // Result shows in the button itself: green with the outcome, red with the error, then back.
+  function flash(btn, ok, text) {
+    clearTimeout(btn._t); if (btn._label === undefined) btn._label = btn.textContent;
+    btn.classList.toggle('ok', ok); btn.classList.toggle('bad', !ok); btn.textContent = text; btn.title = ok ? '' : text;
+    btn._t = setTimeout(() => { btn.classList.remove('ok', 'bad'); btn.textContent = btn._label; btn.title = ''; }, ok ? 2000 : 6000);
+  }
+  const bPath = () => (bKind === 'boss' ? '/bosses/' : '/hunters/');
+  const bReload = () => (bKind === 'boss' ? loadBosses() : loadHunters());
+  const bRedraw = () => (bKind === 'boss' ? bTree() : kTree('hunter', $('hTree'), 'Hunters', hDefs));
+  function bClose() {
+    if (!bCur) return;
+    if (JSON.stringify(bCur) !== JSON.stringify(bOrig)) bDrafts[bKey] = bCur; else delete bDrafts[bKey];
+    saveDrafts(); bCur = null; $('bEdit').classList.add('hidden'); bRedraw();
+  }
+  $('bCancel').onclick = bClose;
+  async function bSaveNow() {
+    const d = clone(bCur);
+    if (bKind !== 'hunter') delete d.weight;
+    const r = await bSend('PUT', bPath() + (bOrigId || 0), d);
+    delete bDrafts[bKey];
+    bOrigId = bCur.id = r.id; bKey = `${bKind}:${r.id}`; delete bDrafts[bKey]; saveDrafts();
+    bOrig = clone(bCur); $('bDelete').disabled = false;
+    await bReload();
+  }
+  $('bSave').onclick = async () => {
+    try { await bSaveNow(); flash($('bSave'), true, 'Saved'); } catch (e) { if (e.message !== 'forbidden') flash($('bSave'), false, e.message); }
+  };
+  $('bRevert').onclick = () => { delete bDrafts[bKey]; saveDrafts(); bCur = clone(bOrig); flash($('bRevert'), true, 'Reverted'); bRender(); };
+  $('bDelete').onclick = async () => {
+    if (!bOrigId) { delete bDrafts[bKey]; saveDrafts(); bCur = null; $('bEdit').classList.add('hidden'); bRedraw(); return; }
+    if (!confirm(`Delete ${bCur.name || bKind}?`)) return;
+    try { await bSend('DELETE', bPath() + bOrigId); delete bDrafts[bKey]; saveDrafts(); bCur = null; $('bEdit').classList.add('hidden'); bReload(); }
+    catch (e) { if (e.message !== 'forbidden') flash($('bDelete'), false, e.message); }
+  };
+  // Spawn = save, then send it to every running match at the current multiplier.
+  $('bSpawn').onclick = async () => {
+    try { await bSaveNow(); const r = await bSend('POST', bPath() + bOrigId + '/spawn', bKind === 'boss' ? { mult: bCur.mult } : {}); flash($('bSpawn'), true, 'Sent'); $('bSpawn').title = r.sent; }
+    catch (e) { if (e.message !== 'forbidden') flash($('bSpawn'), false, e.message); }
+  };
+
+  // --- hunters (admin_hunters.go) -----------------------------------------
+  async function loadHunters() {
+    await bLoadCat();
+    hDefs = (await api('/hunters')).hunters;
+    kTree('hunter', $('hTree'), 'Hunters', hDefs);
+  }
+
+  // --- boats, fighters and waves (admin_waves.go) -------------------------
+  const wGroups = [
+    ['Fighters', [['swarm_default', 'Per /swarm', 1, 60], ['swarm_max', 'Most per /swarm', 1, 60]]],
+    ['Boats', [['squad_default', 'Per /squad', 1, 20], ['squad_max', 'Most per /squad', 1, 20], ['team', 'Team', 0, 4]]],
+    ['Hunters', [['hunters_default', 'Per player', 1, 12]]],
+    ['Wave', [['wave_squad', 'Boats', 0, 20], ['wave_swarm', 'Fighters', 0, 60], ['wave_hunters', 'Hunters', 0, 12]]],
+  ];
+  let wDefaults = null, wCur = null;
+  function wFill(c) {
+    wCur = { ...c };
+    $('wFields').replaceChildren(...wGroups.map(([title, fields]) => el('div', { class: 'wc' }, el('h3', {}, title),
+      ...fields.map(([k, label, lo, hi]) => el('div', { class: 'wr', title: `${lo}–${hi}, default ${wDefaults[k]}` }, label,
+        step(el('div', { class: 'step' }), lo, hi, () => wCur[k], (n) => { wCur[k] = n; }))))));
+  }
+  async function loadWaves() { const r = await api('/waves'); wDefaults = r.defaults; wFill(r.config); }
+  $('wReset').onclick = () => { if (wDefaults) { wFill(wDefaults); flash($('wReset'), true, 'Loaded, not saved'); } };
+  $('wSave').onclick = async () => {
+    try { const r = await bSend('PUT', '/waves', wCur); wFill(r.config); flash($('wSave'), true, 'Saved'); }
+    catch (e) { if (e.message !== 'forbidden') flash($('wSave'), false, e.message); }
+  };
+
+  // --- stutters (admin_waves.go, from the mod log) ------------------------
+  async function loadStutters() {
+    const r = await api('/stutters?n=400');
+    const agg = (a) => el('tr', {}, el('td', {}, a.suspect), el('td', {}, fmt(a.count)), el('td', {}, fmt(a.total_ms)), el('td', {}, fmt(a.worst_ms)));
+    fill('sSumRows', (r.by_suspect || []).map(agg), r.error || 'No stutters logged.', 4);
+    fill('sZoneRows', (r.slow_zones || []).map(agg), 'None.', 4);
+    fill('sRows', [...r.events].reverse().map((e) => { const f = e.fields || {};
+      return el('tr', {}, el('td', {}, e.time), el('td', {}, e.match), el('td', {}, fmt(e.ms)), el('td', {}, e.suspect), el('td', {}, f.ours || ''),
+        el('td', {}, f.biggest ? `${f.biggest} (${f.biggest_ms || '?'} ms)` : ''), el('td', {}, f.last_cmd || ''), el('td', {}, f.cmd_age_s || ''), el('td', {}, f.npcs || ''), el('td', {}, f.projectiles || '')); }),
+      r.error || 'No stutters logged.', 10);
+  }
+  $('sRefresh').onclick = () => loadStutters().catch(() => {});
+
   async function loadMatches() {
     const d = await api('/matches');
     fill('matchRows', d.matches.map((m) => {
@@ -659,8 +1590,12 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     if (atBottom || !$('logFollow').checked) out.scrollTop = out.scrollHeight;
   }
 
+  // --- battle viewer (admin_viewer.html, its own full-screen page) ---------
+  // window.open (not a noopener link) so the new tab inherits sessionStorage's key.
+  $('vOpen').onclick = () => window.open('/admin/viewer', '_blank');
+
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, bosses: loadBosses, hunters: loadHunters, waves: loadWaves, stutters: loadStutters, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {
@@ -702,8 +1637,367 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   $('logFilter').onkeydown = (e) => { if (e.key === 'Enter') loadLog(); };
   $('logFollow').onchange = schedule;
 
-  if (key) unlock(); else lock('');
+  // --- Fleet mode -------------------------------------------------------------
+  // Requests go to the launcher frame (postMessage), which fetches them from
+  // /launcher/<path> as the signed-in player. Pictures come after the page has
+  // drawn, a batch at a time (GET /fleet/art); an image waits on its key in data-k.
+  const pending = new Map();
+  let reqSeq = 0;
+  if (FLEET) window.addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || m.dnvReply === undefined) return;
+    const p = pending.get(m.dnvReply); if (!p) return;
+    pending.delete(m.dnvReply);
+    if (m.status >= 200 && m.status < 300) { try { p.ok(JSON.parse(m.body)); } catch (err) { p.no(new Error('bad reply')); } }
+    else p.no(new Error(m.status ? String(m.body || '').replace(/^\{"error":"|"\}\s*$/g, '').trim() || 'error ' + m.status : (m.body || 'launcher offline')));
+  });
+  function papi(path, opts = {}) {
+    return new Promise((ok, no) => {
+      const id = ++reqSeq;
+      pending.set(id, { ok, no });
+      setTimeout(() => { if (pending.delete(id)) no(new Error('timed out')); }, 45000);
+      window.parent.postMessage({ dnv: id, method: opts.method || 'GET', path, body: opts.body || '' }, '*');
+    });
+  }
+  const fArt = {}, fWant = new Set();
+  let fArtBusy = false;
+  function fSet(i, k) {
+    i.removeAttribute('src');
+    if (k && fArt[k]) i.src = fArt[k]; else if (k && !(k in fArt)) { i.dataset.k = k; fWant.add(k); queueMicrotask(fPull); }
+    return i;
+  }
+  const fPic = (k, c) => (k ? fSet(el('img', { class: c || '', alt: '' }), k) : ico('', c === 'ico' ? '' : c || ''));
+  async function fPull() {
+    if (fArtBusy) return;
+    fArtBusy = true;
+    try {
+      while (fWant.size) {
+        const ks = [...fWant].slice(0, 20);
+        ks.forEach((k) => fWant.delete(k));
+        let r = {};
+        try { r = await papi('/fleet/art?k=' + encodeURIComponent(ks.join(','))); } catch (e) { /* left blank */ }
+        for (const k of ks) fArt[k] = r[k] || '';
+        for (const im of document.querySelectorAll('img[data-k]')) {
+          const u = fArt[im.dataset.k];
+          if (u !== undefined) { if (u) im.src = u; im.removeAttribute('data-k'); }
+        }
+      }
+    } finally { fArtBusy = false; }
+  }
+  const fClose = () => window.parent.postMessage({ dnvClose: 1 }, '*');
+  const fMsg = el('span', { class: 'fmsg' });
+  const fHead = [fMsg, el('button', { class: 'btn', onclick: fClose }, 'CLOSE')];
+  let fMsgT = 0;
+  function fSay(t, bad) {
+    fMsg.textContent = t; fMsg.className = 'fmsg' + (bad ? ' bad' : '');
+    clearTimeout(fMsgT); if (!bad) fMsgT = setTimeout(() => { fMsg.textContent = ''; }, 4000);
+  }
+  let D = null, fDefs = [], fCur = null, fTab = 0, fSub = 0, fEd = null, fDel = 0, fDraft = null, fLookD = null, fDraftKey = '';
+  const fTree = () => kTree('fleet', $('fTree'), 'Fleet', fDefs);
+  // The hull's name at the ship's tier (the boss tree's card title), else class and weight.
+  const fHull = (d) => (FLEET.cat.hulls || {})[d.hull_line + 'T' + d.stier] || `${(d.hull_line.match(/(Heavy|Medium|Light)$/) || [''])[0]} ${clsLabel(d.class)}`.trim();
+  // A ship card: gold for a hero ship; a ship in a fleet wears that fleet's
+  // colour (the shown group's fleet first) and its badge, ★ on the flagship.
+  function fCard(d, t) {
+    const grp = (f) => bCat.tiers.find((g) => f.name.startsWith(g.Label));
+    const fl = D.fleets.filter((f) => f.ships.includes(d.id) && grp(f)).sort((a, b) => (grp(b) === t) - (grp(a) === t));
+    const U = (bArt.ui || {}).groups || {}, card = el('div', { class: 'mcard' + (d.hero ? ' hero' : '') + (fl.length ? ' infl' : ''), onclick: () => fOpen(d) });
+    if (fl.length) card.style.setProperty('--fc', ((U[grp(fl[0]).ID] || {}).pal || [])[0] || 'var(--accent)');
+    card.append(...(fl.length ? [el('div', { class: 'fbadges' }, ...fl.map((f) => { const i = fPic((U[grp(f).ID] || {}).img, ''); i.title = f.name; return i; }),
+      fl.some((f) => f.flagship === d.id) ? el('span', { class: 'star', title: 'Flagship' }, '★') : null)] : []),
+    fPic(d.img, 'ico'), el('b', {}, d.name || fHull(d)), el('div', { class: 'muted' }, `Tier ${d.stier}` + (d.loadouts.length > 1 ? ' · A/B' : '')));
+    return card;
+  }
+  async function fInit() {
+    bCat = FLEET.cat; bArt = { ui: FLEET.ui || {} };
+    $('app').classList.remove('hidden');
+    $('tab-fleet').classList.remove('hidden');
+    $('fTree').replaceChildren(el('div', { class: 'bt-h' }, 'Fleet', ...fHead));
+    fSay('Loading…');
+    try { D = await papi('/fleet'); } catch (e) { fSay(e.message, true); return; }
+    fSay('');
+    fDefs = D.ships.map((s) => ({ ...s, stier: s.tier, manufacturer: s.maker }));
+    const act = D.fleets.find((f) => f.active), g = act && bCat.tiers.find((t) => act.name.startsWith(t.Label));
+    if (g) bOpenKeys.add('fleet' + g.ID);
+    fTree();
+  }
+  function fOpen(d) {
+    fCur = d; fTab = 0; fSub = 0; fEd = null; fDel = 0; fDraftKey = '';
+    fSet($('fShipImg'), d.img);
+    $('fShipName').textContent = d.name || fHull(d);
+    $('fShipSub').textContent = `${clsLabel(d.class)} · ${manName(d.manufacturer)} · Tier ${d.stier}`;
+    $('fName').value = '';
+    $('fEdit').classList.remove('hidden');
+    fRender();
+  }
+  const fItem = (id) => (D.items || {})[String(id)];
+  const fSaved = () => D.saved.filter((x) => x.ship === fCur.id);
+  // Tabs: Loadout A/B (Combat | Cosmetics) and the saved loadouts; a saved
+  // one opens in the same editor (fEd), its name in the header.
+  function fRender() {
+    const vs = fCur.loadouts.map((l) => l.variant).sort(), tab = (on, label, fn) => el('button', { class: on ? 'on' : '', onclick: fn }, label);
+    $('fTabs').replaceChildren(...vs.map((v) => tab(fTab === v, 'Loadout ' + 'AB'[v], () => { fTab = v; fEd = null; fRender(); })),
+      tab(fTab === 'lib', `Saved loadouts (${fSaved().length})`, () => { fTab = 'lib'; fEd = null; fRender(); }));
+    const lab = $('fName').parentElement, l = fCur.loadouts.find((x) => x.variant === fTab) || {};
+    const src = fEd ? fEd.fit : fTab === 'lib' ? null : l.fit, key = fEd ? 'e' + fEd.id : 'v' + fTab;
+    const lsrc = fEd || fTab === 'lib' ? null : l.look, cp = (x) => x && JSON.parse(JSON.stringify(x));
+    if (fDraftKey !== key) { fDraft = cp(src); fLookD = cp(lsrc); fDraftKey = key; }
+    const dirty = (!!src && JSON.stringify(src) !== JSON.stringify(fDraft)) || (!!lsrc && JSON.stringify(lsrc) !== JSON.stringify(fLookD)), show = (e, on) => { e.style.visibility = on ? '' : 'hidden'; };
+    lab.firstChild.nodeValue = fEd ? 'Name' : 'Save shown loadout as';
+    show(lab, fTab !== 'lib' || fEd); show($('fSave'), fTab !== 'lib' || fEd); show($('fRevert'), dirty); show($('fApply'), dirty && !fEd);
+    $('fApply').disabled = !!D.online; $('fApply').title = D.online ? 'Close the game first' : '';
+    $('fSave').disabled = dirty && !fEd; $('fSave').title = dirty && !fEd ? 'Apply first' : '';
+    $('fSub').replaceChildren(...(fTab === 'lib' ? [] : [tab(!fSub, 'Combat', () => { fSub = 0; fRender(); }), tab(fSub, 'Cosmetics', () => { fSub = 1; fRender(); })]));
+    $('fSub').classList.toggle('hidden', fTab === 'lib');
+    $('fPane').replaceChildren(fTab === 'lib' && !fEd ? fLib() : fSub && !fEd ? fCos(fLookD) : fCombat(fDraft));
+  }
+  // The 3D view (the boss editor's viewer) when the launcher serves the art
+  // (window.DN_ART, its loopback proxy), else the ship's picture. One host
+  // kept across renders, so one WebGL context.
+  const fVH = el('div', { class: 'fview' });
+  let fArtJ = null;
+  function fViewOf(k) {
+    fVH.querySelectorAll('img, .fspin').forEach((i) => i.remove());
+    const pic = fPic(fCur.img, ''), spin = el('div', { class: 'fspin' });
+    if (!window.DN_ART) fVH.append(pic);
+    else {
+      if (!fVH.querySelector('canvas')) fVH.append(spin);
+      setTimeout(() => fView3D(k, pic).catch(() => {}).finally(() => { if (spin.isConnected) { spin.replaceWith(pic); } }), 0);
+    }
+    return fVH;
+  }
+  async function fView3D(k, pic) {
+    if (!fArtJ) { try { const r = await fetch(DN_ART + 'art.json'); fArtJ = r.ok ? await r.json() : {}; } catch (e) { fArtJ = {}; } }
+    const M = fArtJ.models || {}, base = (M.base || {})[bLineKey(fCur)], U = (x) => (x ? DN_ART + x : '');
+    if (!window.dnViewer || !base || !fCur) return;
+    bArt.patterns = fArtJ.patterns || {};
+    const model = (m, pat) => ({ glb: U(m.glb), mats: bPatMats(m.mats, pat).map((x) => ({ d: U(x.d), mc: U(x.mc) })) });
+    const models = [model(base, k.pattern), ...k.parts.map((id) => (M.parts || {})[id]).filter(Boolean).map((m) => model(m))];
+    await window.dnViewer.show(fVH, models, (fArtJ.paints || {})[k.paint] || null, fCur.id);
+    if (fVH.querySelector('canvas')) fVH.querySelectorAll('img, .fspin').forEach((i) => i.remove());
+  }
+  // A cosmetic's picture: a paint's swatch, else its icon.
+  const fCosIco = (a, w) => (a && a.kind === 'paint' && a.swatch ? el('div', { class: 'swatch' }, ...a.swatch.map((x) => el('i', { style: 'background:' + (x || 'transparent') })))
+    : a && a.icon ? fPic(a.icon, 'ico') : fPic('vanity/UI_Vanity_' + w + '.png', 'ico'));
+  // What a cosmetic slot can take: owned ones of its kind, a part of its slot
+  // and the ship's hull line, a pattern of its line ("all" lifts that).
+  function fPickLook(title, k, field, i, kind, pslot, w) {
+    const pat = (id) => ((fArtJ || {}).patterns || {})[id], line = bLineKey(fCur);
+    const list = (all) => (D.opts || []).filter((o) => o.kind === kind && (kind !== 'part' || (o.slot === pslot && o.class === fCur.hull_line)) &&
+      (all || kind !== 'pattern' || !pat(o.id) || pat(o.id).line === line))
+      .sort((a, b) => ((fItem(a.id) || {}).name || '').localeCompare((fItem(b.id) || {}).name || ''))
+      .map((o) => { const a = fItem(o.id) || {}; return { key: o.id, label: a.name === 'None' ? 'Default' : a.name || String(o.id), icoEl: () => fCosIco(a, w) }; });
+    const opts = (all) => (kind === 'part' ? list(all) : [{ key: 0, label: 'None', icoEl: () => fCosIco(null, w) }, ...list(all)]);
+    const cur = field === 'parts' ? k.parts[i] : k[field];
+    gpOpen(title, opts(false), cur, (v) => { if (field === 'parts') k.parts[i] = +v; else k[field] = +v; fRender(); }, kind === 'pattern' ? () => opts(true) : null);
+    if (kind === 'pattern') $('gpAllL').lastChild.nodeValue = ' all patterns';
+  }
+  // The loadout's appearance in the boss editor's Cosmetics layout; a click
+  // on a slot picks from what the player owns (a hero is its own look).
+  function fCos(k) {
+    if (!k) return el('div', { class: 'muted' }, 'No loadout.');
+    const slot = (label, id, w, pick) => { const a = fItem(id), has = a && a.name && a.name !== 'None';
+      return bSlot(label, has ? a.name : a && a.kind === 'part' ? 'Default' : 'None', fCosIco(has ? a : null, w), fCur.hero ? null : pick); };
+    const parts = PART_SLOTS.map(([sl, label], i) => { let j = k.parts.findIndex((p) => (fItem(p) || {}).slot === sl); if (j < 0) j = i;
+      return slot(label, k.parts[j], label, () => fPickLook(label, k, 'parts', j, 'part', sl, label)); });
+    return el('div', { class: 'cosm' }, fViewOf(k),
+      el('div', {}, el('h3', {}, 'Coating'), el('div', { class: 'slotgrid' }, slot('Paint', k.paint, 'Coating', () => fPickLook('Paint', k, 'paint', 0, 'paint', '', 'Coating')),
+          slot('Pattern', k.pattern, 'Pattern', () => fPickLook('Pattern', k, 'pattern', 0, 'pattern', '', 'Pattern')),
+          slot('Decal', k.decal, 'Decal', () => fPickLook('Decal', k, 'decal', 0, 'decal', '', 'Decal')),
+          slot('Emblem', k.emblem, 'Emblem', () => fPickLook('Emblem', k, 'emblem', 0, 'emblem', '', 'Emblem'))),
+        el('h3', {}, 'Ship parts'), el('div', { class: 'slotgrid' }, ...parts)));
+  }
+  // What a slot can take: owned items of its kind and slot, guns and modules of
+  // the ship's class (a main gun of its weight), at the ship's tier or one
+  // below like the boss editor; "all" lifts the tier filter.
+  function fPick(title, fit, arr, i, kind, slot, main) {
+    const w = (fCur.hull_line.match(/(Heavy|Medium|Light)$/) || [''])[0][0], t = fCur.stier;
+    const list = (all) => (D.opts || []).filter((o) => o.kind === kind && o.slot === slot && (kind === 'officer' || o.class === fCur.class) &&
+      (!main || o.w === w) && (all || kind === 'officer' || !o.tier || o.tier === t || o.tier === t - 1))
+      .sort((a, b) => (b.tier || 0) - (a.tier || 0) || ((fItem(a.id) || {}).name || '').localeCompare((fItem(b.id) || {}).name || ''))
+      .map((o) => { const a = fItem(o.id) || {};
+        return { key: o.id, label: a.name || String(o.id), icoEl: () => fPic(a.icon, 'ico'), tip: a.desc || '',
+          stats: (a.tips || []).filter((x) => x[1] !== '' && x[1] != null).slice(0, 4).map(([n, v]) => [n, String(v)]) }; });
+    const opts = (all) => (main ? list(all) : [{ key: 0, label: 'None', img: '' }, ...list(all)]);
+    const cur = fit[arr][i], on = (D.opts || []).find((o) => o.id === cur || o.id === ((cur | 0x00FF0000) >>> 0));
+    gpOpen(title, opts(false), on ? on.id : cur, (k) => { fit[arr][i] = +k || (fit[arr][i] > 0 ? -1 : fit[arr][i]); fRender(); }, () => opts(true));
+    $('gpAllL').lastChild.nodeValue = ' all tiers';
+  }
+  // The loadout in the boss editor's Combat layout: guns, modules, officers;
+  // a click on a slot picks from what the player owns.
+  function fCombat(fit) {
+    const cell = (title, cls, ...kids) => el('div', { class: 'cell ' + cls }, title ? el('h3', {}, title) : null, ...kids);
+    const tips = (a) => kvTable((a.tips || []).filter((t) => t[1] !== '' && t[1] != null));
+    const gun = (id, i) => { const a = fItem(id), onclick = () => fPick(i ? 'Secondary gun' : 'Main gun', fit, 'weapons', i, 'weapon', i ? 'secondary' : 'primary', !i);
+      return a ? el('div', { class: 'wcard fixed', title: a.desc || '', onclick }, fPic(a.icon, 'ico'), el('div', { style: 'min-width:0' }, el('b', {}, a.name), tips(a)))
+        : el('div', { class: 'wcard fixed', onclick }, ico(''), el('div', {}, el('b', {}, 'None'))); };
+    const mod = (id, k) => { const a = fItem(id), s = bSlot('', a ? a.name : 'None', a ? fPic(a.icon, 'ico') : ico(''),
+      () => fPick(MOD_SLOTS[k][1], fit, 'abilities', k, 'module', MOD_SLOTS[k][0], false), a ? tips(a) : null); if (a) s.title = a.desc || ''; return s; };
+    // Officer slots in the fit: com, weapon, navigation, engineering.
+    const off = (id, t, label) => { const a = fItem(id), k = { com: 0, wpn: 1, nav: 2, eng: 3 }[t];
+      return el('div', { class: 'oslot', title: a ? a.desc || '' : '', onclick: () => fPick(label, fit, 'perks', k, 'officer', t, false) }, a ? fPic(a.icon, 'ico') : ico(''), el('div', { style: 'min-width:0' }, el('div', {}, el('b', {}, a ? a.name : 'None')),
+        a && a.desc ? el('div', { class: 'fx muted' }, a.desc) : null, a && (a.tips || []).length ? el('div', { class: 'fx' }, ...a.tips.filter((t) => t[1]).map(([n, v]) => el('div', {}, `${n}: ${v}`))) : null)); };
+    if (!fit) return el('div', { class: 'muted' }, 'No loadout.');
+    return el('div', { class: 'combat fc ed' },
+      cell('Main gun', 'w2', gun(fit.weapons[0], 0)), cell('Secondary gun', 'w2', gun(fit.weapons[1], 1)),
+      el('div', { class: 'rowh' }, 'Modules'),
+      ...MOD_SLOTS.map(([, label], k) => cell(label, '', mod(fit.abilities[k], k))),
+      el('div', { class: 'rowh' }, 'Officer Briefings'),
+      ...OFF_TYPES.map(([t, label]) => cell(label, '', off(fit.perks[{ com: 0, wpn: 1, nav: 2, eng: 3 }[t]], t, label))));
+  }
+  // An action answers with the library (and a loaded ship's loadouts) only.
+  async function fAct(body) {
+    const d = await papi('/fleet/action', { method: 'POST', body: JSON.stringify(body) });
+    D.saved = d.saved; D.online = d.online; Object.assign(D.items, d.items || {});
+    if (d.ship) { const s = fDefs.find((x) => x.id === d.ship), r = D.ships.find((x) => x.id === d.ship); if (s) s.loadouts = d.loadouts; if (r) r.loadouts = d.loadouts; }
+    fDel = 0; fDraftKey = ''; if (fEd) fEd = D.saved.find((x) => x.id === fEd.id) || null; fRender();
+  }
+  const fDo = (btn, body, done) => fAct(body).then(() => fSay(done), (e) => { fSay(e.message, true); flash(btn, false, e.message); });
+  function fLib() {
+    const list = fSaved(), vs = fCur.loadouts.map((l) => l.variant).sort();
+    if (!list.length) return el('div', { class: 'muted' }, 'Nothing saved for this ship yet. Open Loadout A or B and Save it.');
+    return el('div', { class: 'flib' }, ...list.map((x) => {
+      const f = x.fit, icos = [...f.weapons, ...f.abilities].map((id) => { const a = fItem(id); const i = a ? fPic(a.icon, 'ico') : ico(''); if (a) i.title = a.name; return i; });
+      const b = (label, fn, cls) => { const e = el('button', { class: 'btn' + (cls ? ' ' + cls : '') }, label); e.onclick = () => fn(e); return e; };
+      const acts = [...vs.map((v) => { const e = b('Load to ' + 'AB'[v], (e) => fDo(e, { op: 'apply', id: x.id, variant: v }, `Loaded to Loadout ${'AB'[v]}`), 'on');
+          if (D.online) { e.disabled = true; e.title = 'Close the game first'; } return e; }),
+        ...vs.map((v) => b('Override with ' + 'AB'[v], (e) => fDo(e, { op: 'replace', id: x.id, ship: fCur.id, variant: v }, 'Overridden'))),
+        b('Edit', () => { fEd = x; $('fName').value = x.name; fRender(); }),
+        b(fDel === x.id ? 'Sure?' : 'Delete', (e) => { if (fDel !== x.id) { fDel = x.id; fRender(); return; } fDo(e, { op: 'delete', id: x.id }, 'Deleted'); }, 'danger')];
+      return el('div', { class: 'fl' }, el('div', { class: 'nm' }, el('b', {}, x.name), el('span', { class: 'muted' }, ago(x.created) ? ago(x.created) + ' ago' : '')), el('div', { class: 'icos' }, ...icos), el('div', { class: 'acts' }, ...acts));
+    }));
+  }
+  function fShut() { fCur = null; $('fEdit').classList.add('hidden'); }
+  // ✕ in a saved loadout's editor goes back to the list.
+  const fBack = () => { if (fEd) { fEd = null; $('fName').value = ''; fRender(); } else fShut(); };
+  $('fCancel').onclick = fBack;
+  $('fRevert').onclick = () => { fDraftKey = ''; fRender(); };
+  $('fApply').onclick = () => fAct({ op: 'set', ship: fCur.id, variant: fTab, fit: fDraft, look: fLookD }).then(() => { flash($('fApply'), true, 'Applied'); fSay('Applied to Loadout ' + 'AB'[fTab]); }, (e) => flash($('fApply'), false, e.message));
+  $('fSave').onclick = () => (fEd ? fAct({ op: 'edit', id: fEd.id, name: $('fName').value, fit: fDraft }).then(() => flash($('fSave'), true, 'Saved'), (e) => flash($('fSave'), false, e.message))
+    : fAct({ op: 'save', ship: fCur.id, variant: fTab, name: $('fName').value }).then(() => { flash($('fSave'), true, 'Saved'); $('fName').value = ''; }, (e) => flash($('fSave'), false, e.message)));
+  if (FLEET) document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !$('gp').classList.contains('hidden')) return;
+    if (fCur) fBack(); else fClose();
+  });
+
+  if (FLEET) fInit(); else if (key) unlock(); else lock('');
 })();
+</script>
+<script type="importmap">{"imports":{"three":"/admin/art/vendor/three.module.js"}}</script>
+<script type="module">
+// Ship preview: the client's meshes (scripts/gen-admin-art.py --models,
+// CUE4Parse glTF) tinted like the game's colour mask: _MC red/green/blue =
+// custom colours 1-3, black = base, over the grey _D albedo.
+import * as THREE from 'three';
+import { GLTFLoader } from '/admin/art/vendor/GLTFLoader.js';
+import { OrbitControls } from '/admin/art/vendor/OrbitControls.js';
+import { clone } from '/admin/art/vendor/SkeletonUtils.js';
+const loader = new GLTFLoader(), tl = new THREE.TextureLoader(), glbs = new Map(), texs = new Map();
+// GUESS: neutral grey for a ship with no paint to show (its stock paint is not in the art).
+const NEUTRAL = ['#8d939b', '#5d636b', '#b8bcc2', '#3f444b'];
+const vs = 'varying vec2 vUv; varying vec3 vN; void main(){ vUv = uv; vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+const fs = `uniform sampler2D d, mc; uniform float hasD, hasMc; uniform vec3 c0, c1, c2, c3; varying vec2 vUv; varying vec3 vN;
+void main() {
+  vec3 alb = hasD > 0.5 ? texture2D(d, vUv).rgb : vec3(0.5);
+  vec3 m = hasMc > 0.5 ? texture2D(mc, vUv).rgb : vec3(0.0);
+  vec3 tint = c0 * clamp(1.0 - m.r - m.g - m.b, 0.0, 1.0) + c1 * m.r + c2 * m.g + c3 * m.b;
+  vec3 n = normalize(vN);
+  float l = 0.35 + 0.75 * max(dot(n, normalize(vec3(0.4, 0.8, 0.5))), 0.0) + 0.3 * max(dot(n, normalize(vec3(-0.6, -0.3, -0.5))), 0.0);
+  gl_FragColor = vec4(alb * tint * 2.0 * l, 1.0);
+}`;
+const tex = (url) => {
+  if (!url) return null;
+  if (!texs.has(url)) { let ok; const ready = new Promise((r) => { ok = r; }); const t = tl.load(url, ok, undefined, ok); t.ready = ready; t.flipY = false; t.wrapS = t.wrapT = THREE.RepeatWrapping; texs.set(url, t); }
+  return texs.get(url);
+};
+let v = null;
+function init(host) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(32, 1, 0.01, 5000);
+  const ctl = new OrbitControls(cam, renderer.domElement); ctl.enableDamping = true;
+  const root = new THREE.Group(); scene.add(root);
+  host.prepend(renderer.domElement);
+  v = { host, renderer, scene, cam, ctl, root, token: 0, w: 0, h: 0 };
+  const loop = () => {
+    requestAnimationFrame(loop);
+    if (!host.offsetWidth) return;
+    if (host.clientWidth !== v.w || host.clientHeight !== v.h) {
+      v.w = host.clientWidth; v.h = host.clientHeight; renderer.setSize(v.w, v.h, false); cam.aspect = v.w / v.h; cam.updateProjectionMatrix();
+    }
+    ctl.update(); renderer.render(scene, cam);
+  };
+  loop();
+}
+async function build(models, paint) {
+  const cols = (paint && paint.length >= 4 ? paint : NEUTRAL).slice(0, 4).map((c) => new THREE.Color(c || '#808080'));
+  const loaded = await Promise.all(models.map(async (m) => {
+    if (!glbs.has(m.glb)) glbs.set(m.glb, loader.loadAsync(m.glb));
+    try { return { m, g: await glbs.get(m.glb) }; } catch (e) { return null; }
+  }));
+  return loaded.filter(Boolean).map((x) => {
+    const byName = new Map((x.g.parser.json.materials || []).map((mt, i) => [mt.name, i]));
+    const obj = clone(x.g.scene);
+    obj.traverse((o) => {
+      if (!o.isMesh) return;
+      const mats = (Array.isArray(o.material) ? o.material : [o.material]).map((mt) => {
+        const t = x.m.mats[byName.get(mt.name)] || {}, d = tex(t.d), mc = tex(t.mc);
+        return new THREE.ShaderMaterial({ vertexShader: vs, fragmentShader: fs, side: THREE.DoubleSide, uniforms: {
+          d: { value: d }, mc: { value: mc }, hasD: { value: d ? 1 : 0 }, hasMc: { value: mc ? 1 : 0 },
+          c0: { value: cols[0] }, c1: { value: cols[1] }, c2: { value: cols[2] }, c3: { value: cols[3] } } });
+      });
+      o.material = Array.isArray(o.material) ? mats : mats[0];
+      o.frustumCulled = false;
+    });
+    return obj;
+  });
+}
+function frame(cam, root, ctl) {
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return false;
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
+  if (ctl) ctl.target.copy(c);
+  cam.position.copy(c).add(new THREE.Vector3(-1.1, 0.55, 1.0).normalize().multiplyScalar(r * 2.4));
+  cam.lookAt(c); cam.near = r / 100; cam.far = r * 50; cam.updateProjectionMatrix();
+  return true;
+}
+// camKey: the camera is re-aimed only when it changes (a new hull), not on every part or colour.
+async function show(host, models, paint, camKey) {
+  try { if (!v || v.host !== host) init(host); } catch (e) { const m = host.querySelector('#bViewMsg'); if (m) m.textContent = 'WebGL: ' + e.message; return; }
+  const token = ++v.token, msg = host.querySelector('#bViewMsg');
+  if (msg) msg.textContent = models.length ? '…' : '—';
+  const objs = await build(models, paint);
+  if (token !== v.token) return;
+  v.root.clear(); objs.forEach((o) => v.root.add(o));
+  if ((camKey === undefined || camKey !== v.camKey) && frame(v.cam, v.root, v.ctl)) v.camKey = camKey;
+  if (msg) msg.textContent = objs.length ? '' : '—';
+}
+// Picker pictures: one offscreen renderer, one render at a time, cached by input.
+let tv = null, tchain = Promise.resolve();
+const thumbs = new Map();
+function thumb(models, paint) {
+  const k = JSON.stringify([models, paint]);
+  if (!thumbs.has(k)) {
+    const p = tchain.then(async () => {
+      if (!tv) {
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        renderer.setSize(192, 192, false);
+        tv = { renderer, scene: new THREE.Scene(), cam: new THREE.PerspectiveCamera(32, 1, 0.01, 5000), root: new THREE.Group() };
+        tv.scene.add(tv.root);
+      }
+      const objs = await build(models, paint);
+      tv.root.clear(); objs.forEach((o) => tv.root.add(o));
+      if (!frame(tv.cam, tv.root, null)) return '';
+      await Promise.all([...texs.values()].map((t) => t.ready));
+      tv.renderer.render(tv.scene, tv.cam);
+      return tv.renderer.domElement.toDataURL();
+    }).catch(() => '');
+    tchain = p; thumbs.set(k, p);
+  }
+  return thumbs.get(k);
+}
+window.dnViewer = { show, thumb, snap: () => v && v.renderer.domElement.toDataURL(), state: () => v && { kids: v.root.children.length, w: v.w, h: v.h, cam: v.cam.position.toArray().map(Math.round), gl: !!v.renderer.getContext() } };
+document.dispatchEvent(new Event('dnviewer'));
 </script>
 </body>
 </html>

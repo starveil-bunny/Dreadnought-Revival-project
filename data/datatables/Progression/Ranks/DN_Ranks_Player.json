@@ -1,157 +1,157 @@
 {
   "rows": {
     "0": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fledgling"
     },
     "1": {
-      "m_rankName": "[text]"
+      "m_rankName": "Warchild"
     },
     "2": {
-      "m_rankName": "[text]"
+      "m_rankName": "Battlerookie"
     },
     "3": {
-      "m_rankName": "[text]"
+      "m_rankName": "Disciple"
     },
     "4": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prospect"
     },
     "5": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prodigy I"
     },
     "6": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prodigy II"
     },
     "7": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prodigy III"
     },
     "8": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prodigy IV"
     },
     "9": {
-      "m_rankName": "[text]"
+      "m_rankName": "Prodigy V"
     },
     "10": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Captain I"
     },
     "11": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Captain II"
     },
     "12": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Captain III"
     },
     "13": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Captain IV"
     },
     "14": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Captain V"
     },
     "15": {
-      "m_rankName": "[text]"
+      "m_rankName": "Afariz Captain I"
     },
     "16": {
-      "m_rankName": "[text]"
+      "m_rankName": "Afariz Captain II"
     },
     "17": {
-      "m_rankName": "[text]"
+      "m_rankName": "Afariz Captain III"
     },
     "18": {
-      "m_rankName": "[text]"
+      "m_rankName": "Afariz Captain IV"
     },
     "19": {
-      "m_rankName": "[text]"
+      "m_rankName": "Afariz Captain V"
     },
     "20": {
-      "m_rankName": "[text]"
+      "m_rankName": "Veteran I"
     },
     "21": {
-      "m_rankName": "[text]"
+      "m_rankName": "Veteran II"
     },
     "22": {
-      "m_rankName": "[text]"
+      "m_rankName": "Veteran III"
     },
     "23": {
-      "m_rankName": "[text]"
+      "m_rankName": "Veteran IV"
     },
     "24": {
-      "m_rankName": "[text]"
+      "m_rankName": "Veteran V"
     },
     "25": {
-      "m_rankName": "[text]"
+      "m_rankName": "Bannerman I"
     },
     "26": {
-      "m_rankName": "[text]"
+      "m_rankName": "Bannerman II"
     },
     "27": {
-      "m_rankName": "[text]"
+      "m_rankName": "Bannerman III"
     },
     "28": {
-      "m_rankName": "[text]"
+      "m_rankName": "Bannerman IV"
     },
     "29": {
-      "m_rankName": "[text]"
+      "m_rankName": "Bannerman V"
     },
     "30": {
-      "m_rankName": "[text]"
+      "m_rankName": "Ship Master I"
     },
     "31": {
-      "m_rankName": "[text]"
+      "m_rankName": "Ship Master II"
     },
     "32": {
-      "m_rankName": "[text]"
+      "m_rankName": "Ship Master III"
     },
     "33": {
-      "m_rankName": "[text]"
+      "m_rankName": "Ship Master IV"
     },
     "34": {
-      "m_rankName": "[text]"
+      "m_rankName": "Ship Master V"
     },
     "35": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Master I"
     },
     "36": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Master II"
     },
     "37": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Master III"
     },
     "38": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Master IV"
     },
     "39": {
-      "m_rankName": "[text]"
+      "m_rankName": "Line Master V"
     },
     "40": {
-      "m_rankName": "[text]"
+      "m_rankName": "Dread Master I"
     },
     "41": {
-      "m_rankName": "[text]"
+      "m_rankName": "Dread Master II"
     },
     "42": {
-      "m_rankName": "[text]"
+      "m_rankName": "Dread Master III"
     },
     "43": {
-      "m_rankName": "[text]"
+      "m_rankName": "Dread Master IV"
     },
     "44": {
-      "m_rankName": "[text]"
+      "m_rankName": "Dread Master V"
     },
     "45": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fleet Master I"
     },
     "46": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fleet Master II"
     },
     "47": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fleet Master III"
     },
     "48": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fleet Master IV"
     },
     "49": {
-      "m_rankName": "[text]"
+      "m_rankName": "Fleet Master V"
     },
     "50": {
-      "m_rankName": "[text]"
+      "m_rankName": "Anax of the Belt"
     }
   },
   "row_count": 51

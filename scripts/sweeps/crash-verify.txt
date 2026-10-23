@@ -1,0 +1,12 @@
+# S75/S77 spawn crash (render-thread AV at RVA 0x1CA7BD6): run with
+# dn_host_no_appearance.txt beside the exe, then without. Pins that crashed
+# in sweep 2026-10-12 22:00 (te x2, ter-skybridge, pod-space02) + S75's BC Derelict.
+te-gorge        TE:Gorge
+te-highlands    TE:Highlands
+ter-skybridge   TER:Skybridge
+bc-derelict     BC:Derelict
+pod-space02     PodTDM:Space02
+te-gorge-2      TE:Gorge
+bc-derelict-2   BC:Derelict
+pod-space02-2   PodTDM:Space02
+te-gorge-3      TE:Gorge

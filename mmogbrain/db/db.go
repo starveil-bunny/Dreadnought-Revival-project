@@ -448,6 +448,67 @@ var migrations = []string{
 		name  TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
 	)`,
+	// Per-match figures for the Statistics screen that battle_results has no
+	// column for (score, healing, double kills, first strikes, seconds per
+	// ship class), one row per stat (match_statistics.go).
+	`CREATE TABLE IF NOT EXISTS battle_result_stats (
+		match_id TEXT NOT NULL,
+		user_id  TEXT NOT NULL,
+		stat     TEXT NOT NULL,
+		value    INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (match_id, user_id, stat)
+	)`,
+	// Run once: what the ribbons already recorded say about the matches played
+	// before per-match stats were kept. First Strike's ribbon takes 1 event, so
+	// it is exact; Domination's takes 2 (the double kill, Dominator VAL(2):T(15)),
+	// so twice the ribbons is a lower bound (a match's odd one was dropped).
+	`INSERT OR IGNORE INTO battle_result_stats(match_id,user_id,stat,value)
+		SELECT 'before-2026-10-15', user_id,
+			CASE ribbon_type WHEN 'FirstStrike' THEN 'first_strikes' ELSE 'double_kills' END,
+			CASE ribbon_type WHEN 'FirstStrike' THEN count ELSE count*2 END
+		FROM player_ribbons WHERE ribbon_type IN ('FirstStrike','Dominator') AND count > 0`,
+	// Havoc runs (havoc.go): one row per player per run, reported by
+	// battle-server-mod at Game Over (GET /battle/havoc). The score is the
+	// team's total XP of the run, what the client's end-of-match screen
+	// compares with the bests (YEOMHavocProgressionData m_teamTotalXP).
+	`CREATE TABLE IF NOT EXISTS havoc_runs (
+		match_id   TEXT NOT NULL,
+		user_id    TEXT NOT NULL,
+		score      INTEGER NOT NULL DEFAULT 0,
+		waves      INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (match_id, user_id)
+	)`,
+	// The DN_HavocRewards_DT milestones a player was paid, per week: each one
+	// pays once a week, the first time a run reaches it.
+	`CREATE TABLE IF NOT EXISTS havoc_reward_claims (
+		user_id    TEXT NOT NULL,
+		week_start TEXT NOT NULL,
+		reward     TEXT NOT NULL,
+		match_id   TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (user_id, week_start, reward)
+	)`,
+	// The launcher Fleet page's saved-loadout library (launcher_fleet.go):
+	// fits a player copied out of a ship's LOADOUT A/B, written back on demand.
+	`CREATE TABLE IF NOT EXISTS player_saved_loadouts (
+		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id              TEXT NOT NULL,
+		name                 TEXT NOT NULL,
+		ship_loadout_id      INTEGER NOT NULL,
+		weapon_primary_id    INTEGER NOT NULL DEFAULT -1,
+		weapon_secondary_id  INTEGER NOT NULL DEFAULT -1,
+		ability_primary_id   INTEGER NOT NULL DEFAULT -1,
+		ability_secondary_id INTEGER NOT NULL DEFAULT -1,
+		ability_perimeter_id INTEGER NOT NULL DEFAULT -1,
+		ability_internal_id  INTEGER NOT NULL DEFAULT -1,
+		perk_com_id          INTEGER NOT NULL DEFAULT -1,
+		perk_weapon_id       INTEGER NOT NULL DEFAULT -1,
+		perk_navigation_id   INTEGER NOT NULL DEFAULT -1,
+		perk_engineer_id     INTEGER NOT NULL DEFAULT -1,
+		created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_player_saved_loadouts_user ON player_saved_loadouts(user_id)`,
 }
 
 func Open(path string) (*sql.DB, error) {

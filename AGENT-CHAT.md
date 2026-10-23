@@ -6663,3 +6663,2177 @@ no more resets. Mod: `dn_host_ship_physics.txt`, hook on `0x5C4EB0` clearing
 (`OnGetCustomLoadouts` with no entries, then `ActivateLoadout | Loadout nullptr`)
 and another dropped a pick after the list was populated; neither reproduced
 consistently. Backend replies were byte-identical to working sessions.
+
+---
+
+### S47 — Handoff from a dead session (gemma4:31b): global ship unlock that does not compile, and a skin-replication hunt that ended the session
+**from:** SERVER · **date:** 2026-10-05 · **status:** NOTHING from this session verified; one change does not compile; uncommitted work tree also carries the verified 2026-10-02 relay patches
+
+**1. What the session claimed as COMPLETED is not.** The "Global Ship Unlocks"
+edit in `mmogbrain/response_builders.go`
+(`ownedShipLoadoutsForPlayerData`) appends `baseShipLoadout` and
+`heroShipLoadout` values straight into a `[]mmogShipLoadoutSeed` — build
+fails: `cannot use h ... as mmogShipLoadoutSeed value` at lines 7104/7109.
+`go test ./...` in mmogbrain has not run since. Fixing it is not a cast: a
+real seed needs the ship row, fleetShipID, native loadout id and name, the
+same fields the starter fleet seeding builds (see `starterShipLoadouts()` /
+`loadPersistedShipLoadouts`). Decision still open whether this response-
+forgery route is even the right one — granting every ship to every account
+through the real unlock path (as `provision-test-account` does) keeps
+client data, purchase state and the battle-server loadout path consistent
+for free, at the cost of touching each new account's DB.
+
+**2. Skin replication, where the session died.** Symptom: the host fetches
+the cosmetic/display string from mmogbrain and writes it into
+`UYShipLoadout+0x68`, but the state never replicates to clients. Pending:
+find the engine's "apply cosmetics / refresh visuals" path that reads
+`+0x68` and updates the pawn's mesh, then a way to fire it server-side so
+the clients receive the visual state. Markers left behind:
+`battle-server-mod/src/dn_host_loadout.cpp` (verbose logging added at line
+1114 naming the display string per registration, unverified — DLL not
+rebuilt), `UYShipLoadout+0x68` display slot, `RVA_FSTRING_ASSIGN`
+(0x21F5E0). The search agent for the apply-skin function entered a
+repetitive loop and was killed; the session hit its context limit mid-hunt.
+Lesson: that hunt needs a targeted grep plan (readers of offset 0x68 /
+FString-cmp against display strings), not open-ended re-search.
+
+**3. Uncommitted tree, two distinct work items mixed:** (a) verified
+2026-10-02 relay patches — mmogbrain `lkgHostForClient` re-order +
+public-port reply, gateway additions, dn-dedicated `udpport.go`,
+start-services.sh, main.go wiring; these ARE verified end-to-end and
+should be committed first; (b) this session's two files above. The
+battle-server-mod diff also carries `(LPVOID)` casts on `MH_CreateHook`
+targets (MSVC build fix; suggests an operator build attempt failed or was
+prepared).
+
+**4. Upstream moved: 11 commits since our HEAD 101310f,** including
+`d4c52ce` (fleets: flagships stored and applied; bought heroes reach the
+client — overlaps the unlock/ownership territory above), `fb7353a` (server
+chat, telemetry, fleet dashboard), `33bf479` (matchmaker backfill), `c10425e`
+(loadout: owning a ship owns its blueprint look — relevant to skins!),
+`569b42e` (1/2-byte int reads; squads queue with fleet), `6c16046`
+(InProgress is not readiness), `89fad52` (next-ship gate counts owned
+modules). Rebase before any push; `c10425e` may already cover part of the
+cosmetic/ownership problem.
+
+**Follow-up (same day):** operator ruled "discard what it *did*, keep what it
+*found*." The findings are the field map above; both files' code was reverted
+(`git checkout`), so mmogbrain builds again. Note kept for the next Windows
+build of the DLL: the reverted `dn_host_loadout.cpp` carried `(LPVOID)` casts
+on all three `MH_CreateHook` targets (ProcessEvent, FindLoadoutByID,
+GetNetMode) — re-add those if MSVC rejects the implicit function-pointer
+conversion.
+
+---
+
+### S48 — Cosmetics: the live appearance API found, fix written; plus upstream's payload tripwire was born red
+**from:** SERVER · **date:** 2026-10-05 · **status:** fix implemented (DLL needs the operator's next Windows build); verified against the binary, NOT yet live
+
+**1. The skin/cosmetic gap mechanism (each step verified in the binary).**
+The mod's loadout registration wrote only `m_cachedInitializationData`
+(UYShipLoadout fields 0x38 loadoutID, 0x40 pid, 0x48 precastID, 0x50 name,
+0x60 shipClass, 0x68 display FString, 0x78/0x88/0x98 arrays). But the client
+also builds a LIVE appearance from the display string, which is what remote
+clients' pawn visuals read. Verified chain: UFunction registration block
+0x6353A0-0x635584 pairs the whole appearance API (`AddAdditionalMesh` 0x73E080,
+`BroadcastApperance` 0x7424D0 / .pdata 0x7424D0-0x742610, `ExportToDisplayInfo`
+0x74BC20-0x74BC9A, `ImportFromDisplayInfo` thunk 0x75CA10-0x75CAF1,
+`ImportFromShipAppereance` 0x75CB00-0x75CBD7); the `m_appereance` (sic)
+property is registered by the class function 0x673ED0-0x6753B0. The
+ImportFromDisplayInfo THUNK unpacks a UFunction params frame (do not call it
+directly); its REAL body is 0x422400 (ENTRY 0x422400-0x42248B): copies the
+FString, parses it into the container at UYShipLoadout+0x2C0 via entry chunk
+0x421FE0-0x42201A whose slow path (the '#'-tokenizer) is CHUNK 0x42201A-0x4220FE
+-- never a hook target. Theory (labelled): the missing live import is the bug;
+initial-state replication of a freshly-constructed object should then carry it,
+so no server-side BroadcastApperance is needed.
+
+**2. Fix (battle-server-mod/src/dn_host_loadout.cpp):** after the cached field
+writes, call the real import body (RVA_IMPORT_FROM_DISPLAY_INFO_IMPL 0x422400)
+on the constructed loadout with the same `display` string mmogbrain's /battle/
+loadout already sends; off-switch `DN_HOST_NO_APPEARANCE` /
+`dn_host_no_appearance.txt`; success/EXCEPTION both logged; the per-loadout log
+line again carries the display string (re-applied from S47's revert, now with
+the RVA provenance). Next operator DLL build + one live match: SUCCESS line is
+`appearance: imported "<string>" (N chars) for <pid> into live appearance`
+and the client's pawn visibly wearing the fit; failure is either no import
+line (switch off / empty display) or the EXCEPTION line.
+
+**3. Upstream's YA_GetTechTree size tripwire was BORN red:** 14502 (set by
+3f795df) has never matched this tree -- every commit from 3f795df through
+dd5944c measures 13580 on this data/ extraction; the pin's author measured a
+different extraction. Re-anchored to 13580 with the finding in the changelog
+comment; the guard guards again.
+
+**4. Local-first ruling:** everything stays local (no pushes) until fixes are
+tested; upstream push, the launcher installer (real .exe/installer UI for
+Windows and Linux, path handling, no manual file swaps), server picker
+(default + custom + self-hosting from the launcher), and the admin UI are
+queued for after the battle server is proven.
+
+### S49 — Daily contracts: the assignment channel is a push we never sent; push implemented
+
+Three bounded binary hunts ran in parallel against the client
+(`agent "hunt daily contracts"`, `hunt scoring`, `hunt statistics`); every
+reported RVA was `.pdata`-verified before use (the two `0x140…` VA values both
+reduced to RVAs; `0xD952B6` is a CHUNK of `0xD8E830`, never hook).
+
+**1. Assignment = `YA_ContractReplace`, server→client push.** The client's
+dispatcher (`0x2A236C2-0x2A31A32`) references the literal at `0x38A9668` (ref
+`0x2a2f21a`, +0xBB58) and routes the push to handler `0x2A69310-0x2A695BE`
+(686 B, second caller `0x2a71c96` in CHUNK `0x2A71228-0x2A71E8D` of
+`0x2A70DA0`). The handler reads four fields at the DOCUMENT ROOT via the
+generic walker `0x140237C30` (ENTRY 0x237C30-0x237D3A): **`Quests`**
+(0x38d00a0), **`DailyContractStateID`** (0x38d00d0), **`LastContractsAssignment`**
+(0x38d0128), **`DailyContractLastReplaceTime`** (0x38d0178 — the hunt's
+"DailyContractLastReplace" was a truncated reading) — two of them unix-seconds
+timestamps (FDateTime 1970 default). Nothing in this server ever SENDS the push;
+`response_dispatcher.go:230` merely acknowledged an incoming one with a generic
+success, so assignment never happened.
+
+**2. Element layout, fully recovered** (parser `0x2A706F0-0x2A70B0E`, 1054 B
+ENTRY): 0x38-byte elements read BY INDEX (count node+0x20, stride 0x50 — no
+indexed naming needed), fields `eid`→FString +0x0, `act`→FString +0x10, `cpl`→
+int32 +0x20, `prg`→bool +0x24 (coercion: value>1 → true), `dif`→int32 +0x28,
+`ran`→int32 +0x30. All six names are compact ASCII FNames in the 0x38c9xxx
+region. `ran` = `m_requiredRank` (0 for all four seeds), `dif` = slot tier
+(1 base / 2 elite, per the reply's own `contractDifficulty`). The push handler
+applies the array to the contract container at mmog subsystem +0x39c0 (same
+fill path the dispatcher uses at `0x2a2d318`).
+
+**3. Fix (mmogbrain only):** `buildMmogContractReplacePushPayload`
+(`response_builders.go`) reads the player's active `player_contracts` (already
+seeded with the four real `YMPQ_` ids) and sends the push immediately AFTER the
+pending `YA_GetDailyContractsData` flush in the `YA_PlayerGet` bootstrap
+(`response_connection.go`) — after the catalog, before the tech-tree backstop,
+so quest instances resolve against a loaded `MPQuestCollection`. Element fields
+mirror the reply's live-verified shapes exactly; the Quests array is LAST
+(array-sibling rule). Off switch: `DN_CONTRACT_PUSH=off`.
+
+**4. Operator test (next Windows-free cycle — needs only `go build`, no DLL):**
+mmogbrain root log must show `mmog: assigned daily contracts in YA_ContractReplace
+push` after the deferred catalog reply. Distinguishable outcomes: hangar shows
+the 3 base + 1 elite slots filled at progress 0 → done; slots empty AND NO
+push line → player had no active `player_contracts` rows (seeding path); push
+line present but slots empty → parse/dispatch miss, next step is the client's
+log for unknown-name. Watch for the S45 hangar-entry stall returning — that
+would be quest instances failing to resolve (same collection-map-empty
+signature), i.e. the shape, not the channel, is wrong.
+
+**5. Statistics-screen overflow hunt (no fix, groundwork):** the
+`YA_GetPlayerStatistics` handler (parse window `0x142A27ED4-0x142A281BF`, inside
+the dispatcher monolith) tolerates empty `stats`/`pids` — count mismatch only
+logs `Pids count does not match stats count!` and continues with min(count);
+zero-count path exits cleanly (`0x142AB0B10` = pending-request bookkeeping). So
+the empty reply is NOT the poison. Cheap disambiguator queued: count
+`YA_GetPlayerStatistics` per screen-open in mmogbrain.log — >1 = client
+re-request loop (fix on response shape); ==1 = UI build loop bug,
+client-minidump territory. Also: per-entry field names are NOT in the .rdata
+neighborhood; only `stats`, `pids`, and **`ScoreSum` at 0x38B13A8** (interesting
+for #67) sit there.
+
+**6. Scoring hunt (#67), verified:** the `YA_GetScoringData` reply branch
+(`0x2a2c7e3` → LEA 0x38BFD90; write-site `0x2a2c7fc`) IS the writer of the
+host's scoring containers `+0x4408/+0x4460`, gated by present flag `+0x4470`
+(copy-in `0x423450` ENTRY 0x423450-0x42358C reads 0x43F8→0x4408→0x4460; init
+`0x423610` ENTRY 0x423610-0x423685). mmogbrain already answers the request
+(`response_dispatcher.go:81` → `buildMmogScoringDataPayload`, five JSON tables
+from the paks). The transport works; the host never logs in so it never
+receives the reply. Recommended shape: the mod fills the host's containers and
+sets `+0x4470` before `InitializeData` (`0x423610`) on its own YMmogbrain.
+Not yet pinned: row layout at those offsets — disassemble ~300 bytes after
+`0x2a2c7fc` before shaping rows. Kill/score values themselves remain the still
+open #67 work item.
+
+**Correction to (6) after checking scoring_table.go:** the repo already knew
+all of this — `scoringDocument()` (2026-09-28) sends ScoringTable/
+ScoringParamsTable with exactly the field names recovered above
+(EventScore/EventXP as per-mode strings, the full ribbon list, the params
+multipliers), the mod's scoring hook (dn_host_loadout.cpp:2915 "RVA_SCORING_PARSE
+0x2A75740") feeds it through the same parser on the host. The hunt re-derived
+independently what was already built, which strengthens the field-name
+evidence; no code change. #67's remaining unknowns are unchanged: values are
+operator choices, and the end-of-match event set is bisected out
+(scoringEndOfMatchEvents) pending a live run.
+
+### S50 — The DLL no longer needs Windows: Linux cross-compile with clang
+
+The operator asked whether the battle-server-mod DLL could be built on Linux
+under Wine. Better than Wine: native cross-compilation.
+
+**Route found:** `clang++ --target=x86_64-pc-windows-gnu -fms-extensions`.
+- MinGW's GCC refuses the mod's `__try/__except` in C++ outright (`__try was
+  not declared in this scope`) — SEH keywords are a no for GCC on that target.
+- LLVM/clang accepts them under `-fms-extensions` even on the windows-gnu
+  triple and emits real `.pdata`/`.xdata` unwind tables (checked in the built
+  PE: .pdata 0x630 B, .xdata 0x98c B) for ntdll to unwind.
+
+**Source fixes it forced, both MSVC-compatible:**
+- The block-scope `static bool SwitchOn(...)` forward decl inside
+  RegisterPlayerLoadout (added in S48) is illegal for clang ("function
+  declared in block scope cannot have static storage class"). Hoisted to file
+  scope ABOVE the function — first use (the appearance import) sits at +0x1dd
+  before every other call site; the old late file-scope decl at 1884 covered
+  everything except exactly that one.
+- `(LPVOID)` casts on the three MH_CreateHook detour/target arguments — the
+  exact cast the dead session had added and S48 reverted. Clang rejects
+  implicit function-pointer→void* where MSVC warns; the dead session was
+  right, they are back (3 sites: ProcessEvent, FindLoadoutByID, GetNetMode).
+
+**Output:** `battle-server-mod/build-linux.sh` →
+`build-linux/dn_host_loadout.dll` (336 KB PE32+, static CRT, imports only
+UCRT api-sets the game itself already demands of the Wine prefix). Mirrors
+build.bat (same sources, same MinHook, same libs). MSVC `build.bat` still
+works for a Windows operator; both produce a `wer.dll` to deploy the usual way.
+
+**NOT verified:** the DLL has not run in a live host — SEH unwinding and
+MinHook trampolines need a real match. First operator test therefore doubles
+as the build validation: if the host starts and prints the mod banner, the
+build is sound. Until then the MSVC build remains the safe fallback.
+
+### S51 — First live test of the Linux build: it works, plus two silent-off switches found and fixed
+
+Operator ran the clang-built DLL end to end. **Verified: cross-compile is
+production-valid** -- banner, all hooks installed, scoring table LOADED
+(13539 bytes, 45 rows, present flag 1), a full Onslaught/Derelict match
+completed, and end-of-match rewards paid through the scoring pool
+(`eom rewards: PRI ... scoring pool credits 10200 xp 6825`, pools itemised)
+with two match results reported to mmogbrain. S50's "not verified" caveat is
+now retired. #67 scoring is live.
+
+**Bug of the session -- the wrong-hull screenshot.** The player picked the
+Phoenix HERO scout (red skin); the host spawned a default grey hull. The mod
+log showed `FindLoadoutByID miss for ... Phoenix_Heroloadout_BP_C -> STILL
+MISSING` and NOT ONE RegisterPlayerLoadout line. Cause:
+`dn_host_player_loadouts.txt` (and no other player-loadout switch) existed
+beside the exe -- `PlayerLoadoutsEnabled()`
+(`SwitchOn("DN_HOST_PLAYER_LOADOUTS", "dn_host_player_loadouts.txt")`, first
+use in RegisterPlayerLoadout:1056) returned false and the entire
+fetch-from-mmogbrain path was silently OFF since it was written. Fix: created
+the marker file (no rebuild). Next match must show
+`player loadout: <id> for <pid> -> ... registered` plus `appearance: imported ...`;
+if mmogbrain 404s the hero id instead, that is the "mmogbrain has no record"
+branch and the hero-side gap moves to `battleLoadoutFor`.
+
+**Second silent-off: the S49 push never fired.** Root mmogbrain.log had zero
+`YA_ContractReplace` despite YA_PlayerGet answering -- S49 item 4's predicted
+"no active player_contracts rows (seeding path)" branch, and the table was
+genuinely empty (COUNT 0). The seed function only had reroll/complete
+call-sites; nothing seeds a fresh player. Fix in `response_connection.go`:
+seed at the PlayerGet bootstrap before building the push, and LOG the
+otherwise-silent `ok=false` skip. Note the standing risk from the earlier
+minidump era now re-armed: seeded progress-0 contracts historically triggered
+the 833x quest-cycle recursion; the S49 thesis is that the ContractTable
+reply + valid YMPQ_ ids resolve instances and the recursion stays dead. If
+the hangar crashes, `DN_CONTRACT_PUSH=off` reverts instantly and the push
+intake itself is the new data point.
+
+### S52 — Full live match on the Linux build: heap fix holds, two cosmetic findings
+
+Operator played a complete Onslaught match (Tier-5 bots active and aggressive --
+got sniped) after the marker-file + heap-ownership fixes. **Verified: host exit
+was `signal: killed`** (dn-dedicated teardown, NOT the 19:04 access violation),
+so `fca71b3`'s engine-owned FString for ImportFromDisplayInfo stopped the
+allocator corruption for at least one match.
+
+**Finding 1 -- the new build still logs one `appearance: EXCEPTION` per match**
+(19:10:13, followed immediately by the successful `-> registered` line). The
+throw is now *caught and harmless* (the callee's tail free pairs with the
+engine-owned buffer regardless), but the root cause of the throw itself is
+unknown -- it was invisible behind the crash before. One match is thin evidence
+for "no corruption"; if a second match crashes in the allocator again, the
+exception path is the first suspect (leak-on-throw is per match start, bounded).
+
+**Finding 2 -- the READY button is greyed, match auto-starts anyway.** Client
+sends ServerPlayerReadyUpForMatch only via the exec thunk (0x772380);
+failing its _Validate vtable+0xEC0 would close the connection, which does not
+happen, so the RPC is not the gate. The greyed toggle is client-side. Theory
+(suspected, unverified): `m_battleReadyTime`/`m_battleReadyCost`
+(FName pool 0x2F70768/0x2F70790) -- the retail "pay to start early" feature --
+plus the host-side countdown already running means the client believes the
+start decision is no longer the player's, so the toggle locks and the match
+starts on timeout instead. Non-blocking for solo matches (auto-start is the
+desired behaviour); revisit only if multi-player lobbies need manual ready-gates.
+
+Also: zero `YA_GetPlayerStatistics` in the period log -- either the stats
+screen was never opened this session or the request name differs; the
+statistics-re-request disambiguator stays pending operator data.
+
+Contracts push fired in this session (18:55/18:56, 4 elements) with no client
+crash -- the 833x recursiion did NOT return -- but all four hangar slots stayed
+empty (only "NEW CONTRACT IN: 8:00:38"). Hunt in progress: client parses every
+element (intake 0x2A79B20 never fails all-default coercions; gate is the
+post-parse eid->quest-instance matching loop at 0x2A79CC0-0x2A79CF0).
+
+### S53 — DN_UNLOCK_ALL live: ships+heroes unlock; four hangar symptoms triaged; symptom 1's loadout-delivery root cause verified and fixed in the mod
+
+**Verified live (2026-10-05):** `DN_UNLOCK_ALL` (provision.go
+`autoProvisionEverything`, fires at YA_PlayerGet) grants every base hull +
+hero (player_purchases + grantUnlockedShipLoadout) and every weapon/ability/
+perk. Client shows ALL ships and hero ships unlocked; loadout edits save and
+round-trip; contracts fix `4aaf41c` (id=eid swap) committed earlier still
+stands. Four symptoms remain:
+
+1. **Cannot equip even default modules.** Verified gate chain in the client
+   (0x548A00): 0x53FB40(id) data -> null => false; IsItemOwnedByPlayer
+   0x548860 (scans +0x39E8, else leaves via static-class NetConnection) =>
+   false => false; 0x547970(id); `cmp eax,1`; FindShipTechTreeData 0x3F5050
+   -> per-ship stride-0x48 records where flag [entry+0x40] bit0 requires
+   GetTechTreeItemState(entry+0x20) in {3,4} (0x543890's full semantics
+   mapped: PurchasesData +0x3F90 scan => 4; techtree lookup fails ->
+   HasResearchedItem 0x547DD0 (+0x3F80) => 3; owned-list leaf 0x302560 =>
+   4; else 1). Unresolved suspects, in order: (a) inflated-vs-shared id
+   mismatch -- the server grants shared ids as purchased, but blob per-ship
+   module ids are inflated (middle byte = hull's EYShipClass); unverified
+   which id the gate compares; (b) writer of record flag +0x40 NOT located;
+   (c) purchasedInventoryItemIDs -> +0x39E8 mapping unverified.
+2. **No coating/pattern/emblem/decal tiles.** VERIFIED via exhaustive grep
+   of 0x3F0D00..0x404D00: the tile-state byte +0x3d is written ONLY at
+   0x3F53E4/0x3F53E8 inside record-builder 0x3F5340, which copies from the
+   client's own cached item-data registry (via 0x3E9950, e.g.
+   UYCachedItemIDData) -- client-baked, not wire-settable. Collector
+   0x3F5110 includes stride-0x48 items with +0x3d not in {1,2} and tier in
+   range. KEY GAP: techTreeModuleItems never sends appearance entries
+   (classifier tags 11-18, categories 20-24) at all. Shape of a vanity
+   entry / VAN_* path -> id mapping unknown.
+3. **Officer briefing dupes**: server already dedups by id
+   (officer_briefings.go seen map); suspected client-side per-hull
+   projection. Cosmetic, deprioritized.
+4. **Loadout edits reset in battle -- ROOT CAUSE VERIFIED LIVE** (match
+   18:48, Derelict IVN, battle-20261005-184835): all three
+   FindLoadoutByID misses for `Default__VH_ScoutMedium_Phoenix_
+   Heroloadout_BP_C` failed because RegisterPlayerLoadout's
+   PlayerPIDForManager (mgr+0xA8 owner -> DNPID from UNetConnection+0x198
+   URL) exited SILENTLY -- no log, /battle/loadout never asked -- and
+   RegisterPrecastOnDemand had no hero entry (precast_paths.h has zero
+   Heroloadout entries), so the pawn spawned with "Could not Set the
+   active Loadout. Given loadout ID does not exist in loadout manager!" +
+   "Invalid active weapon". Same flow succeeded 19:10 (player loadout ->
+   precast 67043362 -> registered), so it is timing/instance-dependent.
+   **Fix built (build-linux/ OK 17:33Z) and deployed as wer.dll (20:33),
+   uncommitted/untested in a match**: PlayerPIDForManagerRobust falls back
+   over (controller, pid) pairs remembered by PlayersTick's 1 s team sync,
+   re-reading DNPID from the live connection URL (never trusting stale
+   buffers); all silent exits now log ("no readable pid..." =
+   fallback also failed; "switch is OFF" = marker missing); hero path
+   synthesis `/Default__<X>_Heroloadout_BP_C` -> `/Game/Generic/Loadouts/
+   Hero/<X>.<X>_C` (all 48 live in that one folder, verified against
+   HeroLoadouts_cooked.jsonl); DynPrecast cache keeps a name COPY (hero
+   path reuses one static buffer). Multi-human misattribution risk is
+   bounded by PLAYERS_PER_MATCH=1.
+
+Also: UI_tier_0 load failures (composer takes [uiData+0xF8] tier ->
+"UI_tier_%d"; some blob entries lack Tier) -- cosmetic, unfixed; shop renders
+nearly empty because retail hides owned items and unlock-all owns everything
+(2715 offers stocked). DB note: Phoenix display_info EMPTY vs Athos 79 chars
+-- unexplained; display persisted fine when delivery worked.
+
+**Next test cycle's discriminating lines** (mod log): success =
+`player loadout: ... -> registered`; the two new failure lines pin the
+remaining gap (`no readable pid` / `switch is OFF`).
+
+**External analysis in flight**: package for a second opinion on symptoms
+1-3 + fix review is external-analysis-20261005.md (glm-5.3 + kimi via
+Ollama API); fresh session planned for the next fix cycle after it returns.
+
+### S54 — External analyses digested; operator datum re-ranks symptom 1; execution plan written
+
+**Operator observation (2026-10-05 evening): officer briefings did NOT equip
+either, same as the granted tech modules.** Briefings are category 7 and are
+NEVER inflated — so pure inflated-vs-shared id mismatch cannot be the sole
+cause of symptom 1. The free discriminator both external models proposed
+(uninflated items equipping?) already came back negative, before any build.
+Hypothesis space re-ranked, form-agnostic suspects first: (1) server-granted
+ids not landing in the client arrays ownership scans read
+(purchasedInventoryItemIDs → +0x39E8 shape/mapping; +0x3F90 likewise);
+(2) gate step-1 0x53FB40 null for our ids; (3) +0x40-flagged per-ship records
+poisoning the ship-wide conjunction; (4) IsItemOwnedByPlayer's NetConnection
+fallback leaf 0x340100 returning true unconditionally, pushing the failure to
+a later gate step. Id-form remains relevant only for module records.
+
+Both analyses complete, no truncation, zero hallucinated RVAs. Full
+comparison + ranked plan: `run/external-analysis/comparison-20261005.md` and
+`plan-hangar-20261005.md` at repo root. Convergent takeaways adopted:
++0x40's writer IS located (0x3F5340 copies from the cached-registry source —
+the open question moved to the registry-side byte); send every granted id in
+BOTH purchasedInventoryItemIDs AND the owned-items list (GetTechTreeItemState
+checks +0x3F90 first, IsItemOwnedByPlayer scans only +0x39E8); vanity tiles =
+blob entry materializes + registry supplies content; Tier=1 default kills the
+UI_tier_0 ×404s. Cost ruling: kimi-k3 ~10x glm's hourly usage, not worth it
+— next external run uses glm or deepseek pro.
+
+Phase 1 (one operator cycle): DN_ID_MIRROR alignment mirror (granted ids
+derived from the emitted TechTrees doc, both byte-forms, categories 4/5 +
+category-1 prereqs) + single-hull vanity A/B + briefing cross-emitter dedup
+probe line + tier default. Pre-registered outcome rows with the operator.
+wer.dll S53 test rides the same cycle. Nothing edited before operator
+confirms the plan (resume: paste plan-hangar-20261005.md fresh).
+
+### S55 — P0-1/P0-2 ANSWERED: the field→offset mapping table, verified; H-TRUE and H-CONJ's missing-field leg dead; Phase-1 over-mirror now covers the remaining suspects
+
+Verified facts (all in the client binary, `run/dumps/` has every dump):
+
+**Tooling (new):** runtime-FName registration decoder. The 6171 `call
+0x140BD8710` (FName-add) sites each encode `mov rcx,[rip+holder]; lea
+rdx,[rip+name]; mov r8d,len; call` in the 20 bytes before the call — window
+`site-20..site` (holder = site-13 + disp1, name = site-6 + disp2, len =
+imm32 at site-4). 1347 of 6171 sites decode with the static-init pattern;
+each maps a holder slot (file addresses are 0 in the image) to a live string.
+Full table: `run/dumps/fname-registered.txt`; dispatcher + parser-range
+subset: `run/dumps/fname-registered-key-ranges.txt`.
+
+**The mapping table (P0-1 deliverable):**
+
+| wire field | client parser | destination offset | shape | verified how |
+| --- | --- | --- | --- | --- |
+| `inventory` → `Items` (claim/buy push) | 0x2A6CED0 | mgr+0x39E8 | stride-0x10 elements, ItemID = dword0 | parse site 0x2A2D24D: `lea rcx,[r14+0x39e8]; lea rdx,[rbp+0x1500]; call 0x142A6CED0`; compare in 0x548860 |
+| `PurchasesData` (YA_GetPlayerPurchases) | 0x2A796D0 | mgr+0x3F90 | **plain int32 TArray** (data +0x3F90, count +0x3F98, stride 4) | FName slot 0x3D9B560 registered `"PurchasesData"` at 0x2A798FA inside the parser; fill via the 0x2A259FF2 name-routed chain (r14+0x3710 → 0x2A796D0) |
+| `ProgressionData` (YA_GetPlayerProgression) | 0x2A79920 | mgr+0x3F80 | researched list | routed via the same name-matcher chain (r14+0x36E0); slot 0x3D9B55C not in the 1347 (registered by a non-standard pattern) — SUSPECTED ProgressionData, one hop short of verified |
+
+**+0x3F90 scan semantics (P0-2), from the regenerated `run/dumps/543890.txt`
+(literal `"GetTechTreeItemState | Techtree Manager not available"` in
+0x543890 confirms the function):** `GetTechTreeItemState` checks PurchasesData
+FIRST (0x5438D8→0x5438F0: stride 4, `cmp dword [rcx], esi` — exact match, no
+byte mask) and returns **4** on a hit. So a purchased id merely needs to be in
++0x3F90 and the state check inside the per-ship conjunction passes — the
++0x39E8 scan is not the only route to state 4. (+0x3F90 never appears as a
+scanned array in 0x543890's other legs; the +0x39E8 leg enters through leaf
+0x302560 fed by a vtable+0x1E8 count, not a raw id.)
+
+**Consequences for the hypothesis ranking (S54):**
+- H-TRUE dead: 0x340100 is a null-on-miss connection-list lookup
+  (rcx+0x108 stride-0x30 scan, `[rax+0x20]` == edx, hit→double-deref; miss→0).
+  The shop-empty cross-evidence stands as real ownership evidence.
+- H-STEP1 weakened to near-dead: 0x53FB40 is `GetTechTreeInstance(context)` —
+  context-keyed, id-agnostic; null only where no techtree instance exists.
+- H-CONJ's "server never sends the field that fills +0x3F90" leg is DEAD:
+  the server already emits `PurchasesData` (YA_GetPlayerPurchases) and
+  `ProgressionData` (YA_GetPlayerProgression) — see
+  mmogbrain/response_connection.go:532 and ship_roster_cooked_test.go:780.
+  If those payloads parse client-side, every purchased id gets state 4
+  regardless of id form.
+- H-MAP main variant dead (confirmed): Items→+0x39E8 mapping is exactly what
+  IsItemOwnedByPlayer(0x548860) scans (stride 0x10, dword0 compared).
+
+**What remains as live suspects (all runtime-shape/filter questions, all
+covered by Phase 1's over-mirror):** (a) our actual YA_GetPlayerPurchases /
+YA_PlayerGet payloads may not parse client-side (wrong container shape ⇒
+parser drops silently — the +0x3F90/+0x39E8 arrays stay empty); (b) the
+per-element id-validity gate 0x1402D8FF0 inside UpdateItemsFromInventory
+(0x4075B0) silently drops ids it doesn't recognize from the client's own
+snapshot before they reach mgr arrays (verified skip path 0x4077B0); (c)
+inflated-vs-shared id form for module records (H-FORM, demoted). Each of
+these names a client-side parser step, not a server field-name gap — so the
+Phase-1 mirror (send every granted id in BOTH forms in BOTH fields) is the
+proposed discriminator unchanged, and cycle 1 still fix-or-localizes S1.
+
+### S56 — P0-8 premise checked and found already satisfied: UI_tier_0 ×404s are battle-side; no response_builders change
+
+Verified: (a) `UI_tier_0` load failures appear ONLY in battle-server logs
+(run/battle-logs, e.g. battle-20261005-184835, 10 lines) and never in our
+service logs — the headless battle exe has no mmog tech-tree data, its
+module-list composer reads tier 0 from [uiData+0xF8] and asks for
+/Game/Generic/UI/tiers/UI_tier_0, co-occurring with LogYGameMode_Multiplayer
+"No mmog tier data available for spawning AI ships, using default hardcoded
+data" (same physical log line, 19:29:17 entry). This is the known
+"battle server performs no login" gap, not a hangar payload gap.
+(b) Every Tier the server emits already floors at 1: techTreeWireTier
+(response_builders.go:2753, tier<1→1) is used at all five Tier emission
+sites (2512/3797/3997/4159/4292), and module UI data entries carry
+m_tier="1" (appendMmogModuleUIDataEntry:4368). The plan's "default entries
+without Tier to Tier=1" already holds; the vanity entry display-info fills
+ride Phase 1. A battle-side fix (host mod supplying tier data to the
+composer) is cosmetic and deferred with the other mod switches.
+
+### S57 — P0-5: +0x3d/+0x40 provenance chain mapped (one mislabel CORRECTED); P0-6 oracle premise refuted by live evidence
+
+Verified (dumps run/dumps/3f5340.txt, 3f51a0.txt, 3e9950.txt):
+
+- **CORRECTION to S53.2/comparison:** 0x3E9950 is NOT the UYCachedItemIDData
+  registry — it is a plain TArray-assign helper (23 bytes: free old, grow via
+  0x30F170, copy elements with copy ctor 0x3E7590, strides 0x20/0x48 by
+  caller). "cached item-data registry via 0x3E9950" is withdrawn; every
+  function that used it for evidence must re-trace through 0x3F51A0.
+- **FindItem 0x3F51A0** (408 B): scans THREE group arrays on the manager
+  ([mgr+0x38]/count[mgr+0x40], [mgr+0x48]/[mgr+0x50], flat [mgr+0x68]);
+  groups are stride-0x28 containers of stride-0x48 records keyed by
+  `cmp dword [rec+0x20], id`. On hit it copies the cached record WHOLESALE
+  into the caller's out-struct: two arrays + scalars +0x20..+0x38, byte
+  +0x3c, **byte +0x3d verbatim** (0x3F531E), and **+0x40 bit0 verbatim**
+  (0x3F5325: `dest[0x40] ^= (src[0x40]^dest[0x40]) & 1` — preserves other
+  bits).
+- **Record builder 0x3F5340** (256 B): find into a temp, then copy the cached
+  record into the per-ship record — including +0x3d ([rbp-0x13]→[rbx+0x3d]) and
+  +0x40 bit0 ([rbp-0x10]&1→[rbx+0x40] under `and ...0xfffffffe`; other bits
+  zeroed by construction). One branch re-finds straight into the destination
+  (temp[+0x28]==0 gate).
+
+**Conclusion:** the per-ship record's +0x3d/+0x40-bit0 are byte-for-byte
+copies of the tech-tree manager's CACHED item record's fields. Nothing in the
+S53.2 grep range (0x3F0D00..0x404D00, which CONTAINS the TechTrees blob
+loader at 0x1404015xx) writes +0x3d except 0x3F53E4/0x3F53E8 — so the cached
+record's +0x3d is set at cached-record creation, OUTSIDE the range searched.
+This leaves kimi's entitlement-event question genuinely open (writer not in
+the searched range; a write-BP is required, i.e. the Phase-2 debugger path)
+and confirms the +0x40 writer is THIS copy chain — the loose end is the
+cached-record creator's provenance, not a missing runtime writer.
+
+**P0-6 premise REFUTED:** the headless battle exe demonstrably has NO
+client-side mmog tech-tree data — battle logs log "No mmog tier data
+available for spawning AI ships, using default hardcoded data" (battle-logs,
+S56) and the same process produced the UI_tier_0 texture misses. The
+headless process performs no login, so it holds no player mmog object to
+probe with 0x543890/0x548A00. Per the plan's own condition ("only extend the
+mod if the object's existence headless is evidenced") the oracle is dropped
+without building it; the debugger ground-truth path remains Phase-2-only.
+
+### S58 — Phase-1 mirror BUILT: DN_ID_MIRROR granted-only, two rings measured; the naive inflated leg cost 22,410 ids; Items leg dropped as redundant
+
+**Operator domain rule (confirmed in chat, matches the verified id structure):** hull
++ primary weapon follow brand×hull-type (15 ship classes, 3 brands × 5 hull
+types); secondary weapons and MODULES are shared per ship class (and per tier),
+so a module's per-class inflated forms are ~5 module sets × 3 brand classes,
+not one set per (class, tier, brand); COSMETICS are per-hull (per brand +
+hull type), no cross-sharing, except general cosmetics (emblems). The second
+half is exactly the singleton-hull vanity A/B the plan prescribes; emblems
+being general is consistent with the shared 0xFF-middle catalog ids.
+
+**Building the mirror found one real constraint — the naive form cannot ship:**
+mirroring every granted cat-4/5 id inflated with EVERY owned ship class added
+**22,410 ids** (`inflated=22410 fitted=600 hulls=148`) and put
+`YA_GetPlayerPurchases` at **121,725 bytes against the 32768-byte receive ring**
+(ring test FAIL). TRIMMED to the only ids any hull record can query: for each
+owned hull, the rows of **its own research list** (`dreadconfig.ShipResearchItems
+(class, tier)` — the client's module-preview table, per-ship ids already)
+whose shared form is one the player actually owns. Result:
+`inflated=628 fitted=600 hulls=148` → PurchasesData **25,097 bytes / 1779 ids**
+(ring test PASS; 7,671 bytes of headroom).
+
+**The Items (inventory) leg is DROPPED, measured reason kept:** mirroring the
+same ids into the YA_PlayerGet "Items" list was redundant — GetTechTreeItemState
+(0x543890) checks the PurchasesData array (+0x3F90, exact stride-4 int32) FIRST,
+so the +0x39E8 leg is never reached for mirrored ids; and it broke
+inventory_push_test (fully-fitted small account: +28 ids pushed the
+YA_PushInventory remainder to 28,032 over the 28,000 budget, where the push's
+own truncation would DROP those ids — a loss, not a deferral). Briefings already
+ride the Items list through their real ownership path. Also un-mirrored since
+S57's lesson: whole research rows of owned hulls (grants unbought modules,
+broke fresh-player progression tests) and unowned briefings.
+
+**Mirrored (final shape, granted-only):** owned hull loadout id + its
+techTreeHullParents prerequisite (cat 1); per owned hull, inflated forms of the
+granted modules in that hull's research list; shared (0xff) forms of every
+fitted inflated id. Nothing ungranted becomes owned; mirrors only
+ALREADY-GRANTED ids. Per-variant counts in the discriminator log line:
+`id_mirror: granted ids mirrored into purchasesdata (DN_ID_MIRROR)` with
+hulls/inflated/fitted/total_added — each mirror variant is nameable dead by
+absence after the cycle.
+
+**Pins updated WITH reasons (TestPayloadSizesVerify):** `YA_GetPlayerPurchases`
+492 → 836 (+344, 24 mirror ids on the pin account) — comment block in
+sizecheck_test.go records the rule and both ring measurements.
+
+Discriminator lines armed for the cycle: the id_mirror line above (per-variant)
+and the P0-7 probe `briefing: id=%08X emitted=N` with where=techtrees/inventory.
+
+### S59 — Phase-1 step 2 BUILT: DN_VANITY_PROBE single-hull vanity A/B
+
+`vanity_probe.go`: one hull (DN_VANITY_PROBE_HULL, default the T1 starter
+"Agosta") gets its cosmetic ids appended to the TechTrees document as blob
+rows (proxyType -1 → the hull's modules array; ids verified present in the
+cooked catalog at startup: 0x15FF0001 emblem, 0x16FF0002 coating,
+0x17FF00AE pattern, 0x18FF0001 decal), and the grants ride the normal vanity
+purchase path (`player_purchases` 'vanity', price 0, idempotent) so ownership
+goes through the existing Items-list branch. Every OTHER hull shows only its
+real modules — that contrast is the A/B. Datum recorded in the code: the
+client's cooked `m_compatibleShips` arrays in VanityItems_cooked.jsonl are
+ALL ZEROS, so per-hull cosmetic binding (operator rule: cosmetics are per
+hull, emblems general) cannot come from that field. Not verified against a
+running client; discriminator line
+`vanity_probe: cosmetic blob entries appended to techtrees (DN_VANITY_PROBE)`
+and `vanity_probe: cosmetic grants recorded (DN_VANITY_PROBE)`.
+
+### S60 — Cycle 1 partial results (from OUR logs only): mirror armed and seen server-side; P0-7 = every briefing id emitted EXACTLY 2x in the inventory leg; client CRASHED at battle entry
+
+**Mirror/probe discriminator lines seen (run/mmogbrain.log, 21:43-21:46):**
+- `id_mirror: granted ids mirrored into purchasesdata` fitted=600 hulls=148
+  inflated=628 total_added=1376 — all three mirror legs live on UnlockAll,
+  same counts as the ring test (25,097 bytes, under the ring).
+- `vanity_probe: cosmetic grants recorded … granted=0 ids=[369033217
+  385810434 402587822 419364865]` — granted=0: all four rows ALREADY in
+  player_purchases (prior grant path) — probe grants idempotent-but-not-first.
+  Whether the techtrees blob line fired is NOT yet confirmed (not in the
+  window shown; verify next session).
+- **P0-7 ANSWER: `briefing: id=06FF000N emitted=2` for every id, where=inventory**
+  — every briefing id is emitted EXACTLY TWICE in the inventory
+  PurchasesData/Items assembly. The dupes hypothesis is CONFIRMED (measured,
+  not guessed); next session: why 2 (two append paths overlap) and whether
+  the client tolerates it (it rendered the tree, so at least non-fatal).
+  Techtrees leg counts not fully extracted this session.
+
+**The crash (operator: both screens black, Steam died, monitor frozen on
+last frame, 21:46):** server side is CLEAN — all hangar frames normal, no
+oversized frames in the window, mirror/probe lines all normal; battle log
+battle-20261005-214615 ends at the client's login request 21:46:29 with the
+join handshake incomplete; mmogbrain saw clean client disconnects at
+21:46:38, 9 s after YA_Connect. The client process died during battle LOAD,
+before gameplay; hangar traffic was unaffected. Both-screens-black +
+monitor frozen on the last frame + Steam exiting is a GPU/driver-level event
+(TDR), not the mmog receive ring (that kills only the client process).
+NOTHING in this deploy touches battle time (mirror = hangar payloads,
+vanity = hangar blobs); DN_UNLOCK_ALL + PLAYERS_PER_MATCH behavior
+unchanged. Attribution needs the client's DreadGame.log upload.
+
+**Next session:** (1) client log upload -> crash attribution; (2) walk the
+S58/S59 outcome sheet against what the hangar showed (module tiles /
+perks / briefings x2 hulls / vanity tiles Agosta-vs-other / shop) — none of
+the hangar observations were collected this cycle before the crash; (3) the
+briefing 2x dupe (remove the overlapping append path with the measured
+before/after); (4) confirm vanity blob techtrees line fired.
+
+Deployed: commit 177e4ad + run/secrets.env DN_VANITY_PROBE=1 (verified in
+/proc/<pid>/environ). All build green incl. the ring test.
+
+## S61 (2026-10-06) — crash attributed: kernel-level GPU fault in the client's own render stack
+
+Operator reopened: "I tried it out a few more times and yes. bad crashes. check
+the logs first. the game logs are in the steam proton path."
+
+Client logs live in
+~/.local/share/Steam/steamapps/compatdata/835860/pfx/drive_c/users/steamuser/AppData/Local/DreadGame/Saved/Logs/
+(client clock runs exactly 3h behind server-local; verified via "Log file
+closed, 10/05/26 21:59:11" vs client stamp 18.59.11). No current DreadGame.log —
+the crashed session's log (21:43:05→21:46:30 server) was lost to the freeze.
+
+**VERIFIED attribution of the 21:46 blow-up (journalctl + coredumpctl):**
+- 21:46:30 kernel: `amdgpu 0000:07:00.0: [gfxhub] page fault … Process
+  DreadGame-Win64 pid 62145 thread DreadGame-:cs0` — the CLIENT's compute-queue
+  dispatch dereferenced a bad address during battle-map load, 2 s after the
+  login request (21:46:29).
+- 21:46:32 ring gfx_0.1.0 reset FAILED → MODE1 reset, VRAM lost.
+- Mesa RadeonSI (libgallium 26.2.4) aborted the game (SIGABRT); core dump of the
+  game EXISTS: core.DreadGame-Win64.1000….62145.1791225992.zst (312 MB) —
+  crashing thread is the DXVK compute queue in libgallium, no game code frame.
+- 21:46:33 coredump of Steam's RDD (CEF GPU) process; 21:46:38 coredump of
+  XWAYLAND. That is the black screens + frozen monitor + dead Steam, exactly.
+- Kernel boot today warns `amdgpu: Overdrive is enabled` — the GPU is
+  overclocked, the kernel's own line points there for non-overdrive-bug reports.
+
+**Timeline reconstructed (server clock):** 18:48 Derelict/Onslaught played 6 min
+(clean pre-deploy) → 19:04 Skybridge/TDM: BATTLE SERVER's rendering thread
+access-violates (RenderingThread.cpp:723, EXCEPTION_ACCESS_VIOLATION reading
+0x2, exit status 3) and the client is kicked at 25 s — pre-deploy → 19:09
+Derelict/Onslaught played 4 min (clean) → 19:43 Skybridge/TDM: client itself
+requested travel back 13 s in → 21:46 Amirani/Onslaught = the GPU blow-up above
+(client log lost; loadout verified CLEAN from the server log's decrypted
+YA_UpdateShipLoadout — all 4/5/6-category standard ids, no vanity-probe ids,
+same DisplayInfo as always; hangar ran fine with the mirror for 3 min first) →
+21:58 45-s session → 22:00 login: ZOMBIE ROOM — mmogbrain re-served the dead
+21:46 match as "match ready" 1 s after login and pushed YA_Connect to a server
+killed at 21:51:07; client sat isLoading for exactly 180 s and UE timed out the
+connection (its own YA_LogSpecial NetworkFailureClient report at 22:04:03:
+"UNetConnection::Tick: Connection TIMED OUT … isLoading:1") → kicked, quit →
+22:05–22:11 the operator ran the tutorial mission, clean.
+
+**One real server defect fell out: zombie room.** mmogbrain kept serving a dead
+battle instance as ready; a rejoin burns 180 s and kicks. Fix owner-side: verify
+the instance is alive (dn-dedicated registry / heartbeat) before "match ready" /
+before CheckReturn rejoin. Skybridge/TDM battle-server rendering AV is a second,
+separate lead (map-specific; pre-deploy; battle server renders on :99 Xvfb).
+
+Vanity probe lines CONFIRMED fired 21:43:17 (hull Agosta, 4 blob rows appended
+to techtrees, grants granted=0 — rows pre-existed): S60 item (4) closed.
+S60 hangar outcome sheet still UNCOLLECTED (crashed session's hangar observations lost).
+
+**Next session list:** (1) operator decision on GPU retest — turn Overdrive off
++ fresh boot, retry Amirani (worked Oct 3) and Derelict (always worked; 2/2);
+(2) zombie-room fix (verify instance liveness before YA_Connect/rejoin); (3)
+Skybridge/TDM rendering AV; (4) briefing 2× dupe removal; (5) hangar outcome
+sheet once the client survives a hangar run.
+
+## S62 (2026-10-06) — two fixes built+deployed; GPU retest clean; fleet-choice defaults diagnosed mod-side
+
+Operator decisions: retest the GPU crash AS-IS (no OC changes); build the
+zombie-room fix + briefing dupe removal. Also answered "check the repo,
+anything new?": nothing — working tree clean, latest C entry still C35, docs
+untouched since Oct 2/3.
+
+**Deployed 17:34:11**, commits 9426603 (matchmaker: stamped-ready match ends on
+404 across a restart — the S61 zombie; test
+TestPollBattleServersEndsAMatchStampedReadyByThePreviousProcess) and b17b76c
+(inventory: briefing emitted once; ship-own leg defers to the purchase row; test
+TestBuyingABriefingOwnedThroughShipsEmitsItOnce finds the fixture through
+Dola 33489271, whose roster carries briefings; agosta-class starters carry
+none). Full suite green, size pins unchanged (836 / 7666). DN_VANITY_PROBE=1
+re-verified in /proc after restart.
+
+**Operator retest results, on the PRE-deploy binary (battle 17:31:43 Derelict/
+Onslaught on bunny-test, 698e15eb51894ac89e76d9a10f519c76 — the tutorial
+account created 22:05 last night):**
+- NO GPU crash (journal: no amdgpu events today; machine booted 17:16). The
+  21:46 fault stays a one-off.
+- "connection error": MINE — I restarted the stack at 17:34:11 and
+  stop-services killed their running battle server at 17:34:13 (battle log
+  "signal: killed"). Deploy cut a live match. Deploy-restarts from now on are
+  announced before killing, and the operator should not be mid-battle.
+- NEW gap, "fleet UI shows customization, battle fleet-choice shows the
+  defaults, in battle it is what it's supposed to be": verified server-side
+  that all three store surfaces are CORRECT — player_ship_loadouts row for
+  Athos (33489300) holds the customized ids (0x050E0010 / 0x050E0015 /
+  0x06FF0001 briefing perk; same values the client's decoded
+  YA_UpdateShipLoadout carried), and /battle/loadout was served 200 at
+  17:32:11 (the pawn path). The wrong surface is the SELECT PANEL on the
+  battle server's ship-choice screen: the host's own loadout-manager/fleet
+  data (0x35FDF0's account-only read + the panel drawn before/regardless of
+  the mod's AddLoadout registration — the registration exists for the pawn,
+  per dn_host_loadout.cpp's block comment) falls back to blueprint defaults
+  for a non-host player. FIX IS BATTLE-SERVER-MOD-SIDE -> the operator builds
+  the DLL. Candidate fix: give the select screen the registered loadout's
+  display data (or register earlier). NOT attempted this cycle: it would
+  entangle a client-visible change with the operator's GPU retest, and one
+  change per test cycle stands.
+
+**Next session list:** (1) operator verdict on fleet-choice panel fix (mod
+side, DLL build) vs defer to Phase 2; (2) hangar outcome sheet (S58/S59) still
+not walked — module catalog tiles/perk/briefings x2/vanity tiles Agosta-vs-
+other/shop, in a hangar run; (3) Skybridge/TDM battle-server rendering AV (map-
+specific, pre-deploy, unchanged); (4) mirror A/B legs dead-name reading after a
+hangar cycle with the new build active.
+
+## S63 (2026-10-06, later) — launcher→server bridge shipped; hero "matchmaking cancelled" = battle server AV in the appearance parser
+
+- Operator correction ACCEPTED: the mod DLL is built in this repo —
+  battle-server-mod/build-linux.sh (clang cross, -fms-extensions, verified
+  2026-10-05 S50). I no longer hand DLL builds to the operator.
+- NEW run/run/ensure-server.sh — sourced by launch-client.sh and
+  dreadnought-launcher-entry.sh: checks :8083, runs start-services.sh when the
+  stack is down (the reboot case), notifies, waits up to 30 s. Both desktop
+  entries now guarantee the server. Untracked like its run/ siblings.
+- Live validation of S61's fixes within minutes of deploy: 17:34:18 "battle
+  server is gone; ended the match and freed its players" fired for the stale
+  17:31 match 3 s after startup; briefing lines now all emitted=1.
+- Hero battle (bunny-test picks Minotaurus hero, 17:40 AddToFleet → 17:40:59
+  EnterMatchmaking → ServerStarting 17:41:03 → ready 17:41:09 → Connect
+  17:41:13): host AV'd 17:41:37 (exit status 3, RenderCore RenderingThread.cpp
+  as before), but the mod's stackprobe (dn_host_stackprobe.log) caught TWO
+  crashes: (1) ACCESS VIOLATION at RVA 0x422262 — a COLD CHUNK
+  (0x422224-0x422286, 3 hops) of the appearance parser/0x421FE0 — the same
+  parser family the mod's displayInfo import lives in (chain through
+  0x422469=chunk of 0x422400 ImportFromDisplayInfoImpl, 0x1CF3240
+  TArrayIntAssign, 0x21F5E0 FStringAssign) — 0.27 s AFTER the mod logged the
+  hero loadout registered (precast 67043346, displayInfo
+  "352256017#352256018#352256019#352256020;369033226;385810459;402587658;419364883"
+  = 0x14FF0011 / 0x15FF000A / 0x16FF001B / 0x17FF000A / 0x18FF0013, ALL
+  FF-mid shared-form cosmetic ids per category law); (2) ACCESS VIOLATION at
+  RVA 0xBFCD47 (chunk of 0xBFCA65, render thread, reading address 0x2,
+  rax=rbx=0) — the cascade. Client got YA_ServerShutdown (17:41:43) → its UI
+  said "matchmaking cancelled". 19:04 Sep-5 Skybridge AV has the same
+  signature — plausibly the same parser crash with its own stackprobe record
+  lost.
+- The client-visuals complaint ("battle defaults to tier 1/0 parts for normal
+  ships") rides the SAME display/appearance domain; hangar customization
+  availability ("not everything available though unlocked") is the S58/S59
+  vanity A/B sheet, never yet observed.
+
+## S64 (2026-10-06 18:4x) — S59's vanity A/B answered NO TILES; hero crash is a FOREIGN FREE, not the import; cycle B (PurchasesData) deployed
+
+- **Operator's hangar sheet collected (9 screenshots, 17:50-17:52):** Agosta
+  (probe hull) popups: Coating = "Jupiter Arms" ONLY, Pattern = "Default"
+  ONLY, Emblem/Decal = "None" ONLY. Ship-component popups render 5 tiles
+  each (named Vigo/Otranto/Athos) but picks do not stick. Zaratan's own
+  paint/decal render fine (the loadout display string supplies them) but its
+  component/vanity tiles are all padlocked, and its cosmetics never surface
+  on hull-mates. Vanity shop state not re-checked this visit.
+- **A/B verdict (S59 decision tree, "no tiles anywhere" leg):** cosmetic
+  ownership was present on BOTH other delivery legs (grants in player_purchases
+  since 10-05 22:05 → Items list; 4 blob rows in techtrees, discriminator lines
+  in run/mmogbrain.log 17:30:21). Tiles did not appear ⇒ the cosmetic option
+  builder consults a surface we do NOT ship cosmetics on.
+- **FOUND: PurchasesData strips cosmetics** (response_builders.go:4555
+  withoutVanity — a size decision from the tech-tree era). S55's field→offset
+  mapping puts the +0x3F90 owned-purchases TArray behind this field and S58
+  measured GetTechTreeItemState (0x543890) reading +0x3F90 FIRST ⇒ everything
+  that consults ownership sees NO cosmetics at all. Cycle B = drop the strip
+  (bought-only), commit 580b184, deployed 18:18, all 5 services 200, probe env
+  intact. The old anti-leak test was tautological (iterating the stripped
+  list); replaced with the new invariant. Pins unmoved (pin accounts hold no
+  cosmetics). Discriminator: relogin → Agosta coating/pattern popups show the
+  4 probe items (0x15FF0001 Bear / 0x16FF0002 / 0x17FF00AE Dazzle /
+  0x18FF0001).
+- **Hero crash RE-attributed (battle-20261006-174100 + dn_host_stackprobe.log):**
+  the import did NOT crash — both imports (Athos 17:41:34.341 display
+  "336461851#336461852#336462067#336461849;353239050;370016321;386793493;403570709"
+  = inflated per-hull ids; Minotaurus 17:41:37.712 display
+  "352256017-20(emblem 0x15FF000A, coating 0x16FF001B, pattern 0x17FF000A,
+  decal 0x18FF0013)" = FF-SHARED ids) returned success ("appearance:
+  imported … " lines, no SEH line). The death: 17:41:37.75 TWO
+  LogMemory DumpAllocatorError "Attempting to free a pointer we didn't
+  allocate" (Ptr 0x00019F6A0028000B, binned allocator), then 17:41:37.986
+  render-thread AV reading 0x2, exit 3. The render death is the poisoned
+  heap's victim, NOT the root.
+- **Wire format CONFIRMED from the disasm (0x421FE0 family =**
+  `UYShipCustomisationComponent::ImportFromDisplayInfo`, literal strings at
+  0x142f00a3c ';' / 0x2f00adc '#', log lines "Could not r…" 0x2f041f0 /
+  "Invalid mes…" 0x2f04780): 5 ';'-groups; group 1 '#'-split, EXACTLY 4
+  sub-ids (hull sections), ids → item parse (import ptr 0x142da8390) →
+  catalog lookup (0x1403e1930) → record's +0x141 slot byte vs container
+  capacity cmp → store into [container]. The client's own strings match this
+  shape exactly. NOTE: objdump invocations without the script's
+  adjust-vma print all rip-relative targets LOW by the chunk's start RVA —
+  the summary-era "0x142da8390 import" etc. came from the script and were
+  correct; do not re-read raw chunk dumps hand-adjusted.
+- **Stackprobe records are cross-run noise:** 4 records, no timestamps; the
+  mod's own comment ties threads 36/516 + chain-through-0x422476 to the
+  Oct-5 19:04 crash — records 1/2. Today's = the thread-516 allocator record
+  and possibly the 0x422262 one; the 0x422262 AV (r14 = component+0x2C0
+  unmapped) cannot be from the mod's import call (it returned cleanly).
+- **Cycle A armed (no build):** the mod's existing
+  DN_HOST_NO_APPEARANCE / dn_host_no_appearance.txt switch (SwitchOn checks
+  env OR marker beside the exe, dn_host_loadout.cpp:3223) skips the import
+  entirely. Marker NOT yet created — flip it only for the hero battle so
+  normal-ship battles keep their appearance. Discriminator: hero battle with
+  marker ⇒ crash gone ⇒ import path guilty (dig the frees with disasm + the
+  probe's chain); still crashes ⇒ import exonerated, suspect moves to the
+  hero loadout registration/18-asset async load (Daggertooth mesh set).
+
+### S64 addendum (2026-10-06 ~18:35) — both cycle results read; A's premise corrected
+
+- **Cycle B result: NEGATIVE.** bunny-test relogin, Agosta coating popup
+  unchanged (still "Jupiter Arms" only). PurchasesData-with-cosmetics is NOT
+  the option-builder's gate — dead end, change kept (harmless and consistent
+  with the client's other ownership scans). Remaining candidate legs for the
+  tile gate: the client-side drop of the techtrees blob rows (probe rows ARE
+  appended server-side; whether the client's techtrees parser
+  0x1404015xx accepts cat 20-24 rows is unverified), and the S57 +0x3d
+  entitlement-event theory (write-BP territory). An uncollected observation
+  that could split these free: does the vanity STORE on bunny-test show the
+  4 probe cosmetics with owned flags (gateway catalog leg)?
+- **Cycle A read correctly — my instruction to the operator was never
+  executed, and truthfully that is GOOD:** the marker file was never created
+  (verified: does not exist), so the import RAN in the operator's 18:21
+  hero battle. Import succeeded ("appearance: imported
+  352256017#352256018#352256019#352256020;…"), NO allocator error, NO crash —
+  hero picked FIRST/ONLY, Daggertooth look visibly applied on the select
+  screen (screenshot 18:22). The crash does NOT need fixing away — it needs
+  the two-import pattern:
+  - 17:31 (one import: Athos inflated ids) → OK
+  - 17:41 (TWO imports: Athos, then Minotaurus hero) → foreign free at
+    +0.04 s after activation #2, render death at +0.27 s, exit 3
+  - 18:21 (one import: Minotaurus FF-shared) → OK
+  So "second import poisons the host" (1 crash / 2 surviving single-import
+  runs). Note Oct-5 19:04's allocator crash had imports=0 (feature did not
+  exist yet at that DLL) — unrelated, stays its own beast.
+- **Next no-build cycles for the operator:** (1) recreate two imports
+  deliberately — normal ship pick, then switch to the hero IN THE SAME
+  match; crash expected to reproduce (2/2) if the pattern holds, and the
+  probe log gets a fresh anchored record. (2) vanity store on bunny-test:
+  are the collection sections populated (probe 4 owned)?
+
+### S65 (2026-10-06 ~18:45) — the "frozen" match = battle server crash at 18:26:39; TDM runs are the broken ones; shop owned-flag anomaly
+
+- **Operator's report:** "AI/physics essentially disappeared — could move, not
+  shoot; AIs same" in the "Silesia" match; and the store marks almost
+  everything OWNED while a few buyable ones are ALSO owned (wrongly shown
+  buyable).
+- **The frozen match = the 18:21 host.** It crashed 18:26:39 — engine fatal
+  AV reading 0x42f / wine page fault 0x44F at 0xD4F7A6 → exit via
+  StaticShutdownAfterError; dn-dedicated killed the dead instance at
+  18:28:34 ("match left empty by a queue leave"). The client stayed joined to
+  a dead host: local movement only (prediction), everything authoritative
+  frozen. THAT is the "AI/physics disappeared".
+- **New crash sites (stackprobe records 6/7, thread 36):** AV 0xD2F730+0x1A
+  (flag-set + delegate raise `call [rax+0x78]`, rax garbage) and
+  0xD4F7A0+0x6 (`call [rax+0x98]` with rax=0x3B7 — reading 0x44F) — both
+  iterating a GLOBAL broadcast registry ([0x143f63a70] array, count at
+  0x143f63a7c), calling per-entry virtuals; rax=0x3B7 and rbx=0x20DD3 in BOTH
+  records ⇒ deterministic garbage entry, data-driven, not a race. Chain:
+  0xD04F7F loop (0xD05192) ← tick frames. NOT the appearance/import sites.
+- **The match was already half-broken before the crash:** 3 pawn sets
+  (18:21:54, 18:24:12, 18:25:36) each with `Invalid active weapon` (client
+  log too, incl. camera-zoom), the Silesia switch at 18:25:21 = a SECOND hero
+  loadout (Default__VH_SniperLight_SilesiaV2_HeroLoadout_BP_C, precast
+  67043382, registered + imported fine), bots: 35× "No mmog tier data …
+  default hardcoded data", 17× "capability activation rules" mismatches
+  (ScoutHeavyT5/DreadnoughtMediumT4 …), 8× ScoutHeavy lines — vs the healthy
+  17:31 Derelict battle: 1 pawn, 0 of ALL of those.
+- **Strongest environmental correlate: MODE/MAP.** Every TDM/type-3 run on
+  record is broken (19:04 crash; 19:43 no pawns; 18:21 frozen+crash); the two
+  Onslaught/type-16 runs (Oct-5 19:09, today 17:31) are the healthy ones.
+  Fleet tier is NOT the discriminator (both fleet=Legendary).
+- **Shop owned-flag anomaly (new issue):** hero-ship store tiles "almost all
+  OWNED", the few still-buyable ones ARE owned too — vanityCatalogSeeds'
+  owned map is over- or under-matching vs the account's purchase rows; needs
+  the gateway shop leg examined separately from the hangar popups.
+- **Decisive next no-build test:** requeue the EXACT healthy configuration
+  (Onslaught queue → Derelict map) and pick the hero ship there. Clean run ⇒
+  TDM/Skybridge-scoped; broken ⇒ hero-scoped. Do NOT combine with other
+  tests.
+
+### S66 (2026-10-06 ~18:50) — PodTDM+Glacier with 2 heroes is HEALTHY; two-import theory dead; import can throw non-fatally; crash model reframed
+Operator retested in "Ceres Awakens" = `MP_Glacier_P?game=PodTDM`, mode type 4,
+battle-20261006-184115 (18:41:15–18:47:07, host killed at match end — normal).
+Both hero loadouts registered in ONE host: Zaratan/Minotaurus 18:41:43, SilesiaV2
+18:41:45 (2.5 s apart — a ship switch). Match ran fine to the end.
+
+**Two-import theory DEAD.** 17:41 (Amirani Onslaught/type-16) was also a
+two-import run (normal T5 17:41:34 → hero 17:41:37, crashed 40 ms after the 2nd
+activation); 18:21 (Skybridge TDM/type-3) two imports, crashed ~5 min later;
+18:41 two imports, healthy.
+
+**Import can throw.** 18:41:43.258 `appearance: EXCEPTION importing display`
+for the Minotaurus — same exact display string that imported OK at 18:21 —
+caught by the mod's SEH wrapper; stackprobe record 8 (non-fatal, this run
+completed) = AV at RVA 0x42226D writing address 0x10, thread 36, rcx=0.
+Disasm of the store (0x422246–74): parse id (0x142da8390) → catalog lookup
+(0x1403e1930) → NULL-check → `movzx ecx,[rax+0x141]` (record's slot byte) →
+`cmp ecx,[r14+0x8]` (container Num) → `jge skip` → `mov rcx,[r14]; mov
+[rcx+rdx*8],rax`. Record 8 hit a container with Num>0 but Data=NULL. First
+chance, handled, import aborted; Silesia's import right after succeeded.
+
+**New pattern (H-POISON, n=3):** both crash runs had two SUCCESSFUL imports;
+the one healthy multi-import run is the one whose first import threw. A
+successful second import into the shared live-appearance container may poison
+host state (17:41's allocator error was literally "freeing a pointer we didn't
+allocate"); an import that throws leaves the container untouched and survives.
+Mode-3/Skybridge is NOT the whole story (17:41 was type 16) but Oct-5's
+Skybridge TDM crashes had ZERO imports (separate beast on record). So current
+model: ≥2 crash classes — class A Skybridge-TDM/import-independent (19:04,
+19:43), class B second-successful-import (17:41, and 18:21 unattributable
+between A and B).
+
+**Run matrix after S66:** type 3 Skybridge broken in 3/3 (imports yes/no);
+type 16 crashed only with hero+import (1/2); type 4 healthy with 2 imports
+(1/1, one import caught).
+
+**Discriminator test:** repeat class B's shape in a healthy mode — in one
+PodTDM/Onslaught match, pick a normal ship, then switch to the hero. Crash near
+the switch ⇒ class B confirmed; clean twice ⇒ back to mode/map hunting.
+
+### S67 (2026-10-06 ~19:05) — REPRODUCED in type 4: same-site broadcast AV (0xD4F7A6); 2-successful-imports correlation 3/3 vs 0/2; timing fingerprint join+297 s
+battle-20261006-185254 (18:52:54 host up, Gorge map, PodTDM type 4 — operator's
+"Ceres Awakens" again). Sequence: Nevis T5 ScoutLight 18:53:19 (import OK) →
+SilesiaV2 hero 18:55:09 (import OK) → Athos T5 AssaultMedium 18:56:44 (import
+OK) → **crash 18:58:02**. Operator report: local only, all server-side dead,
+~3:44 of play; the Athos RENDERED AS THE T1 VARIANT.
+
+**Class B confirmed by recreation (2/2 → with S67 3/3 crash runs):** every run
+with ≥2 successful imports died (17:41 after 2, 18:21 after 2, 18:52 after 3);
+every run with ≤1 successful import survived (17:31 one, 18:41 one after a
+caught exception). Mode classification dead (type 4 crashed at 18:52).
+
+**Same site as 18:21:** wine `Unhandled page fault ... at 0000000140D4F7A6`,
+stackprobe record 9 (thread 300 = wine 0x12c = TaskGraphThreadNP 2): AV at
+RVA 0xD4F7A6 reading 0x80101019F, rax=0x801010107 (garbage entry in the
+registry loop), preceded by record 8 (0xD1C7A5, thread 300) in the same death.
+Identical function to 18:26:39's fatal record (different garbage: 0x3B7 then,
+0x801010107 now — both bogus entry pointers).
+
+**Timing fingerprint:** crashes at join+297.4 s (18:21) and join+297.0 s
+(18:52), i.e. last-import+77.5/78.4 s — deferred, deterministic-ish. 17:41 was
+DIFFERENT: join+21.3 s, crash 0.276 s after the 2nd loadout activation
+(allocator free-foreign AV) — so likely two mechanisms share the correlate:
+(a) an immediate AV on the 2nd activation in some runs, (b) a deferred
+broadcast wave (~78 s cadence or a fixed in-match time) hitting the poisoned
+global registry at 0x143f63a70 in others. 18:41's healthy run survived past
+join+341 s, so it is NOT a plain join+297 timer; poison must be present.
+
+**Athos T1-skin datapoint:** the 3rd-imported ship rendered tier-1 defaults —
+the same silent-drop candidate as the 0x42226D store: a catalog record's
+stale +0x141 slot byte (>= container Num) makes `jge 0x422271` skip the store,
+so that part never lands and the ship falls back to defaults. The crash runs
+had successful imports (no such catch), so slot bytes may go stale AFTER a
+second successful import and poison broadcast state instead.
+
+**Next:** find the writers of the global registry at 0x143f63a70 (loop fn
+0xD04F7F, stride 0x18 entries) and whether loadout registration/import path
+adds an entry that goes stale on the NEXT registration — mod-side fix target.
+Stopgap for the operator meanwhile: avoid mid-match ship switches (every
+switch beyond the first risks class-B).
+
+### S68 (2026-10-06 ~19:30) — S67's "broadcast registry" = GObjects; deferred deaths are destruction-time UAF; shutdown-loop AVs are secondary
+Verified before/while the external packet ran:
+- The global registry at 0x143F63A70/+7C (1311 reader sites, stride 0x18) IS
+  the engine's **GObjects** (UObject array) — the mod's own define
+  OFF_GOBJECTS=0x3F63A70 already knew it. S67's "poisoned broadcast registry"
+  mischaracterized a normal engine structure: the ARRAY is fine, the ENTRIES'
+  OBJECTS are smashed.
+- 0xD4F715 (the loop the deferred-crash chains run through) = **UObject::
+  StaticShutdownAfterError** — its own strings (Obj.cpp + "Executing
+  StaticShutdownAfterError") prove it. It iterates GObjects calling a per-
+  object virtual (EntryCallV98, +0x98) skip-when-entry-0-null.
+- 0xD2F730 = **ConditionalBeginDestroy-shaped one-shot**: [rcx+8] =
+  UObject::ObjectFlags (EObjectFlags, bit 15 = RF_BeginDestroyed 0x8000);
+  bts then `call [vptr+0x78]` (BeginDestroy slot). Game caller 0x4A8380 uses it
+  as "destroy my +0xA0 sub-object and clear".
+- 18:21's FATAL error = that virtual: "EXCEPTION_ACCESS_VIOLATION reading
+  address 0x0000042f" = 0x3B7(vptr)+0x78, from IteratorFn (0xD04F7F, a
+  GObjects iteration), at join+297.4 s. The shutdown-loop records came 20 ms
+  later during the crash handler (log: "Executing StaticShutdownAfterError"
+  printed AFTER the fatal, then wine died at 0xD4F7A6 read 0x44F=0x3B7+0x98).
+- 18:52: first fault = BigTaskGraphFn (0xD1C520) get-entry-by-index AV (garbage
+  index 0x650000, NULL sentinel r14) on TaskGraphThreadNP 2, chain through ~10
+  allocator frames; the crash-report chain (Critical-error strings at
+  0xCB946F) then died in the shutdown dispatch (0xD4F7A6, vptr garbage
+  0x801010107) = the wine page fault the operator's console showed.
+- Import body strings: UYShipCustomisationComponent::ImportFromDisplayInfo |
+  Invalid import string / Invalid mesh import string; requires exactly 5
+  ';'-groups. Other import-body callers: 0x35AB5C, 0x41D392, 0x42FF3F.
+- Slot byte +0x141 is compared against 0/1/2/3 in loadout-family code
+  (0x348029..0x348149); byte writers elsewhere only — so it is a per-record
+  class/slot field, NOT a counter; the store gate is `slot >= Num -> skip`.
+- Deferred-crash timing: join+297.4 (18:21) / join+297.0 (18:52) — anchor is
+  JOIN (engine-start and map-load anchors disagree), so not a plain fixed GC
+  interval; the wave identity is still open.
+
+Working theory (H-UAF): a second/third successful import leaves a UObject whose
+memory is later freed/overwritten (garbage vptrs 0x3B7, 0x801010107) while its
+GObject entry stays live; a later destruction-time dispatch (or GC/purge sweep)
+dies. The 18:41 run survived BECAUSE its first import threw (no poison built).
+
+External analyses: run/external-analysis/{glm-5.3,deepseek-v4-pro}.md (S68-era,
+package external-analysis-20261006.md at repo root); digest = comparison-
+20261006.md.
+
+### S69 (2026-10-06 ~19:45) — external analyses done (glm 5.3 + deepseek-v4-pro): convergence on the poison mechanism + the shippable guard
+Both external models ran on the S67/S68 packet (external-analysis-20261006.md):
+deepseek-v4-pro in 158 s (75.5 K thinking / 8.7 K answer), glm-5.3 in 812 s with
+its 64k budget exhausted mid-thinking (237.6 K thinking, 0 answer — mined from
+the thinking tail; the 64k includes thinking so long jobs may answer empty —
+next glm run: either shorter think budget or mine the tail as done).
+
+**Convergence (both models + self-verified ground agree):**
+- The danger = the import's PartStoreLoop writing PERSISTENT CATALOG RECORD
+  pointers into the loadout's appearance container, which engine code elsewhere
+  frees as OWNED per-object objects (re-activation clear / destroy / purge).
+  Freeing catalog records = binned-allocator bad-free or silent freelist
+  poisoning => later sweeps (GC family, 60-s grid-ish) dispatch
+  ConditionalBeginDestroy (0xD2F730) / the shutdown sweep on wrecked objects =>
+  deferred UAF deaths at the +0x78/+0x98 sites (observed vptrs 0x3B7 /
+  0x801010107 = freed-bin fills).
+- Store guards are insufficient in the real body: NO Data==NULL check (proven
+  by the 18:41 catch: {Data=NULL, Num>0}); slot-byte (record+0x141) >= Num
+  silently drops stores — which also explains the Athos T1-render (dropped
+  store => empty slot => default skin).
+- The 18:41 survivor fits: its FIRST import aborted mid-loop (caught) —
+  "completeness of import #1, not count of registrations, determines danger" —
+  nothing was stored => nothing foreign for the engine to free later.
+- Deferred-wave identity OPEN (60-s GC grid fit is partial over real anchors:
+  crash at join+297.0/297.4 s in two runs; healthy 18:41 survived join+341 s;
+  world-up anchors were join-26/-5.7 s). The poison mechanism stands regardless
+  of which sweep delivers the wave.
+- LoadoutInitFromInfo's ownerArg-NULL branch is glm's candidate for the
+  {Num>0, Data=NULL} container; unverified — instrumentation will settle it.
+
+**Agreed plan for the next operator cycle (awaiting operator OK):**
+1. Mod build A (logging only, no behavior change): dump the import target
+   container {Data,Num} pre-import + the five part ids' +0x141 bytes on
+   import 1 and import 2. One match, ship-switch x3, any healthy mode.
+2. From that, the writer of the poison state is named; THEN build B =
+   guarded skip (refuse repeat import unless containers verify) which
+   converts crash-runs into the 18:41 pattern (cosmetics default instead of
+   host death).
+3. Stopgap stays: only ONE ship switch per match until fixed.
+Artifacts: run/external-analysis/{glm-5.3,deepseek-v4-pro}.md (S68-era
+out files), comparison-20261006.md, external-analysis-20261006.md (repo root),
+self-notes-20261006.md.
+
+### S70 (2026-10-06 ~19:42) — build A deployed (logging-only instrumentation per S69 plan)
+battle-server-mod src/dn_host_loadout.cpp: DumpAppearanceState() dumps the
+appearance container (believed obj+0x2C0: {Data@+0, Num@+8, Max@+0xC}) at FOUR
+points per registration — constructed / after-init / pre-import (with
+ownerArg + GObjects Num/Max) / post-import — plus the +0x141 slot byte of every
+record the container holds (capped 8) and a +0x240..+0x330 fallback scan if
+0x2C0 is the wrong offset. No behavior change anywhere.
+Commit 7b53f14; deployed by C&P to wer.dll beside the game exe (338447 B,
+19:40) — NO stack restart; each battle process side-loads at launch.
+Operator test (pending): one match, any healthy mode, ship switches xN — the
+mod log (dn_host_loadout log lines inside run/battle-logs/battle-*.log) will
+show the container transitions + slot bytes per import pre/post; from that
+name the poison's writer, then build B = guarded skip.
+
+### S71 (2026-10-06 ~20:05) — S70's container read FALSIFIED by the 19:40 run; real disasm re-derived; A2 diff instrument deployed
+Operator ran the instrumented test (PodTDM 19:40:57-19:52:05): 4 registrations
+(Scout T5 precast @19:41:32 imported OK; Athos T5 precast @19:43:41 THREW;
+SilesiaV2 @19:46:53 THREW; Minotaurus @19:49:27 imported OK). Host DIED at
+19:52:05 (page fault, 0xD4F7A6 reading 0x42F, wine fatal). Correlation now
+4/4 dead with >=2 successful imports, 2/2 alive with <=1.
+
+**What the run falsified:**
+- obj+0x2C0 is NOT observable as a written container: BOTH successful
+  imports left {Data=NULL,Num=0} untouched pre/post. The two THROWING
+  imports changed it (wide-string fragments from adjacent heap) -- reads of
+  a region the import only corrupts-adjacent, not the container.
+- S70's disasm basis was the WRONG COPY: the 0x14242xxxx pages are an
+  unrelated twin 0x200000 above the real code; real functions are at VA
+  0x1404xxxxx (g_base+RVA). All of 19:41's static re-derivation in the wrong
+  region is retracted; runtime data above stands.
+
+**Real disasm at correct addresses (objdump cache /tmp/dn_full_disasm.txt):**
+- 0x422400 (the fn we call): copies display FString (Realloc 0x188B4A0 +
+  memcpy 0x142C04CEC), calls 0x421FE0(rcx=&this+0x2C0, rdx=&copy), then
+  frees the input via 0xBFC9C0. +0x2C0 IS the container.
+- 0x421FE0: string Num>1 gate, exact-5 ';'-groups else warn+free; inner 4/5
+  part groups; catalog lookups via static FN 0x142DA8390 (name->id) +
+  0x1403E1930/0x1403E1630 (id->record on singleton 0x1402CFF20).
+- THE STORE (0x42225B-0x42226D): `movzx ecx,[record+0x141]; cmp ecx,
+  [container Num]; jge skip; mov rcx,[container]; mov [rcx+rdx*8],rax`.
+  Fresh host-built loadout => Num=0 => EVERY store silently dropped =>
+  import "succeeds", container stays {NULL,0}, host-side cosmetics never
+  actually store. The {Data=NULL} store AVs (stackprobe records 7/11,
+  address 0x10, rcx=0) are this gate failing OPEN on Num>0 objects.
+- Every import also writes [container+0x28] = obj+0x2E8 unconditionally
+  (0x422377-0x42238B, catalog object or NULL fallback) -- S70's dump could
+  not see it. On the CLIENT this field and the container are pre-populated
+  before import; in the host they start empty.
+
+**Still unresolved (mechanism of the >=2-success death):** what a
+store-dropping successful import leaves behind that a LATER sweep trips
+over (0x3B7 constant fake-object again this run: [0x3B7+0x78]=0x42F at
+0xD2F74A, [0x3B7+0x98]=0x44F at 0xD4F7A6; register rbx ~ recent GObjects
+indices; rsi=0x143D2D1D0 constant). New instrument answers exactly this.
+
+**Build A2 deployed (caa78d3; wer.dll 338567 B, ~20:02, no restart needed):**
+- 1 KiB snapshot-diff of obj + ownerArg around LoadoutInitFromInfo and the
+  import call instead of the falsified offset dumps -- names the writer by
+  data, not by guess.
+- Crash handler now dumps r8-r15 (records 10/11 showed wide-string
+  fragments in regs; next exception shows the wrapper's variant args).
+Operator test request: same shape as before -- one match, ship switches x3+.
+
+### S72 (2026-10-06 ~20:25) — sweep victim identified as the import's own stored pointer; guarded skip (build B) deployed
+Operator's A2-instrument run (20:06) delivered the killer datapoint. Run
+timeline: Scout T5 import THREW @20:07:21 (GObjects 92201->92203, +2 during
+the abort); Minotaurus imported OK @20:09:00 (46 ms); AssaultMedium T5
+imported OK @20:09:51 (0.5 ms, GObjects 131977->131983, +6); death
+@20:10:01, 10 s after import 3, preceded by the recurring
+"No mmog tier data available for spawning AI ships" errors.
+
+**Post-import diffs (successful imports) — the import's real writes:**
+container (obj+0x2C0) fields +0x10..+0x28 (obj+0x2D0/2D8/2E0/2E8) each get
+a catalog-object pointer, one per ';'-group, resolved via lookups
+0x1403E1630 / 0x1403E1C30 / 0x1403E1F30 / 0x1403E1330 (id parsed by the
+imported fn at 0x142DA8390) on the singleton returned by 0x1402CFF20.
+The record-array stores at container+0 {Data,Num} still all drop — the
+0x422262 gate (`slotByte >= Num`) sees Num=0 on fresh host-built loadouts,
+so +0x2C0 {Data=NULL,Num=0} never changes; host-side appearance records
+never land regardless of import outcome.
+
+**The sweep victim:** final crash record AV at 0xD4F7A6, rax=0x26740001EDE0
+(call [rax+0x98]), with **rcx=0x7F6131429F00 — byte-identical to the
+Minotaurus import's +0x2D0 post value**. The object that import stored had
+been freed/reused by crash time: its vptr slot held packed dword-pair
+garbage (0x26740001EDE0; same shape as 17:41's bad-free Ptr
+0x00019F6A0028000B and the 20:07 init-window +0x388 junk 0x0001662A0028000B
+— note 0x28000B recurring across processes). Sweep chain holds GObjects
+indices in rbx (0x16833 ≈ join-time Num) and rdx (0x20A2E ≈ late Num).
+
+**Mechanism (evidence-anchored):** each successful import stores catalog
+object pointers into ITS loadout's container; a later import/singleton
+replacement or tier-data churn frees an object an earlier container still
+references; the deferred sweep (triggered in the tier-data/AI-spawn path)
+walks the stale reference and calls through a garbage vptr. Exactly why
+>=2 successes die and 1 survives.
+
+**Build B deployed (5418f22, wer.dll 338646 B, no restart needed):**
+`g_appearanceImportedOK` latches after the first exception-free import;
+later registrations skip the live import and log
+"appearance: skipping live import ... one successful import per battle".
+Cost = the S69 stopgap trade, automated: switch 2+ ships fall back to the
+cached-init look server-side. Also corrected the twin-function comment
+about 0x422400 ownership in place.
+Operator test: same shape (3+ switches); expect skip lines after import 1
+and NO sweep crash at any point in the match.
+
+### S73 (2026-10-06 ~20:35) — build B verified in full match: sweep death closed
+Operator completed a full match on build B (battle 20:16:12, log
+run/battle-logs/battle-20261006-201612-port7777.log). Exact expected shape:
+ Scout import OK @20:16:34 (imported "335675488#..." 80 chars, no
+ exception); FOUR skip lines @20:19:43 / 20:20:40 / 20:22:42 / 20:27:08
+ (each ship switch); no EXCEPTION/__except lines; NO new stackprobe records
+ (log tail still the 20:06-run records); the recurring "No mmog tier data
+ available for spawning AI ships" spam ran again from 20:17:06 and did NOT
+ kill the host. Correlation now 6/6 (6 deaths with >=2 successes, 3
+ survivors with <=1). The deferred-sweep death is closed as a crash.
+
+Note on zombie battles: the 20:06 crash hung the exe in wine's failed-
+debugger path holding UDP 7777 (fixed by killing only the battle exe).
+Any future "stuck on match starting" right after a battle crash = likely
+the same; kill the battle exe, leave dn-dedicated alone.
+
+Known remaining wart: only ship #1 keeps its skin; skip ships fall back to
+default appearance server-side. Proper fix = pre-populate the appearance
+container the way client-built loadouts do (container Num>0) so >=2
+imports are safe, plus find who frees the stored catalog objects.
+
+Open items: proper-fix container pre-population source; shop owned-flag
+anomaly; cosmetics hangar-tile gate (Cycle B negative); Skybridge/TDM
+Oct-5 type-3 breakage (possibly same heap disease); "Invalid active
+weapon" warnings correlation.
+
+### S74 (2026-10-06 ~21:00) — hangar cosmetic surface: ownership verified, popup gate named, equip path mapped
+Operator reframed correctly: normal ships are broken at the HANGAR equip
+level (no coating/pattern/emblem/decal options; component tiles view-only),
+hero ships work because their cosmetics are baked into precast loadouts.
+Battle-side facts: build C (4cccc0b, import every registration +
+RF_Standalone-mark the 4 stored appearance objects) imported and marked 4
+cleanly on a quick join/leave run (battle-20261006-204054), matches stable.
+
+**Verified:**
+- The 4 probe cosmetics (0x15FF0001 emblem / 0x16FF0002 coating / 0x17FF00AE
+  pattern / 0x18FF0001 decal) ARE owned: idle-idempotent rows in mmog.db
+  player_purchases for the operator (granted=0 on later logins = already
+  present). "Not unlocked" is NOT the gate.
+- "Jupiter Arms" (the user-visible "JA") = the baked DEFAULT paint
+  VAN_PN_00_BASE_DA with VAN_CLR_Manufacturer_Jupiter_DA -- the popup's
+  always-present default, which is why it is the only visible tile.
+- RequestVanityPurchaseData exists client-side (YUIVanityItemPurchaseData,
+  sender 0x4CA880-0x4CAB16, caller 0x54F3F0 in the item-details UI screen
+  region) but NEVER hits our mmog endpoint (no unknown-request warning) --
+  these YUI purchase-data panels fill from client caches, both this one and
+  the working tech-tree twin RequestTechTreePurchaseData. Not the transport.
+- Client's OWN cooked vanity data has EMPTY per-hull compatibility:
+  m_compatibleShips is all-zero for all 224 paints (checked; categories:
+  532 mesh parts / 102 emblems / 250 paints / 197 patterns / 288 decals in
+  ItemIDTable cat 20-24). In retail the per-hull compat had to be supplied
+  at runtime by the backend -- our gateway catalog seeds ship no compat.
+  This is S64's "surface we do NOT ship cosmetics on", now identified.
+- The equip click lands in UYLoadoutManager::UpdateShipVanityItem
+  (primary 0x350740, body chunks incl. 0x3507AD-0x35410A); its failure
+  strings: "No matching Loadout ID %s is loaded. No loadout will be
+  updated" (refs 0x351CCE) and "No loadout will be updated - No Vanity
+  Items Changed" (ref 0xA4426). Never captured live -- run/client.log stale
+  (ends 17:43). The popup list builder and the owned-vs-inflated-id question
+  remain unverified: S57 inflated shared ids for modules; cosmetics granted
+  ONLY in shared form so far.
+- In-match custom-appearance pipeline mapped client-side: AYPawn
+  InitShipCustomisation (0x57E690) -> 0x57E89C (custom cfg at +0x920,
+  field 0x928 > 1 gate) -> serialize via 0x1419E39F0 -> SAME 2-arg import
+  0x422400 -> apply 0x42F4B0 (+0x2D0..+0x2E8 each applied to pawn via
+  0x42F770/0x431430/0x414370/0x4140D0); default leg 0x4224E0 constructs the
+  default appearance object (+0x2D8) and marks RF_Standalone (0x40) on
+  ObjectFlags+0x8.
+
+**Proposed next cycles (with operator):**
+1. Capture client stdout over a normal hangar visit; click a coating equip
+   on a normal ship. The UpdateShipVanityItem warning tells us which branch
+   refuses (unowned client-side vs no-matching-loadout vs nothing-changed).
+2. If inflation is the gate: extend provisions with per-hull inflated
+   cosmetic ids (S57 pattern for modules) for owned hulls.
+3. Wave-defense (Havoc) data is ALREADY stubbed in the dispatcher
+   (YA_GetHavocWaves/BossTypes/AIDifficultyLevels/HavocModifiers/
+   PvERewardTiers cases exist) -- relevant for the later mode goal.
+
+## S65 — the slotting byte + what the screenshots showed (2026-10-06, offline)
+
+S64's cycle B verdict explained without a client run. Three verified chains:
+1. **Slotting**: the popup's per-slot option collector (0x140A9E350) keeps
+   only tech-tree records whose type byte [rec+0x10D] equals the slot's
+   LoadoutType (11-18). Provenance: rec+0x10D ← item +0xD8 (0x14047EAB0
+   @0x14047EBF7) ← BYTE blob-row +0x28 (ctor 0x14034D690 @0x14034D72E) ←
+   DWORD copied by converter 0x14034E550 @0x14034E58B. Our cosmetic blob
+   rows send Id/ClassId/Manufacturer/Tier/XPCost only — no LoadoutType
+   anywhere — so owned cosmetics can never slot. Wire field → +0x28 is the
+   one unmapped link.
+2. **Options list source**: the per-tab list = the ship precast's own
+   m_appereance struct (one item per slot — Default/None placeholders
+   explained). "Jupiter Arms" = VAN_PN_Manufacturer_Jupiter_DA 0x16FF000D,
+   the precast's manufacturer paint; selectable since cycle B put cosmetic
+   ids in PurchasesData (the availability layer). Probe's 4 ids never
+   surfaced tiles; winter-vanity/emblem display-string ids (0x16FF0041 /
+   0x15FF00EA) have no client item records at all.
+3. **Ship-part padlocks**: the 5 locked entries = the hull line's precast
+   tier-variant loadouts; suspected genuine tier gating.
+Doc: battle-server-data-path.md §4 Addendum 2/3, commit 1ce5d08.
+**Next one-change**: cosmetic blob rows carry the appearance LoadoutType
+byte (after confirming the wire field). Then: cross-player skin visibility
+in a friends match.
+
+### S75 (2026-10-12) — upstream merged; headless client harness + live driving; Derelict host crash at spawn
+- Merge 1a91f85: 18 upstream commits (daily contracts supersede our
+  YA_ContractReplace push, removed; sizecheck 2967 -> 3311, commented). Tests
+  pass, deployed, not pushed.
+- Tooling: `dn headless` (unattended, steps files, bundle + VERDICT) and
+  `dn live` (interactive: one client kept running, each action -> shot + new
+  notable log lines; `stop` writes a replayable steps.txt). Traps recorded in
+  the dreadnought-verify skill (Xvfb/llvmpipe abort rc=3, Xwayland present-flip
+  stale grabs, null sink, no taskset, wined3d not DXVK).
+- Verified headless, real client, post-merge stack: login -> hangar -> Recruit
+  -> Proving Grounds -> matchmaking -> ship pick -> orbit intro -> spawn ->
+  flight, bots fighting (replay-pg5 PASS on Amirani; live-pg same by hand).
+- **Finding, not chased: battle host dies at player spawn on Derelict — 3/3
+  (replay-pg2/3/4), Amirani 3/3 clean.** ~0.6 s after the mod's single
+  appearance import: allocator "freeing a pointer we didn't allocate"
+  (0x1601F0028004B), then RenderingThread.cpp:723 AV reading 0x2, exit 3.
+  Stackprobe: thread 516 AV at RVA 0x1CA7BD6 (addr -1) then 0xBFCD47 (r12 = the
+  same bad pointer). S73 had first imports as safe and "Derelict always worked"
+  pre-merge; the merge added +1675 lines to dn_host_loadout.cpp. Next
+  one-change candidates: pre-merge mod DLL on Derelict, or skip the appearance
+  import; force the map so each run is a Derelict data point.
+- Pre-existing, also seen in the operator's 10-06 log: client
+  `session/touch` -> https://127.0.0.1:65443 "Connection error"
+  (handler exists, mmogbrain/gateway_server.go:459).
+
+### S76 (2026-10-12 ~21:10) — operator test round after merge + launcher port
+
+Operator report (real client, two matches: PodTDM/Space02 "Ceres Awakens /
+Ryugu Haven" 20:54, TurboTDM/Skybridge (client shows "Ixion") 20:59):
+- Hangar cosmetics on normal ships: **equip now works** and the look carries
+  into battle. Leftovers: the slot UI still shows defaults as selected, and an
+  extra "none" option that belongs to another ship -- unknown whether that is
+  hidden/test residue or real cross-ship contamination.
+- Second-ship skin loss: **non-issue** -- two customised normal ships
+  (Athos -> Gora) swap and both keep their look.
+- "Invalid active weapon": no visible effect; last priority.
+- Shop owned flag: unchanged -- hero ships in the store show buyable (only
+  Junkyard Prince shows OWNED) while the hero ship list shows them owned.
+  Separately: the captain helmet the operator wore is gone; something in the
+  character-cosmetic set changed (merge suspect).
+- Hero ships: granted on this account (list shows owned). Open question: is a
+  fresh account different?
+- session/touch "Connection error": operator has no view; stays ours.
+- Shared 2-player match: worked before; operator will retest later.
+- Enhancements (#78/#70/#69/#73, installer UI, server picker): after fixes.
+- Derelict (S75) and Skybridge/TDM: operator wants them next.
+
+Our read of the two host logs (run/battle-logs/battle-20261012-205434 and
+-205946): both hosts died **when the player left** ("requested travel back to
+outpost" -> connection close -> AV reading 0x18, ~0.3 s later). Not seen by the
+operator (they had already left). Different signature from the S75 Derelict
+spawn crash (allocator free + RenderingThread AV 0x2). Skybridge itself played
+fine to that point in TurboTDM.
+
+### S77 (2026-10-12 ~22:00) — mode×map sweep, Havoc routing, tutorial skip, TE spawn crash
+
+Tooling: `scripts/sweep.sh LIST` = pinned headless matches back to back
+(`dn headless --pin`, matchmaker `DN_MATCH_PIN_FILE`), one result line each in
+`run/cycles/sweep-<ts>.txt`; waits for /instances count 0 between matches
+(a client relogging before its old host is reaped is pushed back into that
+match by `armMatchPushForActiveMatch` and lands with no pawn -- first sweep
+invalid from match 2 on). Milestones gained `orbit` ("Orbit sequence has
+started", = flew) and `NO-PAWN`. `dn rva` now runs under the oci venv
+(capstone).
+
+- **TE crashes the battle host at spawn, both maps (Gorge, Highlands), 2/2:**
+  ~0.2-0.4 s after the mod's appearance import / pawn spawn, render thread
+  "RenderingThread.cpp:723", stackprobe AV at RVA 0x1CA7BD6 reading -1,
+  thread 516 -- byte-identical to the S75 Derelict/BC spawn crash. The site
+  (0x1CA7BC0 loop) calls the deleting dtor (`edx=1; call [vtbl]`) on each
+  element of an object array; the faulting element's "vtable" is a code
+  address (rax=0x140D2E0B0) => a freed/overwritten object, heap corruption.
+  TDM Skybridge/Glacier/Highlands clean. A/B queued: same pins with
+  `dn_host_no_appearance.txt` beside the exe, then without.
+- Matchmaker Havoc routing (1e63b37): client GlobalUI lists "HAVOC"; tile
+  only offered with `DN_HAVOC=1` until a client has played it.
+- `DN_ONBOARDING_TEMPLATE_PID` (a78e9c3): a new account with no SGD save gets
+  the template player's (operator's) -> tutorial skipped. Set in secrets.env.
+  Not yet run against a fresh account.
+- Market bundles report owned (5b9c941): deployed, not seen in a client.
+- Helmet: operator's display_info Hw=872349847 "Ceres Respirator (F)" is
+  owned and allowed server-side; needs a captain-editor look.
+- "None" cosmetic option: 280+ items carry the client's own localized name
+  "None" (all 00_BASE/_Default); likely another same-line hull's default
+  (upstream bfc57f7 rule), not contamination -- needs a customizer look.
+- Invader event: VAN_H_AssaultM_*_Invader parts are the **Vigo** (T4
+  destroyer, loadout 33489285) stock look; event items = Invader coating
+  385810495 + Saucer decal 419365147, both already sold. 385810444
+  VAN_PN_BlackWhite_DA = "The Reaper" coating, not a filter.
+
+### S78 (2026-10-12 ~23:00) — spawn crash traced to the host mod's appearance import; Havoc ready-up; handoff
+
+- **Spawn-crash A/B (sweep-20261012-224916.txt, `dn_host_no_appearance.txt`
+  present):** TE Gorge and TE Highlands -- both crashed at spawn in the 22:00
+  sweep -- flew to orbit with NO host crash. Rest of leg 1 (TER Skybridge,
+  BC Derelict, PodTDM Space02) and leg 2 (import ON, TE x2 only): see the
+  RESULTS: leg 1 (import OFF) 5/5 clean -- TE Gorge, TE Highlands, TER
+  Skybridge, BC Derelict, PodTDM Space02, every one of which crashed at
+  spawn before (Derelict 3/3 in S75). Leg 2 (import ON, sweep-20261012-
+  231738): TE Gorge HOST-CRASH again, TE Highlands clean. => the crash is
+  the host mod's appearance import path (wer.dll), not the maps/modes. Every crashed run had a SUCCESSFUL import
+  ("standalone-marked 4"), so the __except path is not it. Suspect: our
+  RF_Standalone OR into +8 of all four stored pointers (+0x2D0..+0x2E8) --
+  the client's own 0x4224E0 marks only +0x2D8. `DN_HOST_NO_STANDALONE` /
+  `dn_host_no_standalone.txt` (f8ad2e4) imports but skips the marking;
+  built in battle-server-mod/build-linux/, **NOT installed** (wer.dll beside
+  the exe is still b12b74e95b5f). Next: install it, run
+  `scripts/sweep.sh scripts/headless-steps/sweep-ab-appearance.txt` with
+  only that marker. Clean => keep import, drop/narrow the marking.
+- **Havoc Map1 plays** (bundle 20261012-223820-sw-havoc-map1: spawn, HUD,
+  abilities, flight) but no wave ever started; zero Havoc state lines on
+  host or client under global verbose. "SetMatchStarted | Can't cache active
+  loadout ... C_0" is a per-player loop (0x380FE0) on the pawnless "player
+  256" controller, present in every mode -- harmless. Client DefaultInput.ini
+  (pak chunk0) binds `ReadyUp` = SpaceBar; the sweep pressed space only at
+  the orbit READY. Probe: `dn headless havoc-ready --steps
+  scripts/headless-steps/havoc-ready.txt --pin '{"mode":"Havoc","map":"HVC_Map1","path":"/Game/Maps/Havoc/Map1/HVC_Map1_P","launch":"Havoc"}'`
+  -- not yet run. Horde (PvE) likely shares the ready-up.
+- Already in place, not new: empty-host reaping (278e5de, 10 s) and PvE
+  Season 1 in the client's mode list (upstream 9805e30, one episode/week).
+- sweep.sh keeps each run's `dn headless` output in sweep-<ts>.log.
+- Still pending (need the display, in order): leg 3 above; re-run
+  havoc-map2 / pve-s1e1 / pve-s1e4 / pve-s3e1 (lines 13-16 of
+  sweep-focus.txt; invalid in the 22:00 sweep); customizer "defaults
+  selected"/extra "None", helmet, shop OWNED tiles via `dn live`.
+- Fresh account (claude-fresh-01, bundle 20261012-232547-fresh-account) with
+  DN_ONBOARDING_TEMPLATE_PID: straight to the hangar, no tutorial map in the
+  client log; only the skippable "Ship Classes" 1/7 cards + Login Streak
+  popup show. Tutorial skip works.
+- Interim option if leg 3 isn't clean: run hosts with
+  dn_host_no_appearance.txt (no crash; other players then see default skins
+  in battle -- own view unaffected? unverified).
+
+### S79 (2026-10-13 morning) — spawn crash root cause, session/touch fix
+
+- **Spawn crash root cause (699f128):** our host mod called
+  ImportFromDisplayInfo's body 0x422400 on a UYShipLoadout, but it is a
+  **UYShipCustomizationComponent** method (registration block 0x6353A0 takes
+  its class from 0x614D90, InSize 0x320; UYShipLoadout 0x614E30 is 0x1B8).
+  It stored 4 pointers at +0x2D0..+0x2E8 = past the end of our loadout, into
+  the next heap block. Crashing runs had that neighbour's FFFFFFFFFFFFFFFF /
+  00000000FFFFFFFF there pre-import, clean runs zeros (7/7). Leg 3
+  (sweep-20261013-061003, marking off, import on): bc-derelict, pod-space02,
+  te-gorge-2 HOST-CRASH -- the Standalone marking was never it, and the
+  S72/S74 import-lifetime stories were readings of the same overwrite.
+  Import call removed (comment in place). Verification sweep
+  (/tmp/verify.txt: the 5 A/B pins + 4 repeats) queued on wer.dll
+  bd8222658bdc.
+- The game's own look path: 0x57E89C (chunk of 0x57E690, ship actor in rdi)
+  imports the actor's display FString at +0x920 (Num at +0x928 > 1) into the
+  customization component at actor+0x470, else 0x4224E0 default look. Who
+  fills actor+0x920 on a host is not traced. **Whether other players see a
+  host-built loadout's look is unverified** -- needs the 2-player match.
+- **session/touch "Connection error" (b59ea9f):** the :65443 server had no
+  IdleTimeout (Go falls back to ReadTimeout 15 s); Wine wininet pools idle
+  connections ~60 s and never retries a server-closed one, so touch >15 s after
+  the last request failed in ~2 ms, plus retries and the logout. run/client.log:
+  93/113 failed touches after a >15 s gap, 100/120 good ones <=15 s; every
+  headless bundle showed 1 ok + failures. IdleTimeout 3 min. Discriminator: 0
+  "No response received for [Touch" in a post-deploy bundle.
+- sweep.sh: `--steps FILE`; never reports an older bundle as a run's result
+  (a refused launch had inherited the 10-12 havoc-map2 verdict).
+- Lottery (not Dreadnought): MIN_SLEEP 12->10 s (3742c13) -- 429 rate is a
+  ~2% plateau from 9 s up (30/1500 at 12 s overnight).
+- Helmet 872349847: in the Female CaptainTemplate and owned server-side --
+  still needs the captain-editor look. "Invalid active weapon": once per match
+  at pawn assignment (SetYPawn before weapons replicate), no effect; parked.
+
+#### S79 addendum (07:2x) — verified fixes, remote-look path, handoff
+- touch fix VERIFIED: every post-deploy bundle touch ok=1 no=0 (was ok=1 no=6).
+- Crash-fix verify sweep (scripts/sweeps/crash-verify.txt -> run/cycles/sweep-20261013-063815.txt, wer.dll
+  bd8222658bdc): **9/9 clean** -- all reached orbit, no host crash (the same pins crashed 3/5 with the import on). Spawn crash closed.
+- Remote-look path traced: actor+0x8C8..+0x938 set by 0x594B40(actor, loadout)
+  -> builder 0x56B700 -> actor+0x920 = 0x345FC0(loadout) = export
+  0x41C980(loadout+0x108, out, byte loadout+0xD8). So the replicated look comes
+  from the loadout's appearance struct at **+0x108**, NOT the +0x68 cached
+  display we set. The client's own loadout import is 0x35AB00
+  (loadout, const FString&): copies the string, 0x421FE0(this+0x108, &copy).
+  Built as switch `dn_host_loadout_import.txt` / DN_HOST_LOADOUT_IMPORT=1,
+  OFF (719f01c), logs changed words of +0x108..+0x168. **Not deployed, not run.**
+- NEXT (in order): `dn deploy` (wer.dll); 3-map headless sweep with the marker
+  on (scripts/sweeps/loadout-import.txt:: te-gorge, bc-derelict, pod-space02) -> expect no
+  host crash + "player loadout import:" diff lines; then the operator's
+  2-player match to see the look remotely. Havoc probe (`dn headless
+  havoc-ready`) and the PvE reruns (scripts/sweeps/pve-rerun.txt: havoc-map2, pve-s1e1/e4, pve-s3e1 with
+  --secs 600 --steps scripts/headless-steps/havoc-ready.txt) did NOT run
+  (session ended). Live looks still owed: customizer defaults/extra None,
+  helmet in captain editor, shop OWNED tiles.
+
+### S80 (2026-10-13 17:15) — loadout import verified headless
+- GitHub: origin/master unchanged since 10-09 (we are 92 ahead, 0 behind).
+- Deployed wer.dll c90f61cc05c0 (719f01c). Marker `dn_host_loadout_import.txt` ON.
+  Sweep scripts/sweeps/loadout-import.txt -> run/cycles/sweep-20261013-171520.txt:
+  **3/3 reached orbit, no host crash** (TE Gorge, BC Derelict, PodTDM Space02).
+  Every match logged `player loadout import:` +0x118/+0x120/+0x128/+0x130
+  0 -> heap pointers (appearance arrays filled at loadout+0x108). Remote
+  look NOT verified -- needs the operator's 2-player match; marker left ON for it.
+- Already done, not new: empty-host auto-close (reaper, 10 s) and the
+  new-account tutorial skip (DN_ONBOARDING_TEMPLATE_PID, verified S78).
+- PvE/Havoc reruns (scripts/sweeps/pve-rerun.txt) started after this.
+- 17:31 havoc-map2 NO-PAWN was INVALID: the chained sweep started while the
+  previous sweep was in its end wait; mmogbrain sent the login back into the
+  leftover PodTDM Space02 match. Fixed: sweep.sh waits for 0 hosts before the
+  first run too (658c692).
+- PvE reruns (sweep-20261013-173132.txt), each welcomed on its real map:
+  S1E1, S1E4, S3E1 all spawn + fly, no host crash, but **no enemies/waves/objectives**
+  (no AI_Pawn, no HandleWaveStateChanged in host or client logs). ReadyUp
+  (space, DefaultInput.ini) pressed after spawn changes nothing.
+  Ruled out: "teleport ... not in orbit" (also in working TE); INTRO
+  sublevel unloaded (also unloaded in TE). Leads: m_automaticallyStartFirstWave
+  (prop reg 0x7197C0), ServerStartHordeWave/StartFirstWave, ReadyUp RPCs.
+  S1E1 streams PVE_Escort_02_* (Episode4) sublevels -- maybe normal.
+- Havoc Map2 rerun (18:16, valid): Havoc pawn spawns (12,000 hull, Siege Mode /
+  Drain Missile / Anti-Missile Lasers / Dive Maneuver). Host: "SetMatchStarted
+  | Can't cache active loadout. None available" -- AYGameState_Havoc
+  SetMatchStarted 0x380FE0 iterates PlayerArray (+0x470), PC vfunc +0x5C8,
+  0x5B7A60 -> 0x345510(active loadout?) null -> no 0x407380 cache. Whether this
+  blocks waves: unverified. Next: live session on Havoc/PvE to see the client UI.
+- Havoc null decoded: 0x5B7A60 = PC+0x958 (m_fleetManager) -> +0x28 = loadout
+  manager component; 0x345510 = LMC+0x208 m_activeLoadout. Our mod registers
+  loadouts (0x3382F0, add-only, by design since the Cerberus bug) and never
+  activates one, so Havoc's SetMatchStarted finds none. Candidate (NOT built):
+  after the spawn's loadout is resolved, activate it with the engine's own
+  0x337050(lmc, &id) on Havoc/Horde hosts only, behind a marker. Test: does
+  "Can't cache active loadout" go away and does wave 1 start?
+- Live Havoc Map2 (bundle 20261013-182617-havoc-live2): the PS-style lobby
+  shows SELECT A SHIP (Modified Trafalgar/Tugarin/Orcus/Nav/Dover, II) +
+  BATTLE BEGINS countdown; picked Trafalgar (card + "Destroyer 1" update) and
+  flipped the ready toggle (500,690 -> green check). Host still logged
+  BeginBattle + "Can't cache active loadout. None available" at 18:30:25, and
+  the client stayed on the lobby (countdown frozen at 00:40). So the pick does
+  NOT activate a loadout server-side -> the 0x337050 activate candidate stands.
+  Headless havoc-ready.txt is wrong for Havoc: needs click 172,585 (first
+  card) + click 500,690 (ready), not 380,605 + space.
+- Tooling notes: `dn live wait` is `wait RX [secs]` (a bare number is a regex);
+  `dn live start` has no host-free wait -- a host left by a just-finished
+  headless run captured the first live login (stopped via DELETE /instances).
+- **RETRACT the 0x337050 activate candidate.** The "Can't cache active loadout"
+  line names VH_YPlayerCtrl_BP_Havoc_C_0; our joining player is _C_1 (its
+  LoadLoadoutFilterLoadouts lines say _C_1). C_0 = the listen host's own local
+  PC (we only report DEDICATED from GetNetMode). The error is about that phantom
+  player, not ours. New hypothesis (unverified): Havoc/Horde wave start waits on
+  ALL PlayerArray entries (ReadyForNextWave / m_automaticallyStartFirstWave),
+  and the phantom C_0 never readies. Check next: does C_0 have a PlayerState in
+  PlayerArray on PvE/Havoc hosts, and what StartFirstWave gates on.
+
+### S80 addendum -- operator round (2026-10-13 18:35)
+
+- **"Special Event" tile = the client's PVE entry** (locres `GameMode_PVE` /
+  `UI_PVESpecialEventTitle`). PVE IS in the mode list (client: "Received
+  possible game modes ... PVE"), still `Game mode Special Event locked: 1`.
+  Lock rule (0xAD5C40, entries 0x70 B): type +0x50 == 0x12 never locked;
+  type 0x13 locked unless entry +0x69 set; others by a general gate.
+  Only setter of +0x69=1: ActivatePVEEvent 0x4D9C60 (after GetActiveEvent
+  0x3F56D0 -> GetEventFromDTByID 0x3F80D0 succeeds); DeactivatePVEEvent
+  0x4E0770 clears it. Not yet known which step fails -- client Engine.ini
+  now has LogYUIData / LogYSeasonsDataManager / LogYGameState_PVE =
+  VeryVerbose; next client session's log will say. Order is NOT it:
+  mmogbrain sent UpdateGameModes before SeasonData (18:34:04).
+- **Turbo TDM effect missing:** the effect is game modifiers, not a mode
+  flag. DN_GameModifiers_DT row YGMT_TURBO_TDM = feats
+  `ModifierSpeed;ModifierDamage;ModifierFireRate` (DN_Feats_Custom_Modifiers
+  OTS DT; ModifierTurbo also exists, Buff(Turbo), D(1200)). Loader
+  UYGameModeSettingsDataManager::Initialize (0x34AA40, reached only from its
+  BP exec thunk 0x75D190) reads tune key DN_GameModifiers_DT. It has never
+  logged on any host or client -> never called in this build; the original
+  server build applied it. Host runs GameMode_Turbo_TDM_BP_C correctly.
+  Candidate: mod applies the row's feats to every pawn in TurboTDM.
+- **Player card name blank:** S20 finding stands (no name field in
+  YA_PlayerGet / GetPlayersInformation). But Steam now initialises (achievement
+  queries in the 10-12 log), so "Steam supplies it" is weakened. Open.
+- DN_HAVOC=1 set in secrets.env + restarted for an operator trial. Havoc
+  lobby: ship card 172,585, ready toggle 500,690; waves still do not start.
+
+### S81 (2026-10-13 22:00-23:10) -- havoc: why waves spawn nothing
+
+- Director (615c507) drives GameState_Havoc wave states and now calls
+  PVE_HordeManager_BP.OnWaveStateChanged(waveState byte@0, waveIndex int@4)
+  on each transition. Its ubergraph (state 2) calls SpawnWaveInitialEnemies
+  -> PVE_EnemyGroupSpawn_Component.SpawnPVEEnemyGroupEvent ->
+  CombatSceneManager.AddNPCSpawnByDataset(PawnIdToSpawn, ...). Read from the
+  cooked bytecode: `tools/pakx.py` extracts from the paks (v3, unencrypted),
+  `tools/bpdump` + `tools/bpdump/bpcompact.py` render it as pseudo-code.
+- RETRACTED: m_combatSceneManager (YPVEEventManager +0x3C0) null -- it is
+  already the world's YAICombatSceneManager.
+- ROOT CAUSE (runtime props, LogProps): GameState m_pveDifficulty = 0. The
+  component picks EnemyNameRecruit/Veteran/Legendary by GetPVEDifficulty
+  1/2/3; 0 has no case -> PawnIdToSpawn None, GroupSpawnInProgress stuck 1,
+  CurrentIndex 0 of 3. Manager m_previewDifficulty = 1.
+- Fix under test: at PvE start call native InitializePVEDifficulty
+  (0x75D7A0 -> vtable +0x108); if still 0, copy m_previewDifficulty.
+  GUESS: real source of lobby difficulty unknown.
+- Map data: HVC_Map1 wave 1 = 3x DreadnoughtMediumEasyT2; NPC set asset
+  Maps/Havoc/HVC_DeadHorde_EnemyShips.
+- Next if ships appear: alive counter (GS NumAlive) / AddNPCToEnemyList,
+  NPC AI start, wave-over detection. Trap: a wait loop using
+  `pgrep -f "sweep.sh /tmp/havoc"` matches its own command line -- anchor
+  it (`^bash scripts/sweep.sh`).
+- RESULT (run 20261013-230655-sw-havoc-map1, 23:08): difficulty fix WORKS on
+  the BP side -- wave 1 group spawn runs to completion (CurrentIndex 3/3,
+  PawnIdToSpawn AssaultMediumEasyT1 .. SniperMediumCatapultT2, CurrentNPCId
+  2, GroupSpawnInProgress back to 0, GS max wave enemies 3). Still alive 0
+  and NO spawn lines in the host engine log. So AddNPCSpawnByDataset
+  registers scene entries but no pawn appears. Next: inspect the scene
+  manager's NPC array (OFF_SCENE_NPCS 0x3C0 / count 0x3C8, entry 0xA8 B,
+  instanced flag +0x88) after the call -- does the scene manager's tick
+  spawn non-instanced entries (0x2693A0), or is that tick server-only/
+  stubbed? The onslaught creep path (SpawnOnslaughtCreep) already spawns
+  NPCs by hand and could spawn these entries the same way. Also
+  "BP called compiled-out native ExecuteUbergraph_PVE_EnemyGroupSpawn_Component
+  on GameMode_Havoc_BP_C" = the component's CheckWaveOver call (stub, expected).
+  RETRACTED 2026-10-14: that name is the CALLER. A script-called native gets
+  the caller's FFrame, so Node (+0x10) is the calling ubergraph; the callee
+  is the UFunction* operand at Code-8 (CalledNativeName). With that fix the
+  line reads "compiled-out native CheckWaveOver", so the guess held by luck;
+  the EndCurrentWave/PlayersWin counters keyed on Node never matched for the
+  same reason. Run 17:45: AddNPCToEnemyList(0/1/2) recorded, alive 3 peak 3.
+- Run 23:17 (scene array logged at wave-1 t+5): `scene npcs 3: [type 5 cls
+  null inst 0 pawn -1] x3` -- AddNPCSpawnByDataset DID register all three
+  entries, but pawn class (+0x20) is NULL and none instanced. Next: is the
+  class meant to come from the NPCSet dataset (HVC_DeadHorde_EnemyShips --
+  is the scene manager's NPCSet that asset, and does it contain
+  AssaultMediumEasyT1 / SniperMediumCatapultT2?) or resolved later by the
+  scene tick (0x2693A0)? Disassemble the AddNPCSpawnByDataset native
+  (scene manager UFunction Func +0xB0) first.
+- 2026-10-14: ROOT CAUSE of "cls null, inst 0": AddNPCSpawnByDataset
+  (exec 0x73FC20 -> 0x23A380) leaves the class null BY DESIGN -- it stores
+  the dataset pawn id FName at entry +0x18; the scene tick (0x2693A0)
+  resolves it (0x24FD00) when it spawns. The tick spawns nothing while scene
+  +0x444 is set: BeginPlay (0x23B83D) sets it when net mode is 1; only
+  AYAICombatSceneManager::StartCombat (0x2681A0, sceneMgr, bool notify)
+  clears it, called by the game only from the game mode's team fill
+  (0x381FA0 @0x3822C6, notify false) -- never in Havoc. FIX: call it once
+  at PvE start. VERIFIED run 20261014-172542 host log: flag 1 -> 0, then
+  "LogYAICombatSceneManager: spawn Pawn by dataset: ShipId=AssaultMediumEasyT1"
+  x2 + SniperMediumCatapultT2; all 3 entries inst 1 with live weak pawns.
+- Next gap: alive stays 0 -> director ends wave 1 at the 120 s "nothing
+  spawned" grace. AddNPCToEnemyList (YGameMode_PVE, called by the group
+  component per CountForWave enemy) is compiled out: exec 0x742E90 -> bare
+  ret 0x1AA9450, thunk shared by 34 one-int natives. Nothing else writes
+  GS m_numAliveEnemies +0x1E58 (only constructors). Under test: hook 0x742E90
+  (do the thunk's Step/P_FINISH, record ids by FFrame Node name), director
+  sets +0x1E58 = listed ids still alive (unspawned, or pawn state != 2/3).
+- Trap: a new day's Login Streak popup covers the hangar; headless steps
+  now click its OK (645,446) first.
+- Operator run 2026-10-14 18:35 (waves 1-5 with a real client): waves spawn,
+  clear and advance; stuck at wave 5 without upgrades. Wave-defeated screen
+  shows 0 XP, upgrade currency 0, "Upgrade loadout" greyed. Found:
+  * AddXPForGroup(750) at wave clear (int thunk 0x742E90) and
+    AddXPWithContributerPlayer/Pawn (int+object thunk 0x740AF0) are
+    compiled out; GS m_playerWaveXP +0x201C / m_totalXP +0x2020 are written
+    only by the ctor 0x363680 (getters 0x371AC0 / 0x372730; GetWaveXP
+    0x372F60 = total - +0x2038, no writer). Now hooked -> both fields (GUESS
+    split). Not yet verified with a client.
+  * Upgrade offers are compiled out too: the ClientReceiveRandSelectedUpgrades
+    sender (0x7463E0) has no callers, and ServerReceiveSelectedUpgradeIndex
+    _Implementation (0x406040) only logs. Upgrades = other loadouts incl.
+    YHUC_NEXTHIGHERTIER (PrepareUpgradesForUI strings); implementing offers
+    + applying the choice is the next big piece.
+  * Ready-up: director waited the full 60 s upgrade timer. Hooked
+    ServerReadyUpPlayerForNextWave's thunk 0x772650; all connected humans
+    ready -> next wave. ClientUpdatePlayerReadyForNextWave still never sent.
+  * killed count stays 0 (nothing writes +0x1F40 yet).
+  * Open from the report: camera snaps to the ship spawn point on every wave
+    announcement; changing ship in the respawn menu misbehaves; Havoc feels
+    laggier than other modes.
+
+### S82 (2026-10-14 19:00-19:55) -- havoc: upgrade offers, per-player XP, boosts
+
+- Spendable XP is per player: AYPlayerReplicationInfo_Havoc m_currentXP
+  +0xA28 (props 0x958150..: +0xA2C m_currentContributedXP, +0xA30
+  m_lastWaveContributedXP). Read by 0x3FC7D0 (PC+0x3E0 -> +0xA28) for the
+  panel's XP counter and the buy gate in 0x448240. GS +0x201C/+0x2020 alone
+  left the panel at 0 (operator screenshot 18:35). DeductXP 0x3F34F0 is real;
+  AddXP is compiled out (format string only) -- grants now write +0xA28 for
+  every connected human (GUESS: team-wide).
+- Offers: server sends ClientReceiveRandSelectedUpgrades(TArray<FName> @0)
+  on entering UpgradeSelection; client stores + PrepareUpgradesForUI loads
+  them (client log "Preparing cached item ID Weapon Boost (...)"). GUESS
+  rule: one boost per category weighted by m_weight. Loadout-tier upgrades
+  NOT offered yet.
+- Pick: hook ServerReceiveSelectedUpgradeIndex_Implementation 0x406040
+  (pc, int slot) -> DeductXP + ClientReceiveBoostPurchaseResult(FName @0,
+  bool @8). Panel controls: hover a card selects, click buys; Space = ReadyUp.
+- Apply: m_feats via UYFeatsComponent::AddFeat 0x337850 on the current ship
+  (feats comps recorded at begin-play 0x34BB30), re-added on each new pawn.
+- RETRACTED own attempt: ClientXPDeducted is not a reflected UFunction;
+  FindFunctionChecked on it fatal-errored the host (19:45).
+- Verified live (dn live, fast-waves switch): offer shown with prices + XP
+  1,500; click -> "Acquired", XP 1,200, boost under ACTIVATED BOOSTS, host
+  "boost feat HVC_Boost_Def_HpInc_Small on VH_AssaultM_Pawn_T2_BP_C ->
+  added"; Space -> ready -> wave 2 at once. NOT verified: feat effect on
+  the ship (HP actually higher), re-apply after respawn, multiple players.
+- Test switch dn_host_havoc_fast_waves.txt / DN_HOST_HAVOC_FAST_WAVES ends
+  each wave at 40 s with +750 XP (unattended runs kill nothing).
+
+### S83 (2026-10-14 20:20-) -- havoc: kill XP drops, respawn ship, timer note
+
+Operator playtest 20:09 (battle-20261014-200900-port7777.log): no kill XP,
+no XP after wave 2, respawn ship change ignored, in-wave timer stuck 00:00.
+- Kill XP: only AddStarterXP (GameMode_Havoc_BP.StarterXP 750, DoOnce) ever
+  granted XP. Per-kill XP is GameState_Havoc_BP OnAnyNPCKilled_Event (bound
+  to AYGameMode_PVE::OnAnyNPCKilled, GM +0x9E0; parms pawn @0, npcId @8)
+  spawning AlliedBuffPod_HavocXP_Pickup_Standard_BP (boss: _Boss_B), whose
+  pickup calls AddXPForGroup(HavocXP). Nothing on the host broadcast it and
+  GS +0x1F40 stayed 0. HavocCountAliveEnemies now, when a listed id's pawn
+  turns state 2/3, bumps +0x1F40 and broadcasts via 0x2322A0. A pawn
+  already gone (weak ptr null) is counted without a drop.
+- Respawn ship: ActivateLoadout 0x336C90 rejected
+  Default__VH_HVC_*_Loadout_T2_BP_C ("is not valid") -- gate 0x33C680 scans
+  manager groups +0x108; no Havoc loadout is ever registered on the host.
+  RETRACTED (20:46 operator match, still "not valid", hook never logged):
+  registering cannot pass the gate. 0x33C680 with a filter at mgr+0x200
+  ends in a switch on loadout+0xD8 needing filter allow-flags +0x29..+0x3C,
+  and VH_LoadoutFilter_Havoc_DA sets none (only m_specialLoadouts = the five
+  VH_HVC_* ships). Second try (clear +0x200 during the call) RETRACTED by
+  its own log (match 20:56): at respawn the filter is already null
+  (ClearLoadoutFilter at match start) and the object is a native
+  YShipLoadout named Default__VH_HVC_*_C. Real arm: no filter + loadout in a
+  type-4 group (where LoadLoadoutFilterLoadouts puts the Havoc ships) ->
+  0x33C825 -> FALSE. First pick (filter still set) passed: gate 1, class 14.
+  Third try: hook the gate 0x33C680 to return TRUE for exactly the
+  Default__VH_HVC_* loadout while ActivateLoadout runs.
+- Kill XP, 20:46 match: 3 kills logged "OnAnyNPCKilled broadcast", no pickup
+  XP. Stock BP: the drop runs through a 5-out MultiGate (random) with only
+  out 4 wired -> 1 kill in 5 drops a pod (Lifetime 40 s), and ship class 0
+  drops nothing. Not verified whether a pod spawned.
+- In-wave timer: NOT server-fixable as far as found. GS +0x1F58 does tick
+  (Horde timer 0x3924A0, read by the wave-complete panel), but the WBP's
+  ProgressTimeText is set only by its custom event "Set Time", which no
+  asset among 706 extracted Havoc/Horde/PVE/HUD/PC assets nor the exe calls;
+  BP_SetTime (wrapper 0x5E47C0) is not implemented by the Havoc WBP.
+- Missile-warning UI lag: client UI, not investigated.
+
+
+### S84 (2026-10-16 20:15-) -- respawn ship logging, /kill + /nuke, camera snap and white bar notes
+- Respawn ship: SpawnDefaultPawnAtTransform 0x382530 takes FIVE args (caller
+  0x3827D0 stores rsi at [rsp+0x20]); a 4-arg detour crashed the battle
+  server on first spawn (AV 0x1d, headless 20:28). Fixed hook logs the
+  loadout pointer reaching the spawn and its vt+0x208 pawn class; the
+  ActivateLoadout line now prints pointers (object names are all
+  "YShipLoadout", useless). Headless 20:40: first spawn uses the loadout
+  ActivateLoadout set (same pointer, VH_AssaultM_Pawn_T2_BP_C). The real
+  question (does a respawn pick change mgr+0x208, and does the spawn use
+  it) needs a respawn with a different ship picked -- NOT yet observed.
+- /kill me|all|<player>, /nuke: ServerKillMe / ServerKillAllEnemiesInPVE
+  belong to UYMPCheatManager (natives 0x6253F0, StaticClass 0x603100), not
+  the controller. RETRACTED as a kill path (headless kill2 20:56): the RPC
+  reached the constructed cheat manager, but in shipping _Validate is
+  "mov al,1; ret" (0x15FBF00) and the impl a bare "ret" (0x1AA9450), so
+  nothing died. Replaced by UGameplayStatics::ApplyDamage(pawn, 1e7) on
+  Default__GameplayStatics (pawn's own TakeDamage -> normal death/respawn);
+  /nuke applies it to every live wave enemy (/wave skip still destroys
+  without death). Headless kill3 21:05: /kill all -> ApplyDamage parms
+  DamagedActor@0 BaseDamage@8 eventInstigator@10 DamageCauser@18
+  DamageTypeClass@20; the ship exploded (frame k-04) and the respawn screen
+  with 5 ship cards and RESPAWN AVAILABLE followed (k-09). /nuke at 21:06:28
+  -> "nuke hit 3", all 3 "enemy N died ... OnAnyNPCKilled broadcast", wave 1
+  ended into the Wave 2 boost screen (750). Not verified: kill XP for nuked
+  enemies, /kill <player> by name, PvP modes (no wave list -> /nuke no-op).
+- Camera snap: no server teleport and the HUD marker multicast is HUD-only
+  (S83). Headless can't steer: neither "hold a" nor edge cursor moves yawed
+  the ship (camsnap3/4), so the before/after frames can't show a snap. Wave
+  1 announcement coincides with first spawn. Needs the operator's
+  description (view direction vs position).
+- White announcement bar (Havoc only): reproduced headless. Plain light
+  rectangle ~x310-970 at the top, under the ability labels, at wave start
+  (camsnap 20:24:06) and over PREPARE FOR BATTLE after wave end (camsnap3
+  20:35:40), fading. All /Game/Generic/UI/Havoc textures the Havoc WBPs
+  import are present in the paks, so not a missing texture. Owner widget not
+  found (bpdump shows script only, not the widget tree). Low priority.
+- Respawn ship switch, headless respawnship..respawnship3 (21:10-21:28,
+  scripts/headless-steps/havoc-respawn-ship.txt + havoc-kill.sh): after
+  /kill, clicking the Tugarin card reaches ServerPlayerClickedShipLoadout ->
+  ActivateLoadout(Sniper loadout, gate forced) -> active set; the screen and
+  team counts show Tugarin. Clicking the RESPAWN AVAILABLE bar does nothing;
+  the toggle under the cards readies (tick, "RESPAWNING IN" with no number).
+  No SpawnDefaultPawnAtTransform follows, neither mid-wave nor at wave end:
+  after /nuke ended wave 1, wave 2 began with hull 0 and no ship. So headless
+  the dead player never respawns at all; the playtest's "old ship" respawn
+  came from somewhere else (unknown). Spawn path read from the binary:
+  0x3827D0 -> 0x370970(gm, ctrl, 0): GameMode vt+0x880 (Havoc 0x36EE80)
+  returns null for a null 3rd arg, so the manager's active loadout
+  (0x345510) is spawned -- i.e. the pick WOULD be used if a respawn ran.
+  GUESS: team respawn pool empty (HUD shows 3 red crossed slots from the
+  first spawn); periodic "respawn gs/gm" property logging added to check.
+- Respawn pool logged (respawnship4 21:33): GameState m_playerTeamRespawnsLeft
+  -1, GameMode m_maxPlayerTeamRespawns 0, m_respawnsToRefill 0,
+  m_respawnTime 15, m_maxTimeBeforeForcedRespawn 40, MinRespawnDelay 1 --
+  pool NOT the blocker (GUESS above retracted). The death path (chunk near
+  0x58400B) sends ClientSetRespawntime (wrapper 0x5E5C80) from GameMode
+  +0x6B8; the client never showed a number, so the server-side respawn timer
+  isn't running. Added HavocForcedRespawnTick (off with
+  dn_host_no_havoc_respawn.txt): a human with no ship for
+  m_maxTimeBeforeForcedRespawn s gets ServerRestartPlayer. respawnship5
+  21:44-21:46: /kill, pick Tugarin -> "forced respawn ... ServerRestartPlayer
+  called" -> SpawnDefaultPawnAtTransform VH_SniperM_Pawn_T2_BP_C; frame r-05
+  shows Tugarin (Siege Mode, Heavy Tesla Cannon). Wait is ~56 s: the pawn
+  pointer clears ~16 s after the kill, then 40 s. Not verified: real client,
+  two players, what the stock ready toggle should do (no RPC logged), why the
+  10-14 playtest respawned at all.
+- Forced-respawn clock now starts at zero health (GetCurrentHealth /
+  GetHealth via CallFloatGetter) instead of when the pawn pointer clears.
+  respawnship6 21:56: kill 21:56:13, "ship at 0 health" 21:56:14, pick
+  Tugarin 21:56:40, SpawnDefaultPawnAtTransform VH_SniperM 21:56:54 (41 s).
+
+### S85 (2026-10-16 22:00-) -- chat text files, Onslaught names, /nuke everywhere, /meteor, commands outside Havoc
+
+- `/help` text and `/bunny` art now come from operator-edited
+  `data/chat/help.txt` / `data/chat/bunnies.txt` (re-read per call).
+  Client chat has no scroll binding, so `/help <word>` filters lines.
+- Onslaught nameplates read `VH_ONS_AITargetH_Paw` because the AI ships had
+  no PlayerState. SpawnOnslaughtAIShip now spawns a YNPCReplicationInfo the
+  way the game's NPC path does (0x26A234-0x26A328) and names it "Command
+  Ship" / "Assault Ship". Host side logged for every ship; client nameplate
+  "COMMAND SHIP" seen on the friendly mothership (onsfun2 shot 21-t105).
+- `/nuke` = CommandNuke: every YPawn-derived ship off the human team, not
+  human-controlled, minus AITargetH. First version looked for a
+  "*ShipPawn*" ancestor that does not exist. Onslaught 26/26 + 10/10,
+  Havoc 11/11 (headless).
+- `/meteor [n]`: UYBlueprintLibrary::SpawnProjectile (0x3125B0). probefn
+  gave the params (see CommandMeteor comment). Two traps: the blueprint
+  param is the UBlueprint asset (native reads +0x30 GeneratedClass), and
+  the base WP_YProjectileMissile_BP CDO has no offline table at +0x5D8
+  ("no offline data table specified"), so YProjectileMissile_Offline_DT is
+  lent for the call. Row AB_AS_Pri_Torpedo_Ultra_Projectile_BP.
+  Third trap (onsfun2 23:35): firingWeapon may not be null -- the native
+  reads its RootComponent scale (0x14171CCC0) before AYProjectile init
+  (0x513460), so it faulted with two projectiles already spawned, both
+  then logging "No ProjectileOfflineData" every tick. Now passes an enemy
+  ship's weapon (damage source), else the player's own.
+- "Don't lock fun stuff to Havoc": `/spawn`/`/boss` in Onslaught spawn
+  enemy assault ships through SpawnOnslaughtCreep (copying scene entries
+  fails there: the map's NPC data asset has no Havoc rows and the scene
+  manager retries the bad entry every frame -- 4559 errors in onsfun1).
+  `/bots N` in Onslaught multiplies the enemy fighter/assault caps.
+  onsfun2: `/spawn AssaultHeavyT4 2` -> "2 of 2 enemy assault ships for
+  team 2", `/boss` -> 1 elite x4, `/nuke` 55/55 after `/bots 3`. `/npc
+  brutal` accepted; its effect outside Havoc not verified.
+  `/wave`, `/enemy` stay Havoc-only (Havoc concepts). PvP modes have no NPC
+  spawner.
+- `/host <line>` (admin) passes a raw host command; `probefn <obj> <fn>`
+  logs a UFunction's parameters.
+- `/turbo` and `/npc` outside Havoc: both act on ships recorded by the
+  UYFeatsComponent begin-play hook, which was installed only on Havoc and
+  Turbo TDM hosts -- `/npc brutal` in Onslaught (onsfun2) logged no ship.
+  Now installed in every mode; the table grew 64 -> 256 and reuses entries
+  whose component is gone or re-owned.
+- `/nuke` now passes EventInstigator/DamageCauser (a human player's
+  controller and ship, round-robin) so the kills can be credited. Whether
+  kill XP follows: to be seen.
+- `props <object|pawn> [substring]` host command (via `/host`) dumps
+  reflected properties; first use: find the ship's weapon actor field for
+  `/meteor` (m_primaryWeapon / m_selectedWeapon / m_aimAssistWeapon were
+  not object properties on the Havoc ship, hvc 23:41 "no firing weapon").
+- hvcfun1 (23:46, Havoc, before wave 1): `/turbo on` -> 1 ship; `/spawn`
+  before the first wave has no scene entry to copy (Havoc-only limitation,
+  unchanged). `props pawn weapon` showed AYPawn::m_weaponManager +0x868
+  (YWeaponManagerComponent); MeteorWeapon now searches that component's
+  object/array properties for a Weapon actor. Built + deployed, NOT run.
+- Next: run /meteor (Havoc after wave start, and Onslaught: `/match
+  onslaught` first -- the pin expires), check "meteor -- enemy weapon ..."
+  and the projectile count; `/npc brutal` in Onslaught ("npc tier" lines);
+  `/nuke` kill XP.
+
+### S86 (2026-10-17) -- /meteor weapon lookup
+- hvcfun2 (Havoc): `/npc brutal` 5/5 ships tier 0->2, `/spawn AssaultHeavyT4 2`
+  ok; `/meteor` "no firing weapon actor" -- YWeaponManagerComponent has no
+  direct Object/Array prop holding the weapon actors.
+- Ghidra: SpawnProjectile's firingWeapon goes to FUN_1405119b0, which reads
+  *(weapon+0x550)+0x868 (= AYPawn::m_weaponManager) -> weapon+0x550 is the
+  owning ship; manager+0x1C8/0x1D0 is a TArray indexed by weapon+0x624.
+  MeteorWeapon now scans GObjects for "Weapon"+"Actor" objects with a root and
+  an owner at +0x550 on a non-human team.
+- hvcfun4 (Havoc, 08:11): `/meteor 15` -> enemy weapon
+  WP_SniperSecMid01 on VH_SniperM_AI_Pawn_T2 (team 2), 15/15 projectiles;
+  `/meteor 30` 30/30 (AssaultH weapon). Damage to players not checked.
+- PvE: Havoc director generalised to YGameMode_Horde (GameState_Horde_BP
+  HordeManager/EventStarted by name; waves by m_waveStart/EndDuration; after
+  m_maxNumberOfWaves the players' team wins and EndMatch is called). Bots,
+  /spawn, kill-XP/enemy-list hooks on for Horde too. Escort: new
+  EscortDirectorTick -- same PvE start (PveStartEventManager, extracted), then
+  PVE_EscortManager_BP.SpawnVipShip at t+20 s (nothing in the BPs calls it).
+- Season rotation: DN_PVE_SEASON=rotate / `/season rotate` runs Season 1 then
+  Season 3, each event one period (default stays PVE_Season1; S3 m_active 0,
+  GUESS the client shows it). Test TestPvESeasonRotation.
+- pvehorde1 (S1E1, 08:16): director on GameMode_Horde_BP, HordeManager
+  +0x1fa8, difficulty 2 (preview), StartCombat, OnPVEModeStarted broadcast,
+  EventStarted 1, hm.Waves 4; wave 1 state 2 with max 7, AddNPCToEnemyList(0)
+  -- enemies spawn on a PvE episode for the first time.
+- onsfun5 (Onslaught, 08:20): /npc brutal 5/5 feats on bot ships, 0/5 on
+  ONS_AITarget{M,H} creeps (their feats component rejects AddFeat; cause
+  unknown); /turbo on 15 ships (42 feat ops failed = creeps); /meteor 20/20
+  (enemy SniperM weapon); /nuke 15/15.
+- Queued (/tmp/testq*.log): PvE S1E1 directors, PvE end (/wave 50 + nukes),
+  Escort S1E4, Onslaught/TDM/Conquest fun commands.
+- pveend1 crashed the host 1 s into wave 1: the director called the
+  ClientUpdateWaveProgress stub on GameState_Horde_BP (fatal
+  FindFunctionChecked) and wrote m_wavesReached past the Horde game state.
+  Both Havoc-only now (cbff0f9); rerun pveend2 queued.
+- escort1 (S1E4, 08:36): director on, EscortModeManager +0x1f78, VIPShipId
+  +0x418, SpawnVipShip at t+20 -> VIPShipId 0, but "VIP destroyed" fired 1 s
+  later: GetEscortShipHealthPercent reads 0 until the pawn exists. Loss now
+  needs a live (>0) reading first (f5591dd); VIPShipId read 1 at t+30
+  (unexplained). escort2 (900 s) queued.
+- Creep feats root cause (battle log, onsfun5): "FYS_FeatsDataTableRow::
+  GetByName() - no data row found for name: HVC_Boost_Def_HpInc_Large" and
+  the same for ModifierSpeed/FireRate/Damage. AddFeatInternal falls back to
+  the component's table list at +0xF8; player ship pawn BPs list the
+  Havoc_Boosts/Custom_Modifiers tables, creep pawns don't. EnsureFeatTables
+  copies a human ship's missing entries into the NPC component before
+  /npc, /turbo and elite feats (6ed915c). onsfun9 queued.
+- /boss arrival: shake 4 + red flash for every human when an x4+ elite is in
+  the world (94363e0). hvcboss1 queued.
+- testq4 TDM + Conquest (08:37-08:47): /npc brutal 5/5 on every AI_Pawn bot;
+  turbo modifiers added on each ship as it spawns; /spawn "no NPC spawner in
+  this mode" (expected). /meteor found 0 weapon actors -- fired before any
+  ship spawned (driver timing); retest testq10 waits for AI pawns first.
+- onsfun6 (testq5, 08:48, build with 6ed915c): EnsureFeatTables works --
+  "VH_ONS_AITargetM_Pawn_BP_C had 4, added 8 from VH_AssaultM_Pawn_T1_BP_C";
+  /turbo on 15 ships, 0 feat ops failed (was 42); /npc brutal 5/5 on
+  ONS_AITargetM and ONS_AITargetH creeps (was 0/5).
+
+- S86 later: #67 was already fixed (S50; original datamined per-mode table, `scoring: table LOADED -- 57 rows`); issues.md was stale, now says fixed (a42bf77). Operator's recollection (75/100/150/200/300) matches the Conquest (TE) column: kill 110, higher-tier 150/180, protect CP 150, capture 250, AITargetH 300. No value change.
+- pveend2: Horde never ended -- m_maxNumberOfWaves reads 0 on PVE_S1E1, waves ran 50 -> 51. Fallback to HordeManager Waves Num (4); retest queued (testq11, pveend3).
+- #70: dashboard gains per-player cosmetic list + remove (vanity rows only, no refund, audited, shows at next login); README documents the dashboard + access model (262915d). mmogbrain not yet redeployed (tests running).
+- testq7 Havoc /boss: SniperHeavyBoss01 elite x4 spawned, feat tables +5 from donor, 21/21 stacks, HP 340000 -> 1420265, shake+flash sent. The TitanCarrierT6 x6 call fell after the headless window (not tested).
+- Operator decisions (2026-10-17): #73 code signing WON'T DO -- a Defender/SmartScreen prompt the player allows once is acceptable. Server picker + setup wizard ("setup bunny") wanted; battle viewer for the dashboard wanted.
+- #70 battle viewer (a2745ea): host mod posts live ships every 2 s to loopback /battle/snapshot (DN_HOST_NO_VIEWER off-switch); dashboard "Battle viewer" tab draws a wireframe orbit view and runs commands against that match (handleChatCommand on its All room). Mock-rendered only.
+- onsfun12 (testq12, Onslaught): EnsureFeatTables confirmed again ("turbo on on 15 ships (0 feat ops failed)", "npc tier 0 -> 2 ... 5/5"), but the host died at 4 min: "Failed to find function K2_GetActorLocation in SkeletalMeshComponent ...WeaponMesh" -- the viewer walked a stale g_featsByPawn slot whose pawn address had been reused. Fixed (a731665: component must be live, class chain must contain Pawn), deployed; onsfun13 queued (testq13). testq9's onsfun9 never ran (X BadWindow on the headless display).
+- escort2 (testq8, 900 s): VIP spawns and advances waypoints 0 -> 4 over 4.5 min; GetEscortShipHealthPercent stays 0.000 ("not seen alive yet") the whole time, so the loss check never arms. Health read is wrong, not the VIP. Open.
+- Launcher (2b38e55): server picker (Default / This PC / added address[:port]; per-server CA fetched from the gateway's new /dn/ca.crt (495dac2), signer-checked, fingerprint screen; per-server sign-in) and the setup bunny first-run wizard. Unit tests pass under Wine; UI mock-rendered only. Gateway + mmogbrain need `dn deploy` once tests finish.
+- pveend3 (testq11, Horde S1E1 with /wave 3): **Horde end works** -- waves 1 -> 3 -> 4, "last wave 4 of 4 complete -- players win (team 1), PVEMatchEnded 1", eom hold + ClientStartEndOfMatchTransition sent. Then the host died 2 s later (09:51:03, null read) inside UI_EOM_PVE_TeamPage_WBP.BP_CreateTeamPlayerEntry, after "UI_EOM_MVPPage_WBP didn't implement BP_CreateMvpEntry" -- the `?listen` host builds the PvE end screen for itself. Same crash after escort1's loss (08:36:46). The client log stops at 06:51:02 (cycle ended), so whether the player keeps the results screen is unseen. Open: needs a real-client PvE end, then either suppress the host-side EOM widgets or accept it (the host exits at match end anyway).
+- Gateway rebuilt by `dn deploy` loses cap_net_bind_service (operator re-ran setcap 09:44); restarted the gateway alone with its /proc environ so the running match was untouched. /dn/ca.crt 200, /admin/api/battles 200 (viewer live).
+- Escort VIP pawn fix (host: gs+0x1F20 from the scene entry; EscortShipSpawned is a `ret 0` stub in the client build) committed + DLL deployed; escort3 queued (testq14).
+- onsfun13 (testq13, Onslaught, viewer fix a731665): ran 09:53:57 -> 09:59:03 (terminated by the cycle, no crash), 326 /battle/snapshot posts, /nuke x4 killed 18+3+14 enemy ships (lots of freed/reused pawn addresses) -- the stale-slot crash is gone. /turbo and /npc were not exercised this run.
+- escort3/escort4 host crash at the PvE EOM screen: UYWidget_EndOfMatch_PVE_TeamPage::SetupFromTeamPlayerEntryData (0x469B70) -> 0x5E0010 runs BP_CreateTeamPlayerEntry, which on the host hits Accessed None and returns null; the caller derefs it at 0x469BDE (0x140ACB0(widget,0)) before its null test at 0x469BED. Fix: host hook makes 0x469B70 a no-op (5662ddf, DN_HOST_NO_EOM_TEAMPAGE_SKIP). escort5 (testq16): EOM at 07:27:38 UTC, host alive until the cycle's SIGTERM 2 min later, no new stackprobe fault -- **verified by survival only**: escort5 wrote no file log (below), so the "eom ui: skipped" line itself was not seen.
+- Host file log was silently dead since 09:29: a wineserver left from a killed host kept dn_host_loadout.log open, and the mod opened it _SH_DENYWR, so every later host got NULL. Killed the stale wineserver; mod now opens _SH_DENYNO (2dc8bf0) so concurrent hosts also all write. Check `lsof | grep dn_host_loadout` if the log goes quiet again.
+- Terrain sampling (host LineTraceSingleForObjects, coarse 33x33 + fine 80x80, POST /battle/terrain): live viewer showed terrain:true for escort5's battle. Hitch cost not measured (no file log). Full-screen viewer /admin/viewer (2dd3340): terrain wireframe, ship list by team (players first), chat, WASD/Space/Shift fly, orbit/look. PvE event row names now resolve (5c88421).
+- Launcher skins (a02a28f, c58234c): "dreadnought" (default) = compact game-launcher page on the client's own art (loading screens/login bg/logo from paks, embedded media/), account card + players online + live battles from new mmogbrain /launcher/status (public) and /launcher/me (aud "launcher"); "classic" = old page. Skin in settings.json. Verified: API under wine, endpoints through the gateway, mock screenshots. NOT verified: WebView2 window, real sign-in -> card.
+
+## S-viewer-bounds (2026-10-17)
+- Host mod c83d8b4: terrain fine pass covers the union of AYLevelBoundaries{Height,Warning,Warp}Volume bounds at 160x160; boxes ride the upload. PG ±65536, Escort S1E4 x±81920 y-57344..114688 (backdrop was ±875000). Maps = Landscape + hundreds of StaticMeshActors, all already traced. GetBoundaryMin/Max belong to SplineMeshComponent (irrelevant).
+- Viewer 97794b4: boundary wire boxes, orbit keeps look offset, grid removed, dup "No live battles" removed; dashboard viewer tab -> button on Battle servers.
+- Launcher a13f9c2: status tile, 1.5x card/play, Cute Bunny preset, skip tutorial (POST /launcher/skip-tutorial copies DN_ONBOARDING_TEMPLATE_PID SGD). Route matcher fix committed after; deployed by /tmp/afterSweep.sh once the detached focus sweep (/tmp/terrsweep.sh -> run/cycles/terrain-sweep-*.txt) ends. Unverified: skip tutorial on a live client; account card (saved token 401s, likely expired since Oct 12).
+
+- Terrain sweep, round 1 (10:55-11:02, /tmp/terrsweep.sh): the sweep died after
+  label 1 of 14 -- tdm-skybridge ran (NO-EXPECTATIONS, orbit reached), then
+  every later `dn headless` refused with "a headless client is already running:
+  [165460, 165533]". Two leftovers from the sweep (wine start.exe + the game
+  exe, from 10:56) held the slot; killed by PID at 11:09 (SIGTERM; the proton
+  wrapper and the CEF child followed) after /online read 0 -- `dn headless-stop`
+  only stops the X display, so the repo has no path for this.
+  cycle.headless_pids() is empty again. Round-1 summary
+  run/cycles/terrain-sweep-1017-1101.txt therefore holds ONE map's terrain
+  pass, unattributed (no map name in the file or the raw lines), and its
+  "== sweep" section is empty -- the per-label verdicts are only in
+  run/cycles/sweep-20261017-105552.txt.
+- Sweep round 2: /tmp/terrsweep2.sh (new copy; the round-1 script was left
+  untouched), started 11:10 on /tmp/sweep-focus-rest.txt = the 13 NO BUNDLE
+  labels, same flags (default steps, --secs 420). It drops the `cut -c1-200`
+  that truncated the coarse bounds mid-number and prefixes every host-log
+  terrain line with the sweep label whose run it belongs to (matched on
+  bundle-name timestamps, same day only) -- the host log is shared by every
+  run and its lines carry no map. Summary run/cycles/terrain-sweep2-*.txt,
+  per-map digest /tmp/terrdigest.py. First label (te-gorge) healthy: orbit
+  reached, no host crash.
+- Three fixes committed that morning (local, not deployed while the sweep ran):
+  4124d27 launcher: both launcher handlers now resolve X-User-ID through one
+  launcherUID() (protocol.NormalizePlayerPID) and answer 401 when it is empty.
+  normalizedPlayerStatePID substitutes defaultMmogPlayerPID, so for a token
+  whose user_id is not a UUID /launcher/me read the template player's card and
+  skip-tutorial wrote the template player's SGD into the template player's own
+  row. An empty id is now 401 where /launcher/me used to answer 503.
+  d4a3fbe host-mod: a coarse terrain pass with 0 hits logs "x/y n/a" instead of
+  the ±3.0e38 TERRAIN_MISS sentinel it printed as a real extent. 3b82fed
+  gateway: the :65443 Greybox socket's catch-all answers /launcher/* with 404
+  instead of 200 {} -- those paths belong to the :8083 router behind the :443
+  gateway service (dn-launcher dials mmog.greybox.sixfoot.live/launcher/...),
+  so a tokenless POST /launcher/skip-tutorial looked like a success on a
+  listener where no handler existed. Empty 200 stays for everything else: the
+  Greybox client reads a non-200 as a transport/service failure.
+- Chat commands b9e17ac: /turbo and /npc tests (allowed words, case folding,
+  usage on a missing or unknown argument, admin gate, extra words dropped) and
+  hostCmdCheck no longer broadcasts behind a "sent to this match" reply -- a
+  match room exists from matchmaking, before its battle, and
+  battleMatchIDFor "" is the broadcast target, so the reply promised one match
+  and reached every running match. Refuses now and names Global as the way to
+  reach them all. The hand-rolled commands (enemy, spawn, boss, team, kill)
+  still have that shape.
+- "NO-PAWN" in a summary is usually NOT an occurrence: cycle.py renders every
+  milestone and the ones that did not happen print "NAME:--"
+  (scripts/cycle.py:260-267, marker at :96-98), so "NO-PAWN:--" is the normal
+  tail of every summary. TDM/Conquest runs all show orbit@ with NO-PAWN:--
+  (funtdm, funconquest, fun2tdm, fun2conquest, sw-tdm-skybridge 10:55). The
+  real ones are 075711-hvcfun3 (Havoc, NO-PAWN@04.57.46, client logged "No
+  valid captain" immediately before) and the 2026-10-13 havoc-map2 sweep
+  already retracted above.
+- Terrain sweep round 2 (post-3b82fed, pre-d4a3fbe build): 12/13 focus
+  labels reached orbit, 0 host crashes, every map produced terrain (3-4
+  boundary volumes, a fine 160x160 pass with hits). A 13th label,
+  pve-s1e1 (Horde PVE_S1E1), was lost to an operator error: my own
+  `dn headless-clear -y` smoke test ran while the sweep had a client up
+  and SIGTERM'd it (the label is rerun). The test did confirm the command:
+  it killed exactly the 3 headless-prefix processes and left a live Havoc
+  host and dn-dedicated alone.
+- 6e05627 `dn headless-clear [-y]` (scripts/cycle.py cmd_headless_clear):
+  lists the headless-prefix pids with their exe and map hint, confirms
+  interactively unless -y, SIGTERM then SIGKILL for leftovers, and says the
+  X display is still up (`dn headless-stop` stops it). A stray headless
+  client blocks `dn headless` (its display/account is taken), which is the
+  failure this exists for.
+- d4a3fbe is live as of 12:30:38 (wer.dll 9ea14ab7ced0), but its own change
+  is still unverified on the wire: the "x/y n/a" line is the branch for a
+  coarse 33x33 pass with 0 hits, and no post-deploy run has produced one.
+  Every 0-hit coarse line in dn_host_loadout.log that still prints the
+  +-3.0e38 TERRAIN_MISS sentinel is from the *previous* wer.dll (newest
+  12:20:55); the post-deploy escort run's coarse pass took 812 hits, which
+  cannot distinguish the branches.
+- Escort VIP health, verified live 2026-10-17 12:35-12:37 (Escort run
+  escort-vip1, PVE_S1E4, post-d4a3fbe host): "escort: VIP pawn
+  00007F48ACB17000 PVE_S1E4__Escort_AIPawn_C -> game state +0x1F20 (was
+  0000000000000000)" -- the slot the health getter dereferences was null and
+  is now filled from the scene entry's weak pawn -- then "escort: VIP health
+  1.000 / 1.000 / 0.997 / 0.379" as the AI escort took fire, and "pve:
+  escort: VIP ship destroyed -- players lose (team 1), PVEMatchEnded 1".
+  Before the fix the same getter (0x36EE10) returned 0.0 through its
+  null-slot path, which is why esc5 read a destroyed VIP at t0.
+- Launcher rank badge (operator report 2026-10-17, fixed eaf5714): /launcher/me
+  required aud="launcher" alone, and the launcher's own sign-in form never has
+  one -- dn-launcher loginAccount posts grant_type=password as a plain form, so
+  auth-server loginPassword issues aud="dreadnought"
+  (issueAndReturnJWT(w, user, nil, "dreadnought")). The account card 401'd and
+  the hexagon kept its HTML default. Evidence: run/auth-server.log
+  11:22:29 "grant_type":"password","is_rpc":false" for the saved account, and
+  /launcher/me answering {"error":"invalid audience"} to a minted
+  dreadnought-audience token while an expired one answers "invalid token" and a
+  launcher-audience one returns the card. The sign-in must keep producing the
+  dreadnought token because the same token goes to the game, whose C++
+  profileService compares aud strictly; jwtMiddlewareFor now takes the
+  audiences it admits, and both /launcher handlers admit launcher+dreadnought
+  (self-scoped, launcherUID). Verified live after deploy+restart: 200 + rank 11
+  for both audiences, 401 for "wrong" and for expired. /mmog untouched.
+- The battle chip's player count (fixed a6136d3): viewerBattles counted ships
+  with NPC=0 in the host's 2 s snapshot, and the host only has a ship once a
+  pawn exists -- so "Conquest · Skybridge 0 players" showed while a player was
+  matched, in orbit and flying. It now reads the match's roster (match_slots),
+  which is written when the player is placed and deleted at match end or on
+  leaving, and keeps the ship count for a battle the mmog DB does not know (host
+  started outside matchmaking) or an empty roster.
+- "player_efabfe96" in /online and the analytics events is the OPERATOR
+  account, not a friend: every headless run today (sweep included) reports it,
+  and auth.db has it as a username beside cute-bunny/racer_norway. A headless
+  client therefore shows as "1 player online", which is what blocks a deploy or
+  sweep under the /online-is-0 gate.
+- Rounds 4-8 index (each item already has its own entry above unless noted):
+  * b9e17ac/4d9dcf8 chat: enemy, spawn, boss, team and kill refuse a battle-less
+    match room too (a match room exists from matchmaking, before its battle,
+    and "" is the broadcast target, so the old reply promised one match and
+    reached every running match). /turbo + /npc parsing tests.
+  * 4124d27 /launcher/me + /launcher/skip-tutorial resolve X-User-ID through
+    launcherUID() and answer 401 when it is not a player id (the old path
+    substituted the template player's row). 3b82fed :65443 answers
+    /launcher/* with 404 (those paths belong to the :8083 router). d4a3fbe a
+    0-hit coarse terrain pass logs "x/y n/a" instead of the +-3.0e38 sentinel.
+  * Escort VIP health confirmed live (see the 12:35 entry above).
+  * 1939051 launcher HTTP client reuse + warm ping -- NOT yet logged, so:
+    launcherHTTPClient built an &http.Client and transport per request, so
+    every call paid TCP+TLS: 245-300 ms cold against 87 ms on a reused
+    connection through the relay (the tile read 242 ms where the tunnel RTT is
+    36 ms). It now caches one client keyed by
+    serverDialIP|serverWebPort|serverCAPool (exactly what UseServer swaps) and
+    closes the old transport's idle connections when the key changes; Live()
+    primes with one throwaway status GET on the first call and reports the
+    minimum of the last five round trips. GOOS=windows go vet/test clean
+    (wine-binfmt runs the windows test binaries here); not verified against a
+    running server -- the 87 ms expectation comes from curl reusing one
+    connection.
+  * e3392cf launcher skin -- NOT yet logged: #logo carries 10vh/10vw as its own
+    margin (not header padding, so the chips the page appends into that header
+    do not move), and .who .icon is the .icon base at 2x (16->32px font,
+    5x9 -> 10x18 padding), scoped to the account row. Built
+    GOOS=windows go build -ldflags "-H windowsgui" ./dn-launcher -> eca8f23a08d0,
+    installed over dn-launcher/linux/dn-launcher.exe (byte-identical to run/,
+    backups kept). CSS verified present in the built exe via strings; NOT
+    verified visually (needs a launcher run).
+
+### S87 (2026-10-17) -- viewer: layered terrain, per-frame ticks, playback lag, projectile scan off the game thread
+- Terrain (6c9e49d): the gaps were the trace's stepped-through-volume limit of 4
+  exhausted by stacked boundary volumes; 32 now, and every column is traced down
+  and up for up to 6 surfaces, kind-tagged (t/o/w tops, b undersides) and joined
+  so an edge drops a wall to the underside below it -- overhangs and floating rock
+  read as solids. Fine pass 256x256, time-boxed to 3 ms per tick (was 800 fixed
+  traces). Water tagged by actor name/class; the tallies show it as ordinary
+  static meshes ("oceanplane" on Amirani, "Arena_Lake" on Highlands), so a water
+  PhysicsVolume would otherwise be stepped through. Boundary boxes no longer
+  drawn; they only inform the framing.
+- The real playable limit (0348b4f) is not the AABB: the columns record the top of
+  the AYLevelBoundariesWarningVolume brush and the warp volumes they pass, and the
+  viewer fences that outline -- a downward ray hits a brush only inside its
+  footprint. Ships draw as a wedge oriented by the host's yaw; projectiles as
+  points from the "p x y z" lines.
+- The 2 s timer was starving the fine pass: HookGameModeTimer is the AGameMode
+  timer at 1 Hz acting every other call, so a dense map needed minutes of ticks.
+  ec6800c runs the fine pass from the per-frame ProcessEvent hook instead, 2 ms
+  per 16 ms of wall clock (TERRAIN_FRAME_GAP_MS = 16); the timer keeps the coarse
+  pass. That hook (FrameTick, generalised from TerrainFrameTick) now also carries
+  the projectile scan below.
+- "Ships hitch and snap" (operator report): measured, the host posts every 2000 ms
+  exactly (age_ms sawtooths 0..~2000). POLL_MS = 1000 and the old fixed
+  PLAYBACK_MS = 2200 was shorter than poll interval + post interval, so the drawn
+  clock outran the newest received sample for up to ~40% of the cycle, parked, and
+  snapped forward at the next poll. b89e425/64396de/26bebba replaced it with
+  playT(): the lag follows the received stamp gaps (median gap + POLL_MS + 300),
+  an out-of-order stamp is dropped instead of breaking the bracket scan, the lag
+  floor is capped so one long host stall cannot inflate it, catch-up is limited to
+  1.5x real time, history resets on any battle change, and ships carry the host's
+  vid so a recycled pawn address cannot inherit a dead ship's track.
+- Simulated with a throwaway node script (/tmp/dn-playback-sim.js, not committed;
+  it lifts playT/shipSample/projAt out of admin_viewer.html by brace matching, so
+  the numbers describe shipped code) against the measured cadence -- 2000 ms posts,
+  1000 ms polls with 20-80 ms jitter, one 6 s host stall, one stale response:
+  steady lag 3300 ms; during the stall the drawn clock holds instead of running
+  ahead (longest freeze 1.98 s, longest park 4.58 s) and is back to steady 5.55 s
+  after it ends; catch-up never exceeds 1.50x; the clock never steps backwards; a
+  stale response is dropped without breaking history. The same scenario on the
+  pre-26bebba code froze 6.9 s and then ran at 3.29x. The price of the fix: the
+  viewer sits a steady 3.3 s behind the live match.
+- The projectile scan ran on the game thread inside every snapshot: 80.55 ms over
+  98177 objects (log 13:09:07 "viewer: 0 projectiles this snapshot, scan 80.55 ms
+  over 98177 objects" = 0.82 us/object; that line is the first, cold pass -- every
+  class resolved for the first time -- and the warm cost was never measured).
+  f810358/79e19f5 walk it in 1 ms slices per frame gap into a double-buffered
+  candidate list; the snapshot reads the last completed list and re-validates each
+  entry (same object at the same index, not pending kill) before touching it, so a
+  freed candidate is skipped and never dereferenced. Pass cost logs on passes 1, 2
+  and every 100th; each snapshot logs candidates dropped as gone vs without a
+  location. The slice's clock is read every 32 objects, since a cold class costs
+  far more than a warm one and 256 objects could overshoot the 1 ms budget.
+- Snapshot POST off the game thread (87d1548): HttpGetLoopbackRaw is synchronous
+  with 2 s socket timeouts, so a slow, locked or restarting mmogbrain froze the
+  game thread for up to 2 s per snapshot -- at a 500 ms cadence that would be a
+  permanent freeze, so the timeout, not the work, was the blocker for any faster
+  cadence. One-slot mailbox, newest wins, inline fallback if the thread cannot
+  start.
+- Same timeout as a parameter (80b2a3b): HttpGetLoopbackRaw takes
+  int timeoutMs = 2000, every existing caller unchanged, and the CommandsTick
+  /battle/commands GET asks for 300 ms -- it is on the game thread on the 2 s
+  timer, mmogbrain answers on loopback, and a missed poll is retried by "since"
+  next tick. A non-positive value clamps to 1 ms, since setsockopt reads 0 as "no
+  timeout". The one-off terrain upload keeps the 2 s default: still a synchronous
+  game-thread POST with a 2 s worst case, the same shape as the one just fixed.
+  Open.
+- Host crash on Highlands and Space02 (sweep): "Failed to find function
+  K2_GetActorLocation in YProjectileReplicator" (ScriptCore.cpp:1268) x16 in run/.
+  Cause: ProjectileClass tested ClassChainContains(o, "Actor") -- a substring test,
+  and the chain of every UActorComponent contains "ActorComponent" -- so components
+  passed the filter and the actor-only call was made on them. Stopgap while the fix
+  built: dn_host_no_viewer.txt beside the exe. e317104 is the exact-match fix:
+  ClassChainIs(o, "Actor"), 24 deep, because "Actor" sits behind the Blueprint
+  parents and the old Contains walked only 8.
+- The same false positive audited across the file (93a22d4): the /meteor weapon
+  scan ("Weapon" + "Actor": every component of a weapon-named component class
+  passed), the viewer's pawn filter ("Pawn" then ActorLocation and three K2_*
+  getters -- a component at a freed pawn's address passes whenever its class name
+  contains Pawn, and UE4 ships UPawnMovementComponent, UPawnSensingComponent,
+  UPawnNoiseEmitterComponent, UPawnActionsComponent), the feats-owner check and the
+  Havoc contributor walk all use ClassChainIs now. Unchanged sites verified safe:
+  the YGameMode_*/YGameState_*/YPlayerReplicationInfo_*/PlayerController needles
+  have no component or sibling lookalike in this game, and each is followed by
+  IsReadable before any offset read; "YPlayerReplicationInfo" is a substring of
+  "YPlayerReplicationInfo_Havoc", so two tests there are one test written twice.
+  Still open: ClassChainContains walks 8 classes where ClassChainIs walks 24, so a
+  ship or controller whose Blueprint chain is deeper than 8 would fail its
+  "Pawn"/"PlayerController" test silently -- no evidence such a chain exists on
+  these maps, the 13:09 log proved it only for the projectile chains.
+- The audit also explains the "0 projectiles" above: on 13:09's host the classes
+  that passed were YProjectileTracking (27), YProjectileReplicator (5) and the
+  WP_*YProjectile*_BP_C blueprints (1 each) -- replicators, trackers and CDOs, not
+  projectile actors -- and every candidate then failed ActorLocation. So the viewer
+  has never drawn a shell; after e317104 the per-snapshot "gone vs without a
+  location" counts are what to read to confirm that it does.
+- Deployed in one batch with e317104 + 93a22d4, stopgap file removed. NOT verified
+  live: a Highlands + Space02 sweep is running now, and none of the viewer changes
+  above has been seen on a player's screen -- the cadence, the scan cost and the
+  lag numbers are log-measured or simulated, not confirmed in the client.
+- Also still unverified from the same batch: the /launcher/me audience fix
+  (eaf5714) and the battle chip roster count (a6136d3), both deployed here and both
+  needing a launcher/player pass.

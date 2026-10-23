@@ -9,7 +9,9 @@ package main
 // the certificate, the game folder, the options, news and Play -- through the
 // same launcherAPI.
 //
-// Loopback only, on a port the OS picks. Every API call must carry a random
+// Loopback only, on a fixed port (defaultUIPort, or Config.UIPort) so the link
+// stays the same between runs; falls back to a port the OS picks when that one
+// is taken. Every API call must carry a random
 // per-run key in a custom header: a custom header forces a CORS preflight that
 // this server never answers, so no other web page open in the browser can
 // drive the launcher.
@@ -44,11 +46,28 @@ const browserBridgeJS = `<script>
   window.dnSetGameDir = (dir) => dnCall('setGameDir', [dir]);
   window.dnAutoGame = () => dnCall('autoGame');
   window.dnSetOption = (name, on) => dnCall('setOption', [name, on]);
+  window.dnSetLogoFx = (style, custom) => dnCall('setLogoFx', [style, custom]);
   window.dnInstallCert = () => dnCall('installCert');
   window.dnSignOut = () => dnCall('signOut');
   window.dnOpenLogs = () => dnCall('openLogs');
+  window.dnFinishSetup = () => dnCall('finishSetup');
+  window.dnOpenHostGuide = () => dnCall('openHostGuide');
+  window.dnRemoveServer = (id) => dnCall('removeServer', [id]);
+  window.dnUseServer = (id) => { dnCall('useServer', [id]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
+  window.dnAddServer = (n, a) => { dnCall('addServer', [n, a]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
   window.dnSubmit = (m, u, i, p) => { dnCall('submit', [m, u, i, p]).then(dnAuthResult, e => dnAuthResult({ ok: false, error: String(e) })); };
   window.dnNews = () => { dnCall('news').then(dnNewsResult, e => dnNewsResult({ online: false, error: String(e) })); };
+  window.dnMedia = (n) => dnCall('media', [n]);
+  window.dnBackgrounds = () => dnCall('backgrounds');
+  window.dnLive = () => { dnCall('live').then(dnLiveResult, () => dnLiveResult({})); };
+  window.dnSkipTutorial = () => dnCall('skipTutorial');
+  window.dnViewerPage = () => { dnCall('viewerPage').then(dnViewerPageResult, e => dnViewerPageResult({ error: String(e) })); };
+  window.dnViewerAPI = (id, m, p, b) => {
+    dnCall('viewerAPI', [m, p, b]).then(r => dnViewerReply({ id, status: r.status, body: r.body }),
+      e => dnViewerReply({ id, status: 0, body: String(e) }));
+  };
+  window.dnArtBase = () => dnCall('artBase');
+  window.dnSetSkin = async (n) => { const ok = await dnCall('setSkin', [n]); if (ok) location.reload(); return ok; };
   window.dnPlay = () => {
     dnCall('play').then(r => {
       dnPlayResult(r);
@@ -65,8 +84,20 @@ const browserBridgeJS = `<script>
 // pinging (tab closed) before it exits.
 const browserIdleExit = 90 * time.Second
 
+// defaultUIPort is the launcher page's port unless Config.UIPort says
+// otherwise: the operator asked for one link that does not change (2026-10-12).
+const defaultUIPort = "47801"
+
 func runBrowserLauncher(exeDir string, cfg Config) error {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	port := strings.TrimSpace(cfg.UIPort)
+	if port == "" {
+		port = defaultUIPort
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil && port != "0" {
+		fmt.Printf("[!] Launcher page port %s is busy (%v); using a free one\n", port, err)
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+	}
 	if err != nil {
 		return fmt.Errorf("open the launcher page: %w", err)
 	}
@@ -77,8 +108,7 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 		return err
 	}
 	key := hex.EncodeToString(keyBytes)
-	page := strings.Replace(desktopPageHTML, "</title>",
-		"</title>\n"+strings.Replace(browserBridgeJS, "%KEY%", key, 1), 1)
+	bridge := "</title>\n" + strings.Replace(browserBridgeJS, "%KEY%", key, 1)
 
 	api := newLauncherAPI(exeDir, cfg, nil)
 	done := make(chan struct{})
@@ -96,7 +126,8 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(page))
+		page := pageFor(skinName(loadSettings()))
+		_, _ = w.Write([]byte(strings.Replace(page, "</title>", bridge, 1)))
 	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("X-DN-Key") != key {
@@ -137,6 +168,8 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 			out = api.AutoGame()
 		case "setOption":
 			out = api.SetOption(str(0), boolean(1))
+		case "setLogoFx":
+			out = api.SetLogoFx(str(0), str(1))
 		case "installCert":
 			out = api.InstallCert()
 		case "signOut":
@@ -155,6 +188,33 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 				time.AfterFunc(3*time.Second, finish)
 			}
 			out = res
+		case "finishSetup":
+			out = api.FinishSetup()
+		case "openHostGuide":
+			out = api.OpenHostGuide()
+		case "removeServer":
+			out = api.RemoveServer(str(0))
+		case "useServer":
+			out = api.UseServer(str(0))
+		case "addServer":
+			out = api.AddServer(str(0), str(1))
+		case "media":
+			out = api.Media(str(0))
+		case "backgrounds":
+			out = api.Backgrounds()
+		case "live":
+			out = api.Live()
+		case "skipTutorial":
+			out = api.SkipTutorial()
+		case "viewerPage":
+			out = api.ViewerPage()
+		case "viewerAPI":
+			status, b := api.ViewerAPI(str(0), str(1), str(2))
+			out = map[string]any{"status": status, "body": b}
+		case "artBase":
+			out = api.ArtBase()
+		case "setSkin":
+			out = api.SetSkin(str(0))
 		case "ping":
 			out = true
 		default:

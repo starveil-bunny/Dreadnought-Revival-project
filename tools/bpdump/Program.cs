@@ -10,7 +10,7 @@ if (args.Length < 1)
     Console.WriteLine("usage: bpdump <path.uasset> [search term]");
     Console.WriteLine("       bpdump --scan <dir> <term1> [term2 ...]  (all terms must appear)");
     Console.WriteLine("       bpdump --names <dir> <term1> [term2 ...]");
-    Console.WriteLine("       bpdump --loadouts <dir> [pattern]  (JSONL, default *PrecastLoadout_BP.uasset)");
+    Console.WriteLine("       bpdump --loadouts <dir> [pattern]  (JSONL, default *PrecastLoadout*_BP.uasset)");
     Console.WriteLine("       bpdump --setbool <path.uasset> <Default__ExportName> <PropertyName> <true|false>");
     return;
 }
@@ -67,12 +67,14 @@ if (args[0] == "--setbool")
 
 if (args[0] == "--loadouts")
 {
-    // One JSON object per line for every *PrecastLoadout_BP.uasset under <dir>:
+    // One JSON object per line for every *PrecastLoadout*_BP.uasset under <dir>
+    // (the * before _BP: Brutus is VH_AssaultLight_PrecastLoadout_T5_BP, every
+    // other hull T<n>_PrecastLoadout_BP, and the old glob skipped it):
     // the Default__ export's top-level properties, with every object reference
     // RESOLVED to its asset path (the --props mode prints bare import indexes,
     // which say nothing about which weapon or ability a slot holds).
     string dir = args[1];
-    string pattern = args.Length > 2 ? args[2] : "*PrecastLoadout_BP.uasset";
+    string pattern = args.Length > 2 ? args[2] : "*PrecastLoadout*_BP.uasset";
     foreach (var f in Directory.EnumerateFiles(dir, pattern, SearchOption.AllDirectories).OrderBy(x => x))
     {
         UAsset a;
@@ -86,10 +88,39 @@ if (args[0] == "--loadouts")
         var row = new Dictionary<string, object?> { ["file"] = fileKey };
         foreach (var ex in a.Exports)
         {
+            // The generated class's parent, so consumers can walk inherited
+            // defaults (a child Default__ only carries its overrides).
+            if (ex is ClassExport ce && ce.SuperStruct != null && ce.SuperStruct.Index != 0)
+                row["super"] = Resolve(ce.SuperStruct, a);
             if (ex is not NormalExport ne || !ne.ObjectName.ToString().StartsWith("Default__")) continue;
             row["export"] = ne.ObjectName.ToString();
             foreach (var prop in ne.Data) row[prop.Name.ToString()] = Flat(prop, a);
         }
+        Console.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(row));
+    }
+    return;
+}
+
+if (args[0] == "--rows")
+{
+    // One JSON object per export of <file> with references resolved, as
+    // --loadouts but for data assets whose rows live outside Default__
+    // (HVC_DeadHorde_EnemyShips: YNPCPawnData m_PawnsData).
+    var a = new UAsset(args[1], EngineVersion.VER_UE4_13);
+    foreach (var ex in a.Exports)
+    {
+        // A DataTable's rows (DN_HavocBoosts_DT): one object per row, its
+        // FText fields as locres keys.
+        if (ex is DataTableExport dt && dt.Table?.Data != null)
+            foreach (var r in dt.Table.Data)
+            {
+                var drow = new Dictionary<string, object?> { ["row"] = r.Name.ToString() };
+                foreach (var c in r.Value) drow[c.Name.ToString()] = Flat(c, a);
+                Console.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(drow));
+            }
+        if (ex is not NormalExport ne || ne.Data.Count == 0) continue;
+        var row = new Dictionary<string, object?> { ["export"] = ne.ObjectName.ToString() };
+        foreach (var prop in ne.Data) row[prop.Name.ToString()] = Flat(prop, a);
         Console.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(row));
     }
     return;

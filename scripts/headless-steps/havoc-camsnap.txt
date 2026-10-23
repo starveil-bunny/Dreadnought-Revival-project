@@ -1,0 +1,144 @@
+# Havoc wave-announcement camera snap: spawn, turn away, then a screenshot
+# every ~1.5 s across the wave 2 announcement (no input after the turn).
+# Wave 2 is forced from outside: run alongside
+#   scripts/headless-steps/havoc-camsnap-wave2.sh
+# which sends /wave skip once the host logs "wave 1 state 2 t+10".
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 172 585     # first ship card (Havoc lobby layout)
+sleep 3
+click 500 690     # READY toggle (Havoc lobby)
+sleep 3
+shot ready
+wait-log Wave 1 starts now   # spawn lands with the wave 1 announcement (headless 10-16 20:24), so watch wave 2
+sleep 5
+shot spawned
+# turn away from the spawn heading: "hold a 3" did not yaw (headless 10-16
+# 20:35, frames identical); the game re-centres the cursor, so each move to
+# the right edge is a yaw delta
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+move 1270 360
+sleep 0.3
+move 640 360
+sleep 0.3
+shot turned
+shot w1-01
+sleep 1
+shot w1-02
+sleep 1
+shot w1-03
+sleep 1
+shot w1-04
+sleep 1
+shot w1-05
+sleep 1
+shot w1-06
+sleep 1
+shot w1-07
+sleep 1
+shot w1-08
+sleep 1
+shot w1-09
+sleep 1
+shot w1-10
+sleep 1
+shot w1-11
+sleep 1
+shot w1-12
+sleep 1
+shot w1-13
+sleep 1
+shot w1-14
+sleep 1
+shot w1-15
+sleep 1
+shot w1-16
+sleep 1
+shot w1-17
+sleep 1
+shot w1-18
+sleep 1
+shot w1-19
+sleep 1
+shot w1-20
+sleep 1
+shot w1-21
+sleep 1
+shot w1-22
+sleep 1
+shot w1-23
+sleep 1
+shot w1-24
+sleep 1
+shot w1-25
+sleep 1
+shot w1-26
+sleep 1
+shot w1-27
+sleep 1
+shot w1-28
+sleep 1
+shot w1-29
+sleep 1
+shot w1-30
+sleep 1
+shot w1-31
+sleep 1
+shot w1-32
+sleep 1
+shot w1-33
+sleep 1
+shot w1-34
+sleep 1
+shot w1-35
+sleep 1
+shot w1-36
+sleep 1
+shot w1-37
+sleep 1
+shot w1-38
+sleep 1
+shot w1-39
+sleep 1
+shot w1-40
+sleep 1

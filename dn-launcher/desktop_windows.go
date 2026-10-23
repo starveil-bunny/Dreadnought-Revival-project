@@ -46,7 +46,7 @@ func runDesktopLauncher(exeDir string, cfg Config) bool {
 			// 0 would give the window the generic application icon.
 			IconId: 1,
 			Width:  980,
-			Height: 620,
+			Height: 680,
 			Center: true,
 		},
 	})
@@ -72,15 +72,51 @@ func runDesktopLauncher(exeDir string, cfg Config) bool {
 	_ = w.Bind("dnSetGameDir", api.SetGameDir)
 	_ = w.Bind("dnAutoGame", api.AutoGame)
 	_ = w.Bind("dnSetOption", api.SetOption)
+	_ = w.Bind("dnSetLogoFx", api.SetLogoFx)
 	_ = w.Bind("dnInstallCert", api.InstallCert)
 	_ = w.Bind("dnSignOut", api.SignOut)
 	_ = w.Bind("dnOpenLogs", api.OpenLogs)
+	_ = w.Bind("dnFinishSetup", api.FinishSetup)
+	_ = w.Bind("dnOpenHostGuide", api.OpenHostGuide)
+	_ = w.Bind("dnRemoveServer", api.RemoveServer)
+	// Switching server resolves it and may fetch its certificate: off the UI
+	// thread too.
+	_ = w.Bind("dnUseServer", func(id string) {
+		go func() { reply("dnServerResult", api.UseServer(id)) }()
+	})
+	_ = w.Bind("dnAddServer", func(name, address string) {
+		go func() { reply("dnServerResult", api.AddServer(name, address)) }()
+	})
 	// Network calls run off the UI thread and report back through a callback.
 	_ = w.Bind("dnSubmit", func(mode, username, identifier, password string) {
 		go func() { reply("dnAuthResult", api.Submit(mode, username, identifier, password)) }()
 	})
 	_ = w.Bind("dnNews", func() {
 		go func() { reply("dnNewsResult", api.News()) }()
+	})
+	_ = w.Bind("dnMedia", api.Media)
+	_ = w.Bind("dnBackgrounds", api.Backgrounds)
+	_ = w.Bind("dnSkipTutorial", func() map[string]any { return api.SkipTutorial() })
+	_ = w.Bind("dnViewerPage", func() {
+		go func() { reply("dnViewerPageResult", api.ViewerPage()) }()
+	})
+	_ = w.Bind("dnViewerAPI", func(id int, method, path, body string) {
+		go func() {
+			status, b := api.ViewerAPI(method, path, body)
+			reply("dnViewerReply", map[string]any{"id": id, "status": status, "body": b})
+		}()
+	})
+	_ = w.Bind("dnArtBase", api.ArtBase)
+	_ = w.Bind("dnLive", func() {
+		go func() { reply("dnLiveResult", api.Live()) }()
+	})
+	// A new skin is a new page: load it once this call has returned.
+	_ = w.Bind("dnSetSkin", func(name string) bool {
+		if !api.SetSkin(name) {
+			return false
+		}
+		go w.Dispatch(func() { w.SetHtml(pageFor(name)) })
+		return true
 	})
 	_ = w.Bind("dnPlay", func() {
 		go func() {
@@ -93,7 +129,7 @@ func runDesktopLauncher(exeDir string, cfg Config) bool {
 		}()
 	})
 
-	w.SetHtml(desktopPageHTML)
+	w.SetHtml(pageFor(skinName(loadSettings())))
 	w.Run()
 	return true
 }
@@ -204,7 +240,7 @@ const desktopPageHTML = `<!doctype html>
   .tile.full { grid-column:1 / -1; }
   .tile h3 { margin:0 0 6px; font-size:15px; color:#9fe4ff; letter-spacing:.04em; }
   .tile p { margin:0; color:#b8c7d3; font-size:13.5px; white-space:pre-wrap; }
-  aside { width:300px; border-left:1px solid var(--line); padding:26px 24px; display:flex; flex-direction:column; gap:10px; }
+  aside { width:300px; border-left:1px solid var(--line); padding:20px 24px; display:flex; flex-direction:column; gap:8px; overflow:auto; }
   aside .who { font-size:12px; color:var(--dim); letter-spacing:.08em; text-transform:uppercase; }
   aside .name { font-size:22px; color:#e6eef5; margin-top:-6px; word-break:break-all; }
   aside .spacer { flex:1; }
@@ -215,6 +251,31 @@ const desktopPageHTML = `<!doctype html>
   .path { font-size:12.5px; color:#b8c7d3; word-break:break-all; user-select:text; }
   .path.missing { color:#ff9b8f; }
   .path-src { font-size:11.5px; color:var(--dim); margin-top:-6px; }
+  /* setup bunny + server picker */
+  #wizard { align-items:center; justify-content:center; }
+  #wizard .panel { width:min(560px,94vw); max-height:calc(100vh - 90px); overflow:auto; }
+  .bunny { margin:0 0 6px; font:15px/1.25 Consolas, "Segoe UI Symbol", "Nirmala UI", "Microsoft Yi Baiti", "Microsoft Himalaya", Gadugi, monospace;
+    color:#ffd6ec; white-space:pre; text-align:center; min-height:20px; }
+  .bunny.mini { display:none; font-size:14px; }
+  body.setup .bunny.mini { display:block; }
+  .wstep { display:none; } .wstep.shown { display:block; }
+  .wstep h2 { margin:0 0 8px; font-size:18px; color:#9fe4ff; letter-spacing:.04em; text-align:center; }
+  .wstep p { margin:0 0 10px; color:#b8c7d3; font-size:13.5px; }
+  .dots[hidden] { display:none; }
+  .dots { display:flex; justify-content:center; gap:7px; margin:2px 0 14px; }
+  .dots span { width:7px; height:7px; border-radius:50%; background:#24405a; }
+  .dots span.on { background:#ffb6dd; }
+  .srv-list { display:flex; flex-direction:column; gap:6px; margin:6px 0 10px; }
+  .srv { display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; text-align:left; font:inherit; color:#d8e2ea;
+    background:#0c1621; border:1px solid #24405a; border-radius:6px; }
+  .srv:hover { border-color:#3d7fa8; }
+  .srv.sel { border-color:#ffb6dd; background:#1a1622; }
+  .srv b { font-weight:600; } .srv small { color:var(--dim); margin-left:auto; font-size:12px; }
+  .srv .x { margin-left:6px; color:var(--dim); padding:0 4px; }
+  .srv .x:hover { color:#ff9b8f; }
+  .row2 { display:flex; gap:8px; } .row2 input { flex:1; }
+  details summary { cursor:pointer; color:#9fe4ff; font-size:13px; margin:4px 0; }
+  .hint { font-size:12.5px !important; color:var(--dim) !important; }
   .link { background:none; border:0; color:var(--dim); font:inherit; font-size:12.5px; cursor:pointer; text-decoration:underline; padding:0; align-self:flex-start; }
 </style>
 <header>
@@ -223,8 +284,52 @@ const desktopPageHTML = `<!doctype html>
   <span class="pill" id="status">Connecting…</span>
 </header>
 <main>
+  <section class="view" id="wizard">
+    <div class="panel">
+      <pre class="bunny" id="wiz-bunny"></pre>
+      <div class="dots" id="wiz-dots"><span></span><span></span><span></span><span></span></div>
+      <div class="wstep" id="wiz-welcome">
+        <h2>Hi, Captain!</h2>
+        <p>I'm the setup bunny. A few little hops and you're flying: pick a server, find your game,
+          trust the server's certificate, and sign in.</p>
+        <button class="go" onclick="wizStep('server')">Let's hop</button>
+        <button class="link" style="margin-top:8px" onclick="wizDone()">Skip setup</button>
+      </div>
+      <div class="wstep" id="wiz-server">
+        <h2>Where are we flying?</h2>
+        <div class="srv-list" id="srv-list"></div>
+        <details id="srv-add">
+          <summary>Add a server</summary>
+          <label for="srv-addr">Address</label>
+          <input id="srv-addr" placeholder="play.example.org  or  203.0.113.7:8443" spellcheck="false">
+          <label for="srv-name">Name (optional)</label>
+          <div class="row2"><input id="srv-name" maxlength="40" placeholder="My friend's server">
+            <button class="srv" style="flex:none" onclick="addServer()">Add</button></div>
+        </details>
+        <p class="hint">Hosting your own? Pick <b>This PC</b> if the server runs on this computer, or add its address.
+          <button class="link" onclick="dnOpenHostGuide()">How to host a server</button></p>
+        <div class="msg" id="srvmsg"></div>
+        <button class="go" id="srv-next" onclick="serverNext()">Next</button>
+      </div>
+      <div class="wstep" id="wiz-game">
+        <h2>Where's your hangar?</h2>
+        <p>The launcher starts your own copy of Dreadnought.</p>
+        <span class="path" id="wiz-gamepath"></span>
+        <div class="path-src" id="wiz-gamesrc" style="margin:2px 0 8px"></div>
+        <button class="link" onclick="pickGame('wizgamemsg')">Choose the folder…</button>
+        <div id="wiz-gamedir-row" hidden style="margin-top:6px">
+          <div class="row2"><input id="wiz-gamedir" placeholder="C:\Games\Dreadnought" spellcheck="false">
+            <button class="srv" style="flex:none" onclick="typedGameDir('wiz-gamedir', 'wizgamemsg')">Use</button></div>
+        </div>
+        <div class="msg" id="wizgamemsg"></div>
+        <button class="go" onclick="gameNext()">Next</button>
+        <button class="link" style="margin-top:8px" onclick="wizStep('server')">Back</button>
+      </div>
+    </div>
+  </section>
   <section class="view" id="cert">
     <div class="panel">
+      <pre class="bunny mini" id="cert-bunny"></pre>
       <h2>Install the public testing certificate</h2>
       <p>This server uses its own certificate for its encrypted connections. Windows does
         not know it yet, so the game refuses to connect until you trust it once.</p>
@@ -242,6 +347,7 @@ const desktopPageHTML = `<!doctype html>
   </section>
   <section class="view" id="signin">
     <div class="panel">
+      <pre class="bunny mini" id="signin-bunny"></pre>
       <div class="tabs" role="tablist">
         <button role="tab" id="tab-login" aria-selected="true" onclick="pick('login')">Sign in</button>
         <button role="tab" id="tab-register" aria-selected="false" onclick="pick('register')">Create account</button>
@@ -266,7 +372,9 @@ const desktopPageHTML = `<!doctype html>
       <span class="who">Captain</span>
       <span class="name" id="name"></span>
       <button class="link" onclick="signOut()">Sign out</button>
-      <span class="who" style="margin-top:18px">Game folder</span>
+      <span class="who" style="margin-top:10px">Server</span>
+      <span class="path"><span id="srvname"></span> · <button class="link" onclick="changeServer()">Change…</button></span>
+      <span class="who" style="margin-top:10px">Game folder</span>
       <span class="path" id="gamepath"></span>
       <span class="path-src" id="gamesrc"></span>
       <button class="link" onclick="pickGame()">Change…</button>
@@ -275,13 +383,15 @@ const desktopPageHTML = `<!doctype html>
         <input id="gamedir" placeholder="C:\Games\Dreadnought" spellcheck="false">
         <button class="link" onclick="typedGameDir()">Use this folder</button>
       </div>
-      <div class="msg" id="gamemsg"></div>
+      <div class="msg" id="gamemsg" style="min-height:0;margin-top:0"></div>
       <span class="who" style="margin-top:10px">Options</span>
       <label class="opt"><input type="checkbox" id="opt-logWindow" onchange="setOpt('logWindow', this)">
         <span>Show the game's log window</span></label>
       <label class="opt"><input type="checkbox" id="opt-verboseLog" onchange="setOpt('verboseLog', this)">
         <span>Detailed log<small>For bug reports. Makes the log file much larger.</small></span></label>
-      <button class="link" onclick="openLogs()">Open game log folder</button>
+      <label class="opt">Skin <select id="skin" onchange="dnSetSkin(this.value)"></select></label>
+      <span class="path"><button class="link" onclick="openLogs()">Open game log folder</button> ·
+        <button class="link" onclick="rerunSetup()">Setup bunny</button></span>
       <span class="spacer"></span>
       <div class="msg" id="playmsg"></div>
       <button class="go play" id="play" onclick="play()">Play</button>
@@ -292,7 +402,7 @@ const desktopPageHTML = `<!doctype html>
   let mode = 'login';
   const $ = id => document.getElementById(id);
   function show(view) {
-    for (const v of ['cert', 'signin', 'home']) $(v).classList.toggle('shown', v === view);
+    for (const v of ['wizard', 'cert', 'signin', 'home']) $(v).classList.toggle('shown', v === view);
     if (view === 'signin') setTimeout(() => $(mode === 'register' ? 'username' : 'identifier').focus(), 50);
   }
   function say(el, text, kind) { $(el).textContent = text; $(el).className = 'msg ' + (kind || ''); }
@@ -315,11 +425,14 @@ const desktopPageHTML = `<!doctype html>
     $('go').disabled = false;
     if (!r.ok) { say('msg', r.error || 'Sign-in failed.', 'bad'); return; }
     $('password').value = '';
+    state.signedIn = true; state.username = r.username;
     home(r.username);
+    setupFinished();
   }
   function home(username) {
     $('name').textContent = username;
     say('playmsg', '');
+    if (wiz === 'setup') setupFinished();
     $('play').disabled = false;
     show('home');
   }
@@ -351,12 +464,118 @@ const desktopPageHTML = `<!doctype html>
     $('gamepath').classList.toggle('missing', !g.path);
     $('gamesrc').textContent = g.path ? (gameSources[g.source] || '') : '';
     $('autogame').hidden = g.source !== 'chosen';
+    $('wiz-gamepath').textContent = g.path || "Not found yet. Choose the folder where Dreadnought is installed.";
+    $('wiz-gamepath').classList.toggle('missing', !g.path);
+    $('wiz-gamesrc').textContent = g.path ? (gameSources[g.source] || '') : '';
   }
-  async function typedGameDir() {
-    say('gamemsg', '');
-    const r = await dnSetGameDir($('gamedir').value);
-    if (r.ok) { showGame(r.game); say('playmsg', ''); say('gamemsg', 'Saved.', 'good'); }
-    else say('gamemsg', r.error, 'bad');
+  // ---- setup bunny + server picker ----
+  // Bunnies in the style of data/chat/bunnies.txt (the /bunny chat command).
+  // Only bunnies whose glyphs ship with Windows by default: the Tibetan
+  // marks in some of bunnies.txt need an optional font, and show as boxes.
+  const BUNNY = {
+    welcome: "(\\__/)\n(='.'=)\n(\")_(\")",
+    server: "  /)/)\n( . .)\n( づ♡",
+    game: "  ᕬ ᕬ\n(ᓀ  ̫ᓂ)",
+    busy: "૮꒰˶ᵔ ᵕ ᵔ˶꒱ა",
+    sad: "૮₍_   ̫ _ ₎ა",
+    cert: "૮₍ ˶ᵔ ᵕ ᵔ˶ ₎ა",
+    signin: "૮₍_   ̫ _ ₎ა ♡",
+    done: "૮₍ ˶ᵔ ᵕ ᵔ˶ ₎ა ♡",
+  };
+  let wiz = null;          // null, or 'setup' (first run) / 'pick' (from home)
+  let serverBusy = false;
+  function wizStep(step) {
+    const order = ['server', 'game', 'cert', 'signin'];
+    for (const s of ['welcome', 'server', 'game']) $('wiz-' + s).classList.toggle('shown', s === step);
+    $('wiz-bunny').textContent = BUNNY[step] || BUNNY.welcome;
+    $('wiz-dots').hidden = wiz !== 'setup' || step === 'welcome';
+    [...$('wiz-dots').children].forEach((d, i) => d.classList.toggle('on', i <= order.indexOf(step)));
+    say('srvmsg', ''); say('wizgamemsg', '');
+    show('wizard');
+  }
+  function startSetup() {
+    wiz = 'setup';
+    document.body.classList.add('setup');
+    $('cert-bunny').textContent = BUNNY.cert;
+    $('signin-bunny').textContent = BUNNY.signin;
+    wizStep('welcome');
+  }
+  function rerunSetup() { startSetup(); }
+  function changeServer() { wiz = 'pick'; wizStep('server'); }
+  // wizDone: setup is finished (or skipped); carry on to certificate, sign-in, home.
+  function wizDone() {
+    if (wiz === 'setup') dnFinishSetup();
+    showCertOrNext();
+  }
+  function showCertOrNext() {
+    if (state.cert) {
+      $('cert-name').textContent = state.cert.name || 'the server certificate';
+      $('cert-fp').textContent = state.cert.fingerprint;
+      say('certmsg', '');
+      show('cert');
+    } else afterCert();
+  }
+  function renderServers() {
+    const box = $('srv-list');
+    box.textContent = '';
+    const info = state.servers || { list: [] };
+    for (const s of info.list) {
+      const b = document.createElement('button');
+      b.className = 'srv' + (s.selected ? ' sel' : '');
+      const n = document.createElement('b'); n.textContent = s.name;
+      const a = document.createElement('small'); a.textContent = s.address || 'not set';
+      b.append(n, a);
+      if (s.kind === 'custom') {
+        const x = document.createElement('span'); x.className = 'x'; x.textContent = '\u2715'; x.title = 'Remove';
+        x.onclick = async e => {
+          e.stopPropagation();
+          if (!confirm('Remove ' + s.name + ' from the list?')) return;
+          dnServerResult(await dnRemoveServer(s.id));
+        };
+        b.append(x);
+      }
+      b.onclick = () => { if (!s.selected && !serverBusy) useServer(s.id); };
+      box.append(b);
+    }
+    $('srvname').textContent = info.current || 'Default server';
+  }
+  function serverWorking(text) {
+    serverBusy = true;
+    $('srv-next').disabled = true;
+    $('wiz-bunny').textContent = BUNNY.busy;
+    say('srvmsg', text);
+  }
+  function useServer(id) { serverWorking('Hopping over to that server\u2026'); dnUseServer(id); }
+  function addServer() {
+    if (serverBusy) return;
+    serverWorking('Knocking on the server\u2019s door\u2026');
+    dnAddServer($('srv-name').value, $('srv-addr').value);
+  }
+  function dnServerResult(r) {
+    serverBusy = false;
+    $('srv-next').disabled = false;
+    if (!r.ok) { $('wiz-bunny').textContent = BUNNY.sad; say('srvmsg', r.error || 'That did not work.', 'bad'); return; }
+    state = r;
+    $('wiz-bunny').textContent = BUNNY.server;
+    $('srv-addr').value = ''; $('srv-name').value = ''; $('srv-add').open = false;
+    renderServers();
+    showGame(r.game);
+    say('srvmsg', 'Now flying with ' + ((r.servers && r.servers.current) || 'the default server') + '.', 'good');
+    dnNews();
+  }
+  function serverNext() {
+    if (serverBusy) return;
+    if (wiz === 'setup') { wizStep('game'); return; }
+    wiz = null;
+    showCertOrNext();
+  }
+  function gameNext() { wizDone(); }
+  async function typedGameDir(input, msg) {
+    input = input || 'gamedir'; msg = msg || 'gamemsg';
+    say(msg, '');
+    const r = await dnSetGameDir($(input).value);
+    if (r.ok) { showGame(r.game); say('playmsg', ''); say(msg, 'Saved.', 'good'); }
+    else say(msg, r.error, 'bad');
   }
   async function autoGame() {
     say('gamemsg', '');
@@ -371,13 +590,20 @@ const desktopPageHTML = `<!doctype html>
   async function setOpt(name, box) {
     if (!(await dnSetOption(name, box.checked))) { box.checked = !box.checked; say('gamemsg', 'Could not save the option.', 'bad'); }
   }
-  async function pickGame() {
-    say('gamemsg', '');
+  async function pickGame(msg) {
+    msg = msg || 'gamemsg';
+    say(msg, '');
     const r = await dnPickGame();
-    if (r.ok) { showGame(r.game); say('playmsg', ''); say('gamemsg', 'Saved.', 'good'); }
-    else if (r.error) say('gamemsg', r.error, 'bad');
+    if (r.ok) { showGame(r.game); say('playmsg', ''); say(msg, 'Saved.', 'good'); }
+    else if (r.error) say(msg, r.error, 'bad');
   }
   function afterCert() { if (state.signedIn) home(state.username); else show('signin'); }
+  function setupFinished() {
+    if (wiz !== 'setup') return;
+    wiz = null;
+    document.body.classList.remove('setup');
+    say('playmsg', BUNNY.done + '  All set. Press Play!', 'good');
+  }
   async function installCert() {
     $('cert-go').disabled = true;
     say('certmsg', 'Waiting for Windows…');
@@ -418,14 +644,14 @@ const desktopPageHTML = `<!doctype html>
     showGame(s.game);
     // The browser version can also take a typed path (the folder dialog it
     // opens may appear behind the browser).
-    if (window.dnBrowser) $('gamedir-row').hidden = false;
+    if (window.dnBrowser) $('gamedir-row').hidden = $('wiz-gamedir-row').hidden = false;
+    renderServers();
     $('opt-logWindow').checked = !!s.logWindow;
     $('opt-verboseLog').checked = !!s.verboseLog;
-    if (s.cert) {
-      $('cert-name').textContent = s.cert.name || 'the server certificate';
-      $('cert-fp').textContent = s.cert.fingerprint;
-      show('cert');
-    } else afterCert();
+    for (const k of s.skins || []) $('skin').add(new Option(k, k, false, k === s.skin));
+    // First run on this Windows user, not signed in yet: the setup bunny.
+    if (!s.setupDone && !s.signedIn) startSetup();
+    else showCertOrNext();
     dnNews();
   })();
 </script>

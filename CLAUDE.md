@@ -1,129 +1,116 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) in this repository.
 
 ## What this is
 
-A community private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860). The goal is to run the **unmodified game client** against an emulated backend; the only thing a player installs is the replacement launcher (`dn-launcher/`).
+A community private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860): run the **unmodified game client** against an emulated backend; the only thing a player installs is the replacement launcher (`dn-launcher/`).
 
-**The line is drawn at the client, not at the binary.** Two halves of the project, two different rules:
+**The line is drawn at the client, not at the binary.**
 
-- **The client — keep changes minimal.** It is what a player installs, so it stays stock. The launcher replacement exists to sign in, trust our certificate and redirect the hostnames, and that is the intended extent of it. Anything beyond that needs a real justification and should be the last option tried, not the first.
-- **The battle server — modding is allowed.** The host is the same executable run headless by an operator, never by a player. It is ours to change. `battle-server-mod/` is where that lives, and it may grow: the host is missing whole categories of state because it performs no login, and filling those in is legitimate work rather than a grudging exception.
+- **Client — keep changes minimal.** Players install it; stock. The launcher replacement signs in, trusts our certificate, redirects hostnames — that is the intended extent. Anything beyond it needs real justification and is the last option, not the first.
+- **Battle server — modding is allowed.** Same exe run headless by an operator, never a player; `battle-server-mod/` is ours and may grow.
 
-Updated 2026-08-14, replacing a narrower rule that permitted only one specific host-side fix. What prompted it: the orbit gate turned out to read `AYPlayerReplicationInfo::m_highestFleetUnlocked` (`+0x948`), an `EYFleetType` from `YMmogbrain_Structs.h` — real backend data the host cannot obtain because it never logs in. The old rule named writing that byte as the example of what was forbidden, on the belief that it was an "orbit flag". It is not.
+Why this split (2026-08-14, replacing a narrower rule): the battle server is missing whole categories of state because it performs no login — e.g. the orbit gate reads `AYPlayerReplicationInfo::m_highestFleetUnlocked` (`+0x948`), real backend data the host can't have. The old rule forbade writing that byte as an "orbit flag"; it isn't one.
 
-Two things still worth keeping from the old rule, as *guidance* rather than a gate:
+Guidance that remains (as judgment, not gate):
+- Prefer **supplying data the engine would have had** over **fabricating a value that satisfies a check**. Registering precast loadouts the host never received = first kind; writing an arbitrary tier to pass a comparison = second (the second produced a pawn that could shoot but not move — `AGENT-CHAT C32.4`).
+- Keep host mods **optional at runtime** (`battle-server-mod/README.md`) so a match can still be diagnosed with them off.
 
-- Prefer **supplying data the engine would have had** over **fabricating a value that satisfies a check**. Registering the precast loadouts the host never received is the first kind; writing an arbitrary tier to get past a comparison is the second. The first tends to work; the second produced a pawn that could shoot but not move (`AGENT-CHAT C32.4`).
-- Keep host mods **optional at runtime**, so a match can still be diagnosed with them off. See `battle-server-mod/README.md`.
-
-A Go workspace (`go.work`, Go 1.24+ required) of independent modules under `github.com/darkace1998/Dreadnought-Revival-project/<service>`.
+A Go workspace (`go.work`, Go 1.24+) of independent modules under `github.com/darkace1998/Dreadnought-Revival-project/<service>`.
 
 ## Start here
 
-Five skills carry the parts of this project that are expensive to re-derive.
-Load the relevant one BEFORE working, not after a failed attempt:
+Five skills carry what is expensive to re-derive — load the relevant one BEFORE working, not after a failed attempt:
 
 | Skill | Use it when |
 | --- | --- |
-| `dreadnought-stack` | starting a session: what runs where, build/deploy/restart, every log path, the operator test cycle |
-| `dreadnought-mmog-responses` | adding or debugging any `YA_*` response; the client "ignores" a payload |
+| `dreadnought-stack` | starting a session: what runs where, build/deploy/restart, log paths, operator test cycle |
+| `dreadnought-mmog-responses` | adding/debugging any `YA_*` response; the client "ignores" a payload |
 | `dreadnought-rva` | "where does the client do X?"; verifying an RVA before trusting it |
 | `dreadnought-hooks` | adding a MinHook target in `battle-server-mod/` |
 | `dreadnought-verify` | before claiming a fix works |
 
-`AGENT-CHAT.md` is the running log with the client-side project (`S##` ours,
-`C##` theirs). Read the last few entries first — it records what was tried, what
-worked, and what was **retracted**, which is often the more useful half.
+`AGENT-CHAT.md` is the running log (S## ours, C## client-side project). Read the last few entries first — it records what was tried, what worked, and what was **retracted**, often the more useful half.
 
 ## The one rule: never invent data
 
-Everything the server sends must be traceable to the client's own data tables (`data/`) or to the client binary. Invented-but-plausible values have repeatedly cost days here, because they look right and get built on. If a value cannot be determined, mark it `// GUESS:` with what evidence is missing. Debugging order: read the client's log → find the string in the binary → read the parser → only then hypothesize about the payload. Full working rules are in `CONTRIBUTING.md` — read it before touching anything protocol-related.
+Everything the server sends must be traceable to the client's own data tables (`data/`) or the client binary. Invented-but-plausible values have repeatedly cost days — they look right and get built on. If a value cannot be determined, mark it `// GUESS:` with what evidence is missing. Debugging order: read the client's log → find the string in the binary → read the parser → only then hypothesize about the payload. Full working rules in `CONTRIBUTING.md` — read it before touching anything protocol-related.
 
-## Current state (2026-09-25)
+## Current state (2026-10-05)
 
-Working end to end, verified against a live client: login, hangar, inventory and
-purchases, the tech tree (research then buy), fleet/loadout data, matchmaking,
-battle-server spawn, ship selection, the orbit teleport, and a **full proving
-ground match**: bots, ship physics, the player's **own fitted loadout** on any
-tier, and the **victory screen** at the end. Entering the hangar with daily
-contracts answered no longer overflows the stack.
+Working end to end, verified against a live client: login, hangar, inventory/purchases, tech tree (research+buy), fleet/loadout data, matchmaking, spawn, ship selection, orbit teleport, a full proving-ground match (bots, physics, own fitted loadout on any tier, victory screen), daily contracts.
 
-The pattern behind most of these: the battle server is the client exe, and the
-original backend fed it from a separate SERVER build that is not in it. Each gap
-is a piece of server-side code the host lacks, filled by `battle-server-mod` or
-mmogbrain -- never by patching the client:
+**The recurring pattern:** the battle server is the client exe, and the original backend fed it from a separate SERVER build not in it — each gap is server-side code the host lacks, filled by `battle-server-mod` or mmogbrain, never by patching the client (player loadouts via `?DNPID=` travel URL + loopback `/battle/loadout`; victory screen via unsolicited `ClientSetTopPlayerMatchStats`; hangar-entry quest-cycle recursion fixed by a real `ContractTable` payload, not a client change).
 
-- **Player loadouts.** mmogbrain adds `?DNPID=<pid>` to the `YA_Connect` travel
-  URL; the mod reads it from `UNetConnection+0x198`, fetches the fit from
-  mmogbrain's loopback `GET /battle/loadout`, and builds the loadout the way the
-  client does.
-- **Victory screen.** The client's end-of-match stage `SetupUIWidgets` waits for
-  `ClientSetTopPlayerMatchStats`, which nothing in this exe sends; the mod sends
-  it (empty) after `ClientStartEndOfMatchTransition`.
-- **Match-end stack overflow** on the host: a local-player RPC loop through
-  `ClientSetPlayerRestrictions`, cut by a re-entrancy guard in the mod.
-- **Hangar-entry quest-cycle recursion.** The reply to `YA_GetDailyContractsData`
-  must carry `ContractTable` (the client's own 24-quest `MPQuestCollection`,
-  generated by `scripts/gen-mpquest-table.py`). We used to send the fields of a
-  different handler, so no quest resolved and the cycle recursed. The July
-  conclusion that this "needs a client-side change" was wrong: the decompile hid
-  the loader's second argument.
-- **dn-dedicated** reaps idle hosts, kills a host's whole process tree by an
-  environment tag, and spares the Wine prefix's shared processes (killing them
-  took down every other host in the prefix).
-
-Open (see `issues.md` and GitHub issues):
-
-- **Scores are always 0** (#67): the PvP scoring table was mmogbrain data, not in
-  the paks. Kills/deaths/K-D are fine.
-- **Career goals** on the progression screen are placeholders (#68); only their
-  text format (`NSLOCTEXT`) is recovered. Tech-tree costs are guesses too (#66).
-- **Match rewards are placeholders**: since 2026-09-26 the mod reports each
-  player's result (kills/deaths/team/match result) to mmogbrain's loopback
-  `GET /battle/result`, which pays credits and XP (`DN_REWARD_*`, GUESS values)
-  and feeds the MatchesPlayed/MatchesWon/ShipsDestroyed career counters. Not yet
-  verified live; the real reward tables are #71.
-- **Daily contracts:** the catalogue is sent; the player's *assigned* contracts
-  come through a message not yet traced.
-- **Statistics screen** overflows the client's stack on open (cause unknown;
-  needs a Windows minidump). `YA_GetPlayerStatistics` always sends an empty list.
-- Intermittent "no selectable ships" after joining a host: the client never
-  sends its pick. Needs a client log from an affected join.
-- The client sends `YA_GameModeEvent` and `YA_LogSpecial`, which we do not answer.
+Open problems and detail live in `issues.md` + GitHub issues (#67 scores, #66/#68/#71 placeholder values — operator-approved, do not chase exact values, statistics overflow, etc.). Recent work: see `AGENT-CHAT.md` tail and `RESUME.md`.
 
 ## Commands
 
 ```bash
-bash scripts/setup.sh                         # build all services into run/, plus certs + secrets on first run
-cd auth-server && go build -o ../run/auth-server .   # build a single service
-
-bash scripts/start-services.sh                # start the stack (logs in run/<service>.log)
-bash scripts/stop-services.sh                 # stop it
-curl http://127.0.0.1:8081/health             # health checks: 8081-8085 per service
+bash scripts/setup.sh                # build all into run/ (+ certs/secrets on first run)
+bash scripts/start-services.sh       # stack up, logs in run/<service>.log
+bash scripts/stop-services.sh
+curl http://127.0.0.1:8081/health    # health checks on 8081-8085
+cd battle-server-mod && bash build-linux.sh   # host mod DLL, clang cross-build (smoke + deploy: dreadnought-stack skill)
 ```
 
-### Tests and lint — must run per-module, not from the workspace root
+### Tests and lint — per-module, never workspace root
 
 `go test ./...` from the repo root fails ("directory prefix . does not contain modules"). Run inside each module:
 
 ```bash
-cd mmogbrain && go test ./...
-cd mmogbrain && go test -run TestPayloadSizesVerify ./...   # single test
-cd mmogbrain && go vet ./...
-cd mmogbrain && golangci-lint run ./...       # per-module; root run gives misleading results
-```
-
-`shared/dreadgameconfig` and `legacy-api/handlers` tests used to **panic without `DATA_DIR`**: a package-level `init()` loaded game data through a cwd-relative default that only resolved from a module root directly under the repo root, and it ran before any `TestMain` could fix it. `DataDir()` (`shared/dreadgameconfig/loader.go:34`) now walks upward looking for a `data/` directory holding the extracted assets, so both suites pass with `DATA_DIR` unset — checked with `env -u DATA_DIR go test -count=1 ./...` in both modules. Set it to point at a different extraction; it still wins when present.
-
-`dn-dedicated` is a separate module and deliberately not in `go.work`, so it needs the workspace switched off:
-
-```bash
+cd mmogbrain && go test ./...           # and: go vet ./...; golangci-lint (clean not expected; don't add to backlog)
+cd mmogbrain && go test -run TestPayloadSizesVerify ./...
 cd dn-dedicated && GOWORK=off go build ./... && GOWORK=off go test ./...
 ```
 
-Modules with tests: `mmogbrain`, `shared`, `legacy-api`, `gateway`, `game-manager`, `dn-dedicated`. `go vet` is clean everywhere and must stay that way. `golangci-lint` has a known pre-existing backlog in `mmogbrain`/`shared` — don't add to it, but a clean run is not expected.
+`TestPayloadSizesVerify` pins exact byte sizes of every mmogbrain response — a deliberate tripwire. When a change moves a size, don't just update the number: add a comment line explaining what grew/shrank and why. Tests encode client behaviour, so a failing test may itself be wrong (it has twice faithfully defended a disproved theory) — decide which side before "fixing", and write down why if you change the assertion.
+
+## Tooling — reach for `dn` before writing shell
+
+`dn` (repo `scripts/dn`, symlinked to `~/.local/bin/dn`) wraps the shell
+incantations this project repeats. Prefer it over hand-rolled commands: output
+is bounded and identical every run, so it costs the same context no matter which
+model is driving. `DREADGAME_EXE` is exported in `~/.bashrc`, so the RVA scripts
+need no setup line.
+
+```bash
+dn env                        # resolved paths; is the exe present?
+dn status                     # services + health + pids + log sizes
+dn logs --list                # log targets -> real paths (traps encoded below)
+dn logs mmog --last 40        # per-request trail (repo-root mmogbrain.log)
+dn logs client --grep crash --last 30
+dn grep 'ACCESS_VIOLATION'    # every service log, counted + sampled
+dn build mmogbrain            # per-module go test + vet
+dn restart                    # stop->start->health->live DN_ switches from /proc
+dn rva disasm 0x2A6CED0       # RVA toolkit with DREADGAME_EXE preset
+dn sql "select * from users limit 5" --db auth
+dn deploy                     # build changed services into run/, skip identical, restart
+dn headless LABEL [--steps F] # unattended client run -> run/cycles/<id>/ bundle + VERDICT
+dn live start LABEL           # interactive client: click/key/hold/shot/wait/settle/log, stop
+dn cycles                     # recent bundles; dn headless-stop frees the display + sweeps switch files a killed run left
+```
+
+**Testing a client flow: drive it live, replay it headless.** `dn live` keeps
+one client running between calls; each action prints a screenshot path plus the
+notable new client-log lines, so you look, decide, act — no start-to-close
+reruns. `dn live stop` writes `steps.txt`, which `dn headless --steps` replays
+unattended (`scripts/headless-steps/pg-battle.txt`: hangar -> Proving Grounds
+-> spawn -> flight, ~5 min). A test that needs its own match uses
+`--fresh` (a running battle swallows the join; a stale one is cleared, one with
+anyone online refuses), `--no-npcs` (no Onslaught creeps, no fill bots — the
+host switch files exist only for the run), `--switch-off NAME` (moves the
+operator's `dn_host_NAME.txt` aside for one run, e.g. `no_onslaught_creeps`;
+restored on exit, by the watchdog, or by `dn headless-stop`), `--pin MODE:MAP`, and
+`--companion SH` for `dn cmd` on log cues (`ons-boss-meteor.sh`; it gets `DN_CYCLE_DIR` and `DN_CLIENT_DISPLAY`, so `ons-meteor.sh` records `meteor.mp4` into the bundle). With
+`--steps` the time cap is estimated from the file. Display/audio/crash traps are in the
+`dreadnought-verify` skill. Headless runs are ours; the operator still gates
+every real-client test cycle.
+
+Two habits it encodes, both learned the hard way: `run/client.log` is ~70 MB and
+must never be dumped unbounded, and a `DN_` switch confirmed in `secrets.env`
+proves nothing — `dn restart` reads `/proc/<pid>/environ` instead.
 
 ## Architecture
 
@@ -134,76 +121,54 @@ Modules with tests: `mmogbrain`, `shared`, `legacy-api`, `gateway`, `game-manage
       ├─ legacyapi.*     → legacy-api    :8082  (profiles, inventory, match history — legacy.db)
       └─ masterserver.*  → master-server :8084  (server registry, browser — master.db)
   → HTTPS :65443 → mmogbrain "gateway" socket  (Greybox web-services: catalog, inventory, session)
-  → TLS   :48843 → mmogbrain Firmament socket  (social/presence + binary YMmogbrain protocol)
+  → TLS   :48843 → mmogbrain Firmament socket  (social/presence + binary YMmog protocol)
   → UDP :7777-7877 → DreadGame-Win64-Shipping.exe  (one Wine process per match)
-
-mmogbrain matchmaker ──match formed──► control plane :8085 ──spawns──► wine + game exe
-                                      (dn-dedicated; DN_CONTROL_PLANE=game-manager
-                                       switches back to the older service)
 ```
 
-Naming trap: the **`gateway` service** is the reverse proxy on :443, while **`GATEWAY_ADDR` (:65443)** is a socket *inside mmogbrain*. Two different things.
+Naming trap: the **`gateway` service** is the reverse proxy on :443; **`GATEWAY_ADDR` (:65443)** is a socket *inside mmogbrain* — two different things.
 
-There is no dedicated-server build of Dreadnought — the battle server is the ordinary client exe launched headless (`"<map>?listen" -server -nullrhi -unattended`). A `-dedicatedserver` switch does not exist in the binary.
+There is no dedicated-server build; the battle server is the ordinary client exe launched headless (`"<map>?listen" -server -nullrhi -unattended`; no `-dedicatedserver` switch exists in the binary). `admin-cli/`, `dn-launcher/` (Windows, cross-compiled), `shared/` (db, logging, middleware, `dreadgameconfig` loader).
 
-`admin-cli/` is the operator CLI; `dn-launcher/` is the Windows launcher replacement (cross-compiled). `shared/` holds common packages: `db`, logging, middleware, and `dreadgameconfig` (the extracted-game-data loader).
+### mmogbrain — the complex one
+
+Implements the proprietary binary YMmog protocol on the Firmament TLS socket. Must-knows:
+
+- Use the encoding helpers (`appendMmogStringField`, …), never raw bytes.
+- Player PIDs on the binary protocol are UUIDs **with hyphens stripped**.
+- Firmament auth success is deliberately delayed until MMOG `YA_PlayerGet` confirms player data is ready (real client race; pending-auth maps).
+- `PLAYERS_PER_MATCH` defaults to 1 — every player gets a private match and can never meet another. Use 2+ for PvP; PvP modes have no bots (`StartCombat` fires only under Training Match).
+- Debug switches (`DN_TECHTREE_LIMIT`, `DN_ANSWER_DAILY_CONTRACTS`, `DN_NO_DEFER_PLAYER_FLEETS`, `DATA_DIR`) documented in README.
 
 ### Conventions shared by all services
 
-- Handlers: `type Handler struct { DB *sql.DB; Log *logrus.Logger; ... }` wired in `main.go` with `gorilla/mux`.
-- SQLite via `shared/db`: WAL mode, `MaxOpenConns=1` (single writer), sequential migrations in `schema_versions`.
-- JWT: HS256; claims `sub`, `username`, `realm="dreadnought.pc-us"`, `aud="dreadnought"|"launcher"`; `JWT_SECRET` must be identical across services. Middleware injects `X-User-ID`/`X-Username`; admin endpoints check `X-Admin-Key`.
-- Config via `getenv(key, fallback)` only — no `.env` parsing. Runtime config lives in `run/secrets.env` (gitignored; annotated template at `scripts/secrets.env.example`; full variable table in README).
-- `logrus` JSON logging; `promhttp` metrics on `GET /metrics` everywhere.
-- Greybox-compatible errors: `writeGreyboxError(w, status, code, msg)` with `code <= -32000`, or the launcher shows a generic "service unavailable".
+Handlers wired in `main.go` with gorilla/mux; SQLite via `shared/db` (WAL, `MaxOpenConns=1`, sequential migrations); JWT HS256 (`sub`, `username`, `realm="dreadnought.pc-us"`, `aud="dreadnought"|"launcher"`; `JWT_SECRET` identical everywhere; middleware injects `X-User-ID`/`X-Username`; admin checks `X-Admin-Key`); config via `getenv(key, fallback)` only, runtime values in gitignored `run/secrets.env` (template `scripts/secrets.env.example`); logrus JSON + `promhttp` on `/metrics`; Greybox errors via `writeGreyboxError` (`code <= -32000`, else the launcher shows generic "service unavailable").
 
-### mmogbrain (the complex one)
+### Protocol invariants (verified — full detail in the mmog-responses skill)
 
-Beyond HTTP, it speaks the proprietary binary YMmogbrain protocol on the Firmament TLS socket. Key facts:
-
-- Use the encoding helpers (`appendMmogStringField`, `appendMmogInt32Field`, …), never raw bytes.
-- Player PIDs on the binary protocol are UUIDs **with hyphens stripped** (32 hex chars).
-- Firmament auth success is deliberately delayed until MMOG `YA_PlayerGet` confirms player data is ready — a real client race, coordinated via pending-auth maps.
-- `PLAYERS_PER_MATCH` defaults to 1 for solo testing — which means every player gets a *private* match and can never meet another player. Use 2+ for PvP; PvP modes have no bots to fill the gap (`StartCombat` fires only under Training Match).
-- Debug env switches (`DN_TECHTREE_LIMIT`, `DN_ANSWER_DAILY_CONTRACTS`, `DN_NO_DEFER_PLAYER_FLEETS`, `DATA_DIR`) are documented in README.
-
-### Protocol invariants (verified; easy to break by accident)
-
-Details and evidence in `CONTRIBUTING.md`; headlines:
-
-- **Category law:** the top byte of an item id is its `ItemIDTable` CategoryID (`(id >> 24) & 0xff`); several client gates admit ids only by this byte.
-- **Container length excludes its own length field** but includes the 6-byte terminator; off-by-4 makes a container swallow its next sibling, so only the last array element survives.
-- **Arrays (tag 0x0d) lose child names**; lists the client also looks up by name must be sent as objects with children named `"0"`, `"1"`, … (`protocol.AppendIndexedStringListField`).
-- The binary mmog parser compares field names **case-insensitively**; the JSON catalog lookups do **not** — `Name` and `name` are both required, carrying different values.
-- `<DNT>[[NotFound]]` in-game means a **missing field**, not a failed localization.
-- Three distinct enums are all called "ship class" — see `docs/client-data-reference.md` before mixing them.
-- **The size ceiling is the client's 32768-byte receive ring, not the 65535 the frame's 16-bit size field allows.** A 40,316-byte response is legal by the frame limit and still killed a live client: it logged the request, then nothing at all. Oversized frames do not degrade, they stop. `YA_GetTechTree` has shipped at 25,846 bytes, so ~26KB is proven safe.
-- **A reply name is not always the request name.** The client sends `YA_Tune` and dispatches the reply on `YA_TuneReturn`. Five names carry the suffix; the rest correlate by request id. Check the dispatcher (`0x142a236c2-0x142a31a32`) before renaming anything.
-- **Two responses carry everything in one zlib blob and ignore every other field**: `YA_GetTechTree`/`TechTrees` and `YA_TuneReturn`/`packed`.
-- **A hand-built document inside a blob must call `protocol.AppendRootEnd`.** `BuildResponseFrame` does it for frame payloads, so it is easy to forget. Without it the top container resolves but nothing inside it does — an empty version string and every table lookup missing, at once.
-- **Once the client accepts a response it TRUSTS it.** Empty tuning tables are worse than sending nothing: the client stops consulting its own cooked data and every weapon lookup fails. Fill a newly-accepted response or turn it off.
-- **Echo cooked data tables verbatim** (`otsTableRowsJSON`). The client looks rows up by blueprint asset name; reshaping the table breaks it three ways at once.
-
-Full detail and the debugging order are in the `dreadnought-mmog-responses` skill.
+- **Category law:** top byte of an item id = its `ItemIDTable` CategoryID; several client gates admit ids only by this byte.
+- **Container length excludes its own length field but includes the 6-byte terminator** — off-by-4 makes a container swallow the next sibling.
+- **Arrays (tag 0x0d) lose child names**; name-looked-up lists go as objects with children `"0"`, `"1"`, …
+- Binary mmog parser compares field names **case-insensitively**; JSON catalog lookups do **not** (`Name` and `name` both required, different values).
+- `<DNT>[[NotFound]]` = a **missing field**, not a failed localization.
+- **Size ceiling is the client's 32768-byte receive ring** (legal per the frame's 16-bit size field, fatal anyway — oversized frames stop the client dead, they don't degrade). ~26KB proven safe for `YA_GetTechTree`.
+- **A reply name is not always the request name** (`YA_Tune` → `YA_TuneReturn`; five names carry the suffix, rest correlate by request id). Check the dispatcher before renaming anything.
+- `YA_GetTechTree`/`TechTrees` and `YA_TuneReturn`/`packed` carry everything in one zlib blob and ignore other fields; a hand-built blob document must call `protocol.AppendRootEnd` (`BuildResponseFrame` does it for you — easy to forget without, everything inside resolves to nothing at once).
+- **Once the client accepts a response it TRUSTS it.** Empty tuning tables are worse than nothing; echo cooked data tables verbatim (`otsTableRowsJSON`), keyed by blueprint asset name.
 
 ### TLS
 
-`certs/server.crt` serves the gateway; the Firmament socket uses `certs/firmament.crt`, whose issuer is spoofed as "Amazon RSA 2048 M01" to satisfy the client's CA pinning. `scripts/gen-certs.sh` builds both.
+`certs/server.crt` serves the gateway; the Firmament socket uses `certs/firmament.crt`, issuer spoofed to "Amazon RSA 2048 M01" for CA pinning. `scripts/gen-certs.sh` builds both. `certs/` gitignored — never trust any CA from repo git history.
 
-## Working on tests
+## Comments and commits
 
-- `TestPayloadSizesVerify` pins the exact byte size of every mmogbrain response as a deliberate tripwire. When a change moves a size, don't just update the number — add a line to the comment block above it explaining what grew/shrank and why.
-- Tests encode client behaviour, so a failing test may itself be wrong (it has twice faithfully defended a disproved theory). Decide which before "fixing" either side, and write down why if you change the assertion.
-- Comments in this codebase carry reverse-engineering findings that exist nowhere else — keep them dense, cite binary function addresses, and when you disprove a comment, correct it in place rather than deleting it.
-
-## Commits
-
-Lowercase, scoped subjects: `techtree: ClassId must be an item id, not the EYShipClass ordinal`. For protocol changes the body must record the evidence (function, offset, client log before/after) and state plainly what was **not** verified against a running client.
+- Comments carry reverse-engineering findings that exist nowhere else — keep them dense, cite binary function addresses, and when you disprove a comment, correct it in place rather than deleting it.
+- Lowercase scoped subjects: `techtree: ClassId must be an item id, not the EYShipClass ordinal`. Protocol changes: the body records the evidence (function, offset, client log before/after) and states plainly what was **not** verified against a running client.
+- **Local commits only — never push to GitHub.** Operator tests every client cycle.
 
 ## Reference docs
 
 - `CONTRIBUTING.md` — working rules, protocol invariants, debugging method (read first)
-- `AGENTS.md` — agent-oriented gotchas and current test status
+- `AGENTS.md` — agent-oriented gotchas, current test status
 - `docs/client-data-reference.md` — extracted item/ship id maps and naming rules
 - `docs/client-data-validation.md` — audit of every id the server emits
 - README — setup, configuration variables, troubleshooting

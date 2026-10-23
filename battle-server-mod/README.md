@@ -206,7 +206,24 @@ every human (a player controller with a network connection):
   Bootcamp. The spawner fills teams only from the mode's own bot list
   (`gm+0x968`, count `gm+0x970`) up to its team size (`gm+0x97C`); the log line
   `bots: game mode … type N: bot list X entries, team size Y` shows per mode
-  whether a PvP map has one. Not verified live yet.
+  whether a PvP map has one. Verified in TDM (2026-10-20): 15 bots, mixed
+  classes, T1-T2; they reach the arena about 60 s after control and fight
+  each other (projectiles, kills by +150 s).
+- **Bot tier and ship** (`/host bottier N`, `/host botship <0 all|1|2>
+  <ShipId|off>`). Each bot list entry (`YTrainingMatchAI`) carries
+  `m_npcSpawnIDs`, a list of ShipIds the game picks from by class and tier.
+  `botship` overwrites every element with one ShipId, so that team's bots
+  (respawns included) are that ship. The tier is clamped by the server's fleet
+  type (`GameState+0x1D48`: 1 → T1-2, 2 → T2-3, 3 → T4-5); `bottier` sets it
+  and the `m_aiSpawnTierRules` default tier. `dn_host_ai_spawn_debug.txt`
+  turns on the game's own pick log (`m_showAISpawnDebug`).
+  The chooser keeps only the list's ShipIds of the rolled tier; with none left
+  it logs `No valid NPC spawn ID found` and takes a random ship from hardcoded
+  data (TDM 2026-10-20: a T4 ship at the default T1-2 came out SniperMediumT2,
+  then DreadnoughtMediumT1). So `botship` needs a matching `bottier`.
+  The mod snapshots the lists' ShipIds per match (52 in TDM) and maps an id
+  not among them to the same class at the nearest tier (higher first), and a
+  Havoc boss id (`…Boss01`) to its class's T5.
 - **Bot balance** (any mode with bots; `dn_host_no_bot_balance.txt` turns just
   this off). Per team: bots = team size − humans on that team. The bot targets are the mode's fixed team size (`gm+0x97C`); nothing
   subtracted the humans, so three players still got 8 bots on their side. Once
@@ -217,8 +234,18 @@ The first version did teams at `PostLogin` through the `ProcessEvent` hook and
 `AYPlayerController::SetTeam`. With it, only the last player to join got his
 own loadout; with it off both players' fits registered. It is gone.
 
+- **Captains** (`dn_host_no_captain.txt` turns just this off; added
+  2026-10-16, from PR #80). `GET /battle/player` also answers
+  `captain=<display info>` (the string the client saved with
+  `YA_SavePlayerDisplayInformation`). The mod writes it into
+  `AYPlayerReplicationInfo::m_captainDisplayInformation` (`+0x758`, replicated
+  with RepNotify, SDK), which the login-less host left empty, so other players'
+  captains drew as the default. Not verified live: that the clients redraw the
+  captain from the replicated value.
+
 Logs: `team sync: controller … TEAM=1 -- player state 0 -> 1, …`,
 `names: controller … is now "…" (from mmogbrain)`,
+`captain: player state … +0x758 = "GENDER_…"`,
 `bot balance: 3 human(s) on team 1; team size 8 -> team 1 bots 8 -> 5`.
 Not verified live yet.
 
@@ -726,15 +753,22 @@ player record, it belongs in the other repository.
 
 ## Building
 
-Windows, MSVC, x64. Nothing else — no Go, no `go.work` entry, no
-`scripts/setup.sh` step. Deleting this whole directory leaves the stack building
-and running exactly as before.
+Windows, MSVC, x64 — **or Linux, clang, no Windows at all** (`build-linux.sh`
+cross-compiles with `--target=x86_64-pc-windows-gnu -fms-extensions`; MSVC's
+SEH `__try/__except` compiles fine under clang, unlike MinGW's GCC. Same
+sources, same MinHook, UCRT imports the game prefix already provides). Either
+script: no Go, no `go.work` entry, no `scripts/setup.sh` step. Deleting this
+whole directory leaves the stack building and running exactly as before.
 
 ```console
 > cd battle-server-mod
 > build.bat
 Built ...\battle-server-mod\build\dn_host_loadout.dll
 ```
+
+On Linux, `bash build-linux.sh` cross-compiles the same source with clang
+(`build-linux/dn_host_loadout.dll`; rename to `wer.dll`). Smoke-tested under
+Wine 2026-10-16 (all hooks installed, match reached InProgress).
 
 `build.bat` finds the toolset with `vswhere` if you are not already in a
 Developer Command Prompt. The only dependency is
@@ -942,6 +976,418 @@ servers report per-kill detail").
 Expected log: none per kill; the `battle result` line in mmogbrain's log shows
 the contract progress ("contracts: progress").
 
+## Ribbons announced in the match (on, added 2026-10-15)
+
+Switch off with `dn_host_no_live_ribbons.txt` / `DN_HOST_NO_LIVE_RIBBONS=1`.
+
+No ribbon ever showed during a match: the host's reward path (`0x426DC0`) only
+builds type-1 (event) achievements (`0x5A9D30` is always called with 1) and
+sends them with `ClientAddAchievement` (RPC stub `0x5E50C0`; earlier notes call
+it ClientApplyRespawnFilter, which is the NEXT FName at `0xCD4A6`). Type 2 is
+the ribbon, and nothing in this exe builds one.
+
+When the match table is built the mod loads the mode's ribbon rows from
+mmogbrain (`GET /battle/ribbons?mode=`: ordinal, EventsForRibbon, ribbon
+score/XP/credits). Each time a player's count of an event reaches a multiple of
+EventsForRibbon, it builds the type-2 achievement (layout from `0x5A9D30`),
+adds it to the scoring component's ribbon list (`0x413740`, component =
+PRI `+0x928`) and, when the component's net check (`0x1839880`) returns 1,
+sends it with `ClientAddAchievement` -- as the host does for type 1. Match
+Finish is sent at the player's end of match, MVP there too, Man Of The Day at
+the winning kill.
+
+Expected log: `ribbons: N ribbon rules loaded for mode "TDM"` per match and
+`ribbons: event E -> ribbon for player state ... (net 1, sent)` per ribbon.
+NOT verified live: whether the client shows the ribbon (popup / end-of-match
+list) from this RPC.
+
+## Ribbon popup in the match (on; `dn_host_no_ribbon_popup.txt` turns it off; added 2026-10-16)
+
+`ClientAddAchievement` (above) only files a ribbon into the client's scoring
+list; the client's handler for it is the same `0x4171E0` and calls no UI. The
+popup is `AYPlayerReplicationInfo::ClientEventResult(FYEventResponse)`
+(sender `0x5E5280`, client body `0x5AFEA0`): when `m_ribbonAchieved` is set,
+the client takes the row's ribbon name, plays `#Scoring_<name>` and calls
+`UYHUDWidget_ScoringEvents::BP_EventAddScoringEvent(text, level,
+isRibbonEvent, ribbonTexture)`.
+
+The host already sends `ClientEventResult` for every scoring event
+(`0x5B30D0`: fill, `AssignScoringReward`, send), but never sets the ribbon
+half. The `AssignScoringReward` hook now counts the event before the original
+runs and, when it completes a ribbon, sets `m_ribbonAchieved` (+0x04),
+`m_ribbonScore` (+0x10, the row's RibbonScore, added to the player's score
+like the original) and `m_requiresHUDUpdate` (+0x28; GUESS that ribbons show
+even on rows without an event score). Ribbon XP and credits stay 0 there:
+mmogbrain pays them.
+
+Log: `ribbons: event N -> ribbon popup (ClientEventResult m_ribbonAchieved,
+ribbon score S)`. Not verified live yet.
+
+## MVP and Man Of The Day ribbons (on, added 2026-10-15)
+
+Switch off with `dn_host_no_eom_ribbons.txt` / `DN_HOST_NO_EOM_RIBBONS=1`.
+
+Both are end-of-match scoring events (EYScoringEventID ManOfTheDay 41, MVP 42)
+that mmogbrain keeps out of the host's scoring table, because end-of-match
+events overflowed the host's stack (2026-09-28). So no one could earn either
+ribbon. The mod adds them to the player's `ev=` counts itself:
+
+- **MVP** ("Player with most RP gathered total during the match"): the player(s)
+  with the highest `m_score` (`+0x7FC`) in the game state's PlayerArray when the
+  result is reported. GUESS: RP is the match score, ties all get it, bots (no
+  player state) do not compete.
+- **Man Of The Day** ("Score the last kill that makes your team win."): the
+  killer whose kill takes his team to the kill limit (game mode `+0x9DC`, team
+  kills GameState `+0x1DF0/+0x1DF4`), or, in Onslaught, the kill that reaches
+  the points target.
+
+Expected log: `ribbons: MVP -> <pid>` and `ribbons: Man Of The Day -> ...`; in
+mmogbrain's `battle result` line, `event_counts` shows MVP / ManOfTheDay and
+`ribbons` the earned ribbon. NOT verified live.
+
+## Statistics: score, healing, time per ship class (on, added 2026-10-15)
+
+The Statistics screen (`YA_GetPlayerStatistics`) shows ScoreSum, HealPoints and
+seconds per ship type, which nothing reported. The match result now also sends:
+
+- `score=` -- `AYPlayerReplicationInfo::m_score` (`+0x7FC`, SDK dump);
+- `heal=` -- `m_totalHealingDone` (`+0x924`, float, SDK dump);
+- `ct=class.seconds,...` -- seconds each EYShipClass was flown. Nothing in the
+  exe counts this (the `TimeUseShipClass` stats counter has no sender), so the
+  once-a-second game-mode timer samples every human's current ship (controller
+  `+0x3C8` -> pawn `+0x940`) and adds the elapsed time; no pawn adds nothing.
+
+Double kills and first strikes need no mod change: they are the Dominator and
+FirstStrike counts already in `ev=`. `score=` also turns on mmogbrain's
+score-based daily contracts. The offsets are NOT verified live.
+
+Expected log: the `match result:` line now shows `score N healing N`; in
+mmogbrain's log, `statistics: match recorded` with `from_mod=true`.
+
+## Operator chat commands (on; admins only, through mmogbrain)
+
+Admins (`DN_ADMINS`) type `/cmd` or `!cmd` in hangar chat. mmogbrain queues
+the host-side ones; each host polls `GET /battle/commands?match=<id>&since=<seq>`
+on loopback every other director tick and runs new lines
+(`<seq> <cmd> <arg> <arg2> <arg3>`). Logged as `commands: #<seq> <cmd> <arg>`
+plus one result line. Player-facing list: `data/chat/help.txt`.
+
+Where each works:
+- every mode: `/turbo`, `/npc` (feats on ships seen at UYFeatsComponent
+  begin-play -- that hook is installed in every mode), `/team`, `/shake`,
+  `/flash`, `/slowmo`, `/kill`, `/nuke`, `/meteor`.
+- Havoc, PvE Horde (S1E1-S1E3, Season 3) and Onslaught: `/spawn`, `/boss`,
+  `/bots` (Onslaught: enemy assault ships via SpawnOnslaughtCreep; Havoc and
+  Horde: combat scene entries).
+- TDM family (TDM, PodTDM, TER; 2026-10-20): `/spawn` and `/boss` as game
+  bots -- a free entry of the game mode's own bot list (gm+0x968, stride
+  0x38) gets the ship as its only ShipId and the label as its name, then
+  SetTeamSizeAI 0x381550 raises the team's target. Before the match starts
+  (gs+0x1D90 null) the command is QUEUED: 0x3678F0 (vtable 0x9D0) copies the
+  team size into the targets and runs the fill 0x381FA0, which REBUILDS the
+  list (48 entries -> 16), so the queue is placed right after it by the
+  0x3678F0 hook (`bots: setup (0x3678F0): N queued /spawn(s) placed after
+  the fill`). With the spawner off, only the /spawn'd bots fly (targets =
+  their counts). A /boss whose class the mode lacks (PodTDM has no
+  ScoutHeavy) moves to another hull, same weight first. Verified headless:
+  TDM (gamebot-boss14/15), PodTDM (pod2), TER (ter1), elite feats included.
+  The bot's name is YNPCState.m_NPCName (FText, replicated, +0x3C8 on the
+  YNPCReplicationInfo at pawn+0x658), which the game sets to the entry name
+  itself (e.g. SupportMediumBoss01); the viewer reads it through
+  KismetTextLibrary Conv_TextToString (name7, 2026-10-21). The stock client's
+  in-match scoreboard (Tab) shows it uppercased: "DREADNOUGHTMEDIUMBOSS" for a
+  random /boss (botname1; the "01" cut off), "GORGON" for `/boss 1`
+  (botname3). A ship id the mode's lists lack (Havoc variants like
+  DreadnoughtHeavyNukerT5, a custom boss's ship) flies the plain class at its
+  tier; an elite or custom boss moves to another hull if the class is absent.
+- TDM: `/match ffa` (or `/host ffa on [N]`, `/host ffa off`): every human
+  ship on a team of its own (3, 4, ...; FfaTick), no bot fill. The stock
+  score counts teams 3+ as team 2, so while FFA is on the team kill limit
+  (gm+0x9DC) is lifted and the mod keeps a tally per player; the first to N
+  kills (default: the mode's m_killsForWinning) ends the match, and the
+  winner byte (gs+0x4E8, which only knows 1/2/draw) is that player's
+  matchmaker side -- GUESS: that whole side sees victory. Verified headless
+  (ffa2, one human); not yet with two or more.
+- Havoc and PvE Horde: `/wave`, `/enemy`. PvE gamestates: `/difficulty`.
+  PvE Escort (S1E4) runs its own director (`escort:` log lines) and has no
+  waves.
+- debug, via `/host <line>`: `probefn <object> <function>` (UFunction
+  parameters: name, class, offset, size, flags), `props <object|pawn>
+  [substring]` (reflected properties with offsets and object values).
+
+`/nuke`: lethal ApplyDamage on every enemy ship except command ships, kill
+credit round-robin over human players with a live ship. `/meteor [n]`:
+UYBlueprintLibrary::SpawnProjectile, Ultra torpedo row, n per human ship
+(traps in the CommandMeteor comment).
+`/rain` and `/droplets` were removed 2026-10-22 (operator). What they
+established: host-spawned projectiles do damage but stock clients draw
+nothing (docs/server-only-limits.md); a shot moved after registration
+(hook on 0x51E140) hits where it was moved but is drawn at the gun, because
+clients draw shots from the weapon's replicated fire info and no RPC carries
+a shot; replicating each moved projectile made clients log "No
+ProjectileOfflineData available" every tick. The Starling herald (one per
+human ship, 3 `AB_DN_Pri_WarpM_Swarm_Ability_T5_BP` salvos) did show, as warp
+abilities are drawn at their target.
+
+Since 2026-10-21 (operator: "if we can't get an actual rain it'd be
+useless"), Onslaught's sky hazards are module heralds: a
+`DreadnoughtHeavyNukerT5` given a single ability (InstallAbilityClasses),
+every fire slot pointed at it, teleported 80000 uu from its target. Warp
+abilities are drawn at their target, which is why these show on clients.
+`/meteor [n] [range] [team]`: one "Comet" per human ship (NPC ships only when
+no human is in), n Warp Missile nukes each (`AB_DN_Pri_WarpM_Dmg_Ability_T5_BP`,
+default 1). `/fighters [team]`: three heralds, "Fighters", "Bombers" and
+"Interceptors" (`AB_DN_Pri_Jet_*_Ability_T5_BP`), on the human ships in turn.
+Jet launches register as `WP_YProjectileWarpMissile_BP_C` like the nuke, so
+they are counted as salvos and each herald leaves ~12 s after its launch
+(onsjets 2026-10-21: all three launched and left).
+
+`/hunters [n] [team]` (2026-10-22): n hunters per human ship (default from
+the admin Waves tab, 2; at most 12 in all), drawn by weight from the curated
+pool in the admin Hunters tab (`data/hunters/hunters.json`, mmogbrain
+`admin_hunters.go`; seeded with one T5 hull per class/weight line). The host
+fetches its picks in one loopback request, `GET /battle/hunters?n=K`: each is
+a boss-shaped definition (base AI ship, name, modules, coatings, stat
+modifiers, multiplier clamped 1-3) spawned like `/spawn` with
+`ApplyElite` minus the boss treatment (no team 3, marker, arrival flash or
+gold paint; painted only when a coating is set), teleported as a pack
+6000-9000 uu from their player and sent in with the /squad GOTO, which
+HookSceneReplace keeps pointed at the nearest player. Enemy team unless a
+team is given. Empty pool: random T5 hulls as before. `hunters n team all`
+spreads n over the players instead; the Hunters tab's Spawn sends
+`hunterdef <id>`.
+
+Boss marker: the Onslaught game state (`GameState_Onslaught_BP_C`) has
+none of the PVE marker RPCs; its own command-ship markers are Blueprint
+functions (`MarkerSetup_AITargetH_Team1/2`) with no net flags, so they run
+on each client from its own state. The host calls only
+`SetGenericMissionMarker`, which is not replicated either. No server-side
+route to a boss marker in Onslaught is known. `/props gs` (onsrep) shows
+`AITargetH_Team1/2` and their marker components null on the server: that
+setup runs only on clients. `/props <object> [filter]` is an admin chat
+command (objects: `pawn`, `pawn.<prop>`, `gm`, `gs`) that logs to the mod log.
+
+`/boss`: every boss (a custom `/boss <id>`, any `*Boss01`, or x4+) joins
+team 3, purple, fighting both sides, in Onslaught and at player starts; it
+was x4+ only, so the Gorgon (x3) came in on the enemy team. Not in Havoc
+(scene entries keep the wave's team) or as a TDM game bot. A bare `/boss`
+picks a random custom boss when any exist; `/boss stock` rolls a stock
+`*Boss01` as before.
+
+`/swarm [n] [team]` (24, max 60) and `/squad [n] [team]` (8, max 20) spawn
+Onslaught fighters (`VH_ONS_AITargetL`) or assault ships (`VH_ONS_AITargetM`)
+at Onslaught points (or player starts), set them to the team (default 3), and
+teleport them as one cluster 6000-12000 uu from a random player. Assault
+ships are sent to the nearest live player instead of their lane: their
+Blueprint asks the scene manager for ROUTE about once a second (caller
+`+0x2601A4`), so a hook on ReplaceNPCBehaviours (`0x25FE80`) rewrites
+that ROUTE to GOTO (15) on the nearest player ship for squad ships only.
+Measured (onssquad4, re-asserted the same way): GOTO closed 9000 -> 2500 uu
+and held; ENGAGE (9, target -1 or own id) and SKIRMISH (10) left the ship
+sitting still for 60 s. Fighters are creeps (`VH_ONS_AITargetL_YAICtrl_BP_C`)
+that keep flying their lane; `/swarm` raises their controller's
+`m_maxFireDistanceCreeps` (`+0x7C4`, 5000) to 20000 (GUESS: that this gates
+their fire). `m_fakeWeaponDamageCreep` (YCreepPawn `+0xC7C`) reads 150.
+`/swarm` and `/squad` defaults, caps and team come from the admin Waves tab
+(`data/waves/config.json`, mmogbrain `admin_waves.go`).
+
+`/wave [xN]` is a faux Havoc: `/boss` + `/squad 6 3` + `/swarm 12 3` + 4
+hunters in all (counts from the Waves tab; the old 24 fighters + 8 assault
+ships strained the server, GUESS: halving the fighters is enough).
+
+Stutter log (2026-10-22): FrameTick (runs while the viewer or terrain probe
+is on) logs `stutter: <match> <ms> ms gap suspect=... ours=... biggest="..."
+biggest_ms=... last_cmd="..." cmd_age_s=... npcs=... projectiles=...` for
+every game-thread gap over 100 ms (rate-limited to one per 500 ms). Each
+CommandsTick sub-tick and each command runs inside a timed zone
+(`ZONE(...)`); zones of 30 ms or more also log `stutter-zone: <name> took
+<ms> ms`. Suspect = the biggest overlapping zone when ours took at least half
+the gap, else `after:<cmd>` for a command in the 3 s before, else `engine`
+(GC, streaming, net). The admin Stutters tab totals them by suspect.
+
+## Turbo TDM modifiers (on, TurboTDM hosts only; `dn_host_no_game_modifiers.txt` turns it off; added 2026-10-16)
+
+Turbo TDM's only difference from TDM is three feats on every ship, from
+`DN_GameModifiers_DT` row `YGMT_TURBO_TDM`: `ModifierSpeed` (+600%
+forward/reverse, +300% vertical/steer), `ModifierDamage` (+50%) and
+`ModifierFireRate` (-50% cooldowns and reloads), as defined in
+`DN_Feats_Custom_Modifiers_OTS_DT`. The code that gave ships the row's feats
+was in the original server build, so Turbo TDM played as plain TDM.
+
+The mod hooks the feats component's setup (`0x34BB30`) and, when its owner is
+a pawn, adds the three feats through the game's own `AddFeat` (`0x337850`, the
+body behind the `AddFeat` exec thunk `0x73EDF0`). Feats replicate through
+`UYFeatsComponent::m_replicatedFeats` (Net, RepNotify `OnRep_Feats`). From PR
+#80.
+
+Logs: `turbo modifiers: AddFeat(ModifierSpeed) on … -> added` (first 16
+pawns, and every failure). VERIFIED live 2026-10-16 (Gorge): all three feats
+added to the player's ship and every bot class, and the operator reported the
+match "faster and smooth, no stutter" -- the client moves with the replicated
+speed feat, no position corrections. `dn_host_no_game_modifiers.txt` turns it
+off.
+
+## Havoc (on, Havoc hosts only; `dn_host_no_havoc_director.txt` turns it off; added 2026-10-19)
+
+Havoc is the wave-defence mode (`GameMode_Havoc_BP`, a Horde subclass,
+`YGMT_HAVOC`) on `HVC_Map1` / `HVC_Map2`. The client's mode list
+(`GlobalUI.uasset`) has its own `HAVOC` tile; mmogbrain lists it only with
+`DN_HAVOC=1`. Without the mod, Havoc loads and fighter swarms fight, but no wave
+ever starts: the server half of the wave loop is compiled out of this build
+(Horde `StartFirstWave` / `EndCurrentWave` / `CheckWaveOver` and the Havoc
+timers all share the empty exec thunk `0x74C640`). Ported from PR #80
+(starveil-bunny), whose author played waves, wave XP, upgrades and the kill XP
+pickup live on their build.
+
+What the mod does, all from the game-mode timer (1 s) and four hooks:
+
+- **Wave director.** Starts PvE (horde manager as event manager,
+  `OnPVEModeStarted`, PvE difficulty, combat scene `StartCombat` `0x2681A0`),
+  then cycles WaveStarting -> WaveInProgress -> WaveComplete ->
+  UpgradeSelection through the game state's own `EnterNewState` `0x36BC00` and
+  `OnRep_WaveStateChanged` body `0x39E010`. A wave ends when everything that
+  spawned is dead (GUESS: 15 s spawn grace; 120 s with nothing alive ends it).
+  Upgrade selection ends when every human readied (`ServerReadyUpPlayerForNextWave`
+  thunk `0x772650`) or after `m_upgradeSelectionDuration`.
+- **Enemy list and kills.** `AddNPCToEnemyList` (shared int thunk `0x742E90`,
+  replaced: it does the thunk's own `FFrame::Step` + `P_FINISH`) records the
+  wave's enemies; a listed enemy that dies broadcasts `OnAnyNPCKilled`, which
+  makes the BP drop the Havoc XP pickup.
+- **XP.** `AddXPForGroup` and `AddXPWithContributerPlayer/Pawn` (thunk
+  `0x740AF0`) are compiled out; the mod writes the game state's wave/total XP
+  and every human's `m_currentXP` (PRI `+0xA28`). GUESS: team XP, every player
+  gets the full grant.
+- **Upgrades.** On UpgradeSelection each player is offered one boost per
+  category from `DN_HavocBoosts_DT` (all 38 rows, checked against the table
+  2026-10-19), weighted by `m_weight`, via `ClientReceiveRandSelectedUpgrades`.
+  The pick (`ServerReceiveSelectedUpgradeIndex_Implementation` `0x406040`,
+  which only logs) is paid with the game's `DeductXP` `0x3F34F0` and the boost's
+  feat goes on the ship with `AddFeat`, again on every respawned ship (the
+  feats-component hook is shared with Turbo TDM). GUESS: the selection rule.
+- **Respawn ship switch** (`dn_host_no_havoc_respawn_gate.txt` turns only this
+  off). Havoc clears the loadout filter, so `0x33C680` rejects every Havoc ship
+  on respawn; the gate answers TRUE for exactly the loadout being activated.
+  NOT verified in PR #80 either.
+
+**Verified 2026-10-19.** Offsets: 22 native ones read off their property
+registration in the exe, and all 25 reflected ones checked at runtime against
+the engine's reflection on every Havoc host (`havoc: offsets checked against
+reflection: 25 OK, 0 MISMATCH`); the scene flag +0x444 and loadout manager
++0x200/+0x208 from the code that uses them. Live run (HVC_Map1, one player):
+wave 1 (3 enemies) killed, `AddXPForGroup(750)` from the BP at the clear, an
+offer, a 600 XP shield boost bought and its feat added, ready-up, wave 2
+started.
+
+Stage 2 (2026-10-19), from GameState_Havoc_BP / PVE_HordeManager_BP bytecode
+(`tools/bpdump`), the client's code and the Havoc tables:
+
+- **Wave over** when the BP says so: its CheckWaveOver calls the compiled-out
+  `SetSpecialWaveConditionsFulfilled(true)` (bool thunk `0x777000`, hooked)
+  once the enemies are dead AND every XP drop is picked up or gone. GUESS
+  fallbacks: 60 s after the last kill, 120 s with nothing spawned.
+- **XP**: `StarterXP` 750 once (a DoOnce in the BP), XP drops 275 / boss 750
+  (pickup BPs), and `m_monsterKillXP` 25 per wave enemy killed (the scoring
+  row HavocXPKill scores the same 25; GUESS: paid to the group).
+- **Wave index** follows the game state, so the horde manager's loop
+  (`SetWaveIndex` back to `WaveToLoopBackTo`) works; `m_wavesReached` is left
+  to the BP's real `IncrementWavesReached`.
+- **Wave modifiers**: 2 per wave from `DN_HavocModifiers_DT` (weights, wave
+  range, excludes; "BossWave" on 7/12/17/22; GUESS: weighted random), sent with
+  `ClientUpdateActiveWaveModifier`, feats on the affected side's ships for the
+  wave (`AddFeat` / `RemoveFeat` `0x359770`). **Permanent enemy modifiers**
+  (`DN_HavocPermanentEnemyModifiers_DT`, from wave 3) on every enemy ship.
+- **Game over**: no connected player with a living ship for 3 s during a wave
+  (GUESS), or the BP's
+  PlayersWin / PlayersLose. The director enters GameOver, reports each run to
+  mmogbrain (`/battle/havoc`: score = the team's total XP, as
+  YEOMHavocProgressionData m_teamTotalXP; weekly milestones from
+  `DN_HavocRewards_DT` paid there), sends `ClientUpdateHighscore` /
+  `ClientUpdateWeeklyScoreResetTime`, sets `m_isInEndOfMatchDataFinalized`,
+  and ends the match 6 s later (EndMatch, enemy team wins).
+
+Smoke-tested headless (`dn_host_havoc_smoke.txt` + `dn_host_havoc_fast_waves.txt`,
+test switches): 3 waves with modifiers on/off every enemy, permanent boosts from
+wave 3, game over and EndMatch without a fault; the host then loaded
+`Launch_P` 6 s after EndMatch (not seen on PvP hosts; to watch with players).
+
+Stage 3 (2026-10-19):
+
+- **Ship tier upgrades** (`dn_host_no_havoc_ship_upgrades.txt` turns them
+  off). On a wave in the loadout rows' `m_waveAppearances` (3, 6, 12) the
+  client's PrepareUpgradesForUI (`0x37B2D0`) reads the offered names as
+  `DN_HavocLoadouts_DT` rows, and their cost is left 0 (free). The director
+  offers one ship per category from the rows of that wave, the player's own
+  line holding its next tier (GUESS: the selection). A pick registers the
+  ship's class (path from ItemIDRegister) with the player's loadout manager,
+  activates it and calls SpawnPlayer (`0x5998A0`) with the last-pawn pointer
+  (PC +0xBB0) on the current ship -- the game's own Havoc respawn-in-place,
+  which spawns at that ship's transform and destroys it. Boosts and
+  modifiers follow to the new ship. Smoke host: all 53 classes load, each
+  default object's loadout id FName is `Default__<asset>_C`.
+- **Respawn blocking** (`dn_host_no_havoc_respawn_block.txt` turns it off).
+  SpawnPlayer asks the game mode's spawn gate first (vtable +0x870 =
+  `0x368380` on GameMode_Havoc_BP, read live) and keeps the spawn pending
+  when it says no. A player whose ship is destroyed during a wave is
+  eliminated: the hooked gate refuses them until the wave ends, then the
+  director calls SpawnPlayer for each held respawn. With it, the game-over
+  rule (no living player ship for 3 s) is the real one for groups too.
+
+- **Team HUD** (stage 4): `ClientHavocPlayersChanged` (one
+  YHavocHUDTeamInfo of parallel arrays; layout read by reflection on the
+  smoke host: m_playerID +0x08, m_classID +0x18, m_eliminated +0x28) is sent
+  whenever a player joins, leaves or is eliminated: per player the class byte
+  the client itself reads (PRI +0x941) and the eliminated flag.
+- **Hero ship unlockable** (mmogbrain, havoc.go / market_offers.go): the
+  Junkyard Prince is offered as a Havoc bundle flagged HavocReward
+  (PromotionFlags bit 7 -> client purchase type
+  YPIT_HAVOC_UNLOCKABLE_HERO_SHIP, `0x4FF770`), bought once the player's
+  summed Havoc score (LIFETIMESUM, which the purchase dialog `0x4C2920`
+  shows) reaches 10,000.
+
+Stage 5 (2026-10-20): the HUD feeds. The Havoc HUD is the client's UMG HUD;
+`AYHUD::shouldUseUMGhud` (`0x567C50`) picks it whenever the game mode type is
+17 instead of the Scaleform `UI_HUD.swf` every other mode uses. The PS4-only
+widgets inside it need `-hudForcePS4` (`0x499FE0`), and the upgrade menu's
+Square/X glyphs are baked into its widget. This is the PC Havoc HUD as
+shipped (exe built 2023-03-02), so the server cannot switch it. What the
+server can do is feed it. These game-state multicasts and server RPCs were
+server-build code:
+
+- **Wave progress**: `ClientUpdateWaveProgress` (no parameters; client
+  `0x369600` reads the replicated m_wavesReached, m_maxWaveEnemies,
+  m_numEnemiesKilledThisWave and m_numberOfRelevantEnemiesSpawnedFromBridgeheads,
+  all CPF_Net by reflection). It drives the "WAVE n" text and the kill bar.
+  It is sent during WaveInProgress / WaveComplete, one tick after the values
+  change.
+- **Next-wave countdown**: `ClientUpdateTimeToNextWave(int)` every second
+  before wave 1 and through WaveComplete + UpgradeSelection, then -1, which
+  hides the line (the widget has no timer of its own).
+- **Ready**: the `ServerReadyUpPlayerForNextWave` / `ServerUnReadyPlayerForNextWave`
+  implementations are the stub `0x15FBF00` (`mov al, 1; ret`). The mod now
+  sets the PRI's replicated m_readyForNextWave (+0xA41, reflection-confirmed),
+  which greys the upgrade panel out (`AYHUD::UpdateHavocUpgradePanel`), and
+  clears it at each upgrade phase. GameState_Havoc_BP itself calls UnReady on
+  entering UpgradeSelection (seen on the smoke host).
+
+- **End-of-match rewards list** (fixes "the match ends on the captain and
+  nothing else happens"). For game mode 17 the client's end-of-match flow
+  (`StartEndOfMatchFlow` `0x454610`) adds the pending step
+  `ApplyHavocProgressionData` (`0x449470`). That step waits for the PRI match
+  score (`ClientUpdateHighscore`, already sent) AND for the game state's reward
+  list (+0x20D0, getter `0x36E940`, "PlayerScoreData not yet available").
+  Only `ClientUpdateRewards` fills that list. The mod sends it with the seven
+  DN_HavocRewards_DT rows as `TArray<YHavocRewardDataTableRow>` (layout checked
+  by reflection on every host; on a mismatch it is not sent). It goes out at
+  game over and twice more before EndMatch, because the multicast is
+  unreliable (flags 0x84C40).
+
+`ClientUpdatePlayerReadyForNextWave` (upstream left it unsent: its client
+half only stores a list that no blueprint or HUD code reads) is still sent by
+this tree with the readied PlayerIds, harmless either way. The PRI "last wave"
+kill/death/assist/XP getters are likewise not called by any widget. (An
+earlier note here put `ClientUpdateRewards` in this group. That was wrong: its
+reader is the getter `0x36E940`, which an offset search could not find.)
+
 ## PvE season episodes: no multiplayer bot fill (not switchable)
 
 The PvE season events (mmogbrain `pve_seasons.go`) run the episode maps
@@ -956,3 +1402,57 @@ from `YGameMode_PVE`; the log says so once per match:
 ```text
 [dn-host-loadout] pve: game mode ... (type 13) is a PvE episode -- no multiplayer bot fill
 ```
+
+The episodes' own start was native server code that is not in this exe. The
+mod drives it: Horde episodes reuse the Havoc wave director (`havoc: horde`
+log lines; waves from `m_waveStartDuration`/`m_waveEndDuration`, the match
+ends with the players' team winning after `m_maxNumberOfWaves`); Escort runs
+the PvE start and then `PVE_EscortManager_BP.SpawnVipShip` 20 s after the
+match starts (`escort:` log lines). Both are GUESSes at the original triggers.
+
+## Loadout-side appearance import (off; `dn_host_loadout_import.txt` / `DN_HOST_LOADOUT_IMPORT=1` turns it on)
+
+Replaces the removed S79 import, which called UYShipCustomizationComponent's
+0x422400 on a UYShipLoadout and overwrote the next heap block (the spawn crash).
+This calls the loadout's own import 0x35AB00 (`this+0x108`), the struct the ship
+actor replicates to clients (0x594B40 -> 0x56B700 -> export 0x41C980). Logs
+each changed word of `+0x108..+0x168`. Not verified that remote clients render
+the look; needs a two-player match. Added 2026-10-13.
+
+## Frame tick (on; `dn_host_no_frame_tick.txt` / `DN_HOST_NO_FRAME_TICK=1` turns it off)
+
+Work that has to happen *inside* a frame, not between frames: the terrain fine
+pass (2 ms of tracing per tick, `TERRAIN_FRAME_MS`) and the viewer's projectile
+scan (1 ms of GObjects walking per tick, `PROJ_SCAN_MS`). It hangs off the
+ProcessEvent hook, which is installed on every battle host, and runs from an
+*outermost* ProcessEvent on the game thread -- no other ProcessEvent is on the
+stack, which is what makes the trace safe to call from -- at most once per
+`TERRAIN_FRAME_GAP_MS` = 16 ms of wall clock. Turning it off leaves both jobs on
+the 2 s game-mode timer: the fine pass then takes minutes per map, and the
+projectile scan does not run at all, because only this path calls it.
+
+Until 2026-10-17 only Havoc hosts ran a frame tick. The hook was installed only
+when something else needed it (fleet tier, post-login spawn, or the Havoc PE
+trace), so `InstallPostLoginHook` returned early with "post-login hook is OFF"
+on every other map and the frame path never existed there. The symptom was the
+heartbeat reading `0 ticks` for a whole match; the switch is now on by default
+and is itself one of the reasons the hook installs. Clients are untouched --
+the whole mod stands down in a client, before the hook is created.
+
+Start here when a host looks dead but is not. While the terrain or the viewer is
+on, CommandsTick logs one line every 20 s:
+
+    frame: <ticks> ticks, phase <0|1|2>, stale PE resets <n>, busy resets <n>, terrain fine <0|1>, projectile list <n>
+
+`ticks` is frame ticks since the host started. If it stops climbing during a
+match, read `phase`: **0** means FrameTick is not being entered at all (no
+outermost ProcessEvent on the game thread, or its gate is false -- nothing
+wanted, or the wrong thread); **1** or **2** means a fault unwound out of it and
+took the frame latch with it, in which case `busy resets` climbs again as the
+next ProcessEvent clears the latch. `stale PE resets` counts the same class of
+unwind inside the ProcessEvent hook itself, which stops the hook from ever
+seeing an outermost call again, silently. Both counters are meant to stay at 0.
+
+The data this produces is what the dashboard's Battle viewer draws -- see
+**Battle viewer** in the top-level README; the terrain grid and the projectile
+points both come from here.

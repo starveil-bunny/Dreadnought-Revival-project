@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+
 	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
 )
 
@@ -185,7 +187,7 @@ func TestCosmeticsComeAfterModules(t *testing.T) {
 func TestPurchaseQuantityCannotOverflowThePrice(t *testing.T) {
 	useTempMmogPlayerStateDB(t)
 	const pid = "00000000000000000000000000000001"
-	hull := heroShipLoadouts[0].loadoutID // a 25000 hero the new player does not own
+	hull := plainHeroForTest() // a 25000 hero the new player does not own
 	price := purchasePriceForItem(hull)
 	if price <= 0 {
 		t.Fatalf("hull %d has no price", hull)
@@ -232,5 +234,51 @@ func TestCosmeticOfferIsPricedInTheClientsPremiumCurrency(t *testing.T) {
 	}
 	if entity["SPCurrency"] != "SP_regular" || entity["SPPrice"] != vanityPrice || entity["CRPrice"] != 0 {
 		t.Errorf("offer SPCurrency=%v SPPrice=%v CRPrice=%v, want SP_regular %d 0", entity["SPCurrency"], entity["SPPrice"], entity["CRPrice"], vanityPrice)
+	}
+}
+
+// A cosmetic offer must carry the picture decoded from the client's own icon
+// texture, and must carry none where there is nothing to decode: the client
+// draws whatever it has for an offer with no image, and an invented picture
+// would be indistinguishable from the real one.
+func TestCosmeticOffersCarryTheirOwnPicture(t *testing.T) {
+	seeds := vanityCatalogSeeds(map[int32]struct{}{})
+	find := func(id int32) map[string]any {
+		t.Helper()
+		for _, s := range seeds {
+			if s.itemID == id {
+				return gatewayMarketEntity(s, true)
+			}
+		}
+		t.Fatalf("item %d is not offered", id)
+		return nil
+	}
+	// 385810556 "Isolation": its own m_icon is the shared coating glyph.
+	isolation := find(385810556)
+	want := marketImagePath + "UI_Vanity_Coating.png"
+	for _, key := range []string{"full_image_url", "thumbnail_image_url", "ImageURL", "ImgUrlS", "ImgUrlM", "ImgUrlL"} {
+		if isolation[key] != want {
+			t.Errorf("Isolation %s = %v, want %q", key, isolation[key], want)
+		}
+	}
+	// 419365113 "Venomous": m_icon is the item's own material, not a texture.
+	venomous := find(419365113)
+	for _, key := range []string{"full_image_url", "ImageURL", "ImgUrlL"} {
+		if venomous[key] != "" {
+			t.Errorf("Venomous %s = %v, want empty (nothing to decode)", key, venomous[key])
+		}
+	}
+	withPicture := 0
+	for _, s := range seeds {
+		if dreadconfig.VanityIconFile(s.itemID) != "" {
+			withPicture++
+			if got := gatewayMarketEntity(s, true)["full_image_url"]; got != marketImagePath+dreadconfig.VanityIconFile(s.itemID) {
+				t.Errorf("%s (%d) full_image_url = %v, want the manifest's file", s.displayName, s.itemID, got)
+			}
+		}
+	}
+	t.Logf("%d of %d cosmetic offers carry a picture", withPicture, len(seeds))
+	if withPicture == 0 {
+		t.Error("no cosmetic offer carries a picture")
 	}
 }

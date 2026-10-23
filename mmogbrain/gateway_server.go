@@ -7,8 +7,10 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +69,35 @@ func startGatewaySessionCleanup(ctx context.Context, log *logrus.Logger) {
 	}
 }
 
+// gatewayUnknownHandler answers every path this socket does not route.
+//
+// This socket (:65443, GATEWAY_ADDR) is the game's Greybox web services: it
+// serves /api/v1/* and /health and nothing else. The empty 200 is deliberate
+// for the game's own probes — the Greybox client reads a non-200 as a
+// transport/service failure (see writeGreyboxError: anything the launcher
+// cannot map to code <= -32000 shows as "service unavailable"), so an
+// endpoint the game tries and we do not model is better answered with an
+// empty document than with an error. That reasoning does not extend to
+// /launcher/*: those paths belong to the launcher API on mmogbrain's
+// :8083 router, reached as mmog.greybox.sixfoot.live:443 (dn-launcher's
+// hosts). Answering 200 {} here made an unauthenticated
+// POST /launcher/skip-tutorial on :65443 look like a success — the request
+// copied no blob and would have returned 401 through the gateway
+// (2026-10-17 audit). 404 says "wrong listener", which a launcher can tell
+// apart from a failure.
+func gatewayUnknownHandler(log *logrus.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fields := logrus.Fields{fieldMethod: r.Method, fieldPath: r.URL.Path}
+		if strings.HasPrefix(r.URL.Path, "/launcher/") {
+			log.WithFields(fields).Warn("gateway: launcher endpoint on the Greybox socket (404)")
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		log.WithFields(fields).Warn("gateway: unknown endpoint")
+		gwJSON(w, map[string]any{})
+	}
+}
+
 func startGatewayServer(ctx context.Context, log *logrus.Logger, addr, certFile, keyFile string, secret []byte) {
 	mux := http.NewServeMux()
 
@@ -103,16 +134,22 @@ func startGatewayServer(ctx context.Context, log *logrus.Logger, addr, certFile,
 		log.WithFields(logrus.Fields{fieldMethod: r.Method, fieldPath: r.URL.Path}).Info("gateway request")
 		gwJSON(w, map[string]any{})
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.WithFields(logrus.Fields{fieldMethod: r.Method, fieldPath: r.URL.Path}).Warn("gateway: unknown endpoint")
-		gwJSON(w, map[string]any{})
-	})
+	mux.HandleFunc("/", gatewayUnknownHandler(log))
 
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
+		// Must outlive the client's keep-alive pool. Unset, Go idles out on
+		// ReadTimeout (15 s), and Wine's wininet keeps idle connections ~60 s
+		// (http.c COLLECT_TIME) and never retries one the server closed: the
+		// periodic session/touch fired >15 s after the last request picked a
+		// dead socket and failed in ~2 ms -- "No response received for [Touch
+		// session]" / "Connection error", then 2 retries and the logout on the
+		// rest of the pool (run/client.log to 10-06: 93/113 failed touches had a
+		// >15 s gap before them, 100/120 good ones <=15 s).
+		IdleTimeout: 3 * time.Minute,
 	}
 
 	go func() {
@@ -260,10 +297,44 @@ func handleGWLogin(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims)
 		"id":         sessionID,
 		"userId":     userID,
 		"user_id":    userID,
-		"UserName":   username,
-		"Username":   username,
-		"username":   username,
+		// All three spellings carry the tag: the plugin's JSON lookup ignores
+		// case, so "UserName" (first in Go's sorted output) was the one found,
+		// and the bare name in it defeated the split (client log 2026-10-15:
+		// "Username":"Name#1414" received, name still blank).
+		"UserName": gatewayUsernameTag(username, userID),
+		"Username": gatewayUsernameTag(username, userID),
+		"username": gatewayUsernameTag(username, userID),
 	})
+}
+
+// gatewayUsernameTag is the login reply's "Username": "<name>#<number>".
+//
+// The client does not keep it whole. CreateSessionRequestDefinition's
+// response handler (0x2AB1ED0) reads "Username" (0x2AB5550), splits it at the
+// first '#' (FString::Split 0x140267EB0, separator at 0x38E4264) and
+// broadcasts each half only when it is non-empty: the name to the session
+// manager's +0x230 (delegate 0x421D60), the number to +0x240 (0x421D70). The
+// player data parser copies +0x230 into the local player's name (0x2A71230 via
+// 0x4216D0), which is what the hangar's player card shows (GetPlayerUiData
+// 0xAECB30 -> 0xAA8180). We sent the bare account name: no '#', so the split
+// failed, nothing was stored, and no player ever saw his own name in the
+// hangar (operator, 2026-10-15; the identity's GetPlayerNickname(UniqueNetId),
+// vtable slot 30, is an empty stub, so that fallback is blank too).
+//
+// GUESS: the number. Accounts here have none, and nothing says how the
+// original assigned them; a stable 4-digit number derived from the player id
+// stands in. '#' is removed from the name so the split cannot cut it.
+func gatewayUsernameTag(username, userID string) string {
+	name := strings.ReplaceAll(strings.TrimSpace(username), "#", "")
+	if name == "" {
+		return ""
+	}
+	pid := normalizedPlayerStatePID(userID)
+	var n uint32
+	for _, c := range pid {
+		n = n*31 + uint32(c)
+	}
+	return fmt.Sprintf("%s#%04d", name, n%10000)
 }
 
 // handleGWLogout handles POST /api/v1/authentication/logout.
@@ -339,14 +410,16 @@ func mmogHostAddress() string {
 // without ever opening the MMOG connection (mmogbrain.log 22:07-22:08: login,
 // legal texts, lkg, then nothing).
 //
-// Preference: MMOG_HOST (operator override); else the IP the client used to
-// reach THIS gateway (the Host header) -- it is already proven reachable from
-// that client, and it is the LAN IP for a LAN launcher and the outside IP for
-// the public one; else SERVER_IP, resolved to IPv4 if it is a name.
+// Preference: the IP the client used to reach THIS gateway (the Host header)
+// -- it is already proven reachable from that client, and it is the LAN IP for
+// a LAN launcher, the relay's edge IP for a tunneled one -- else MMOG_HOST
+// (pure-loopback and name-based requests, i.e. local play); else SERVER_IP,
+// resolved to IPv4 if it is a name. The request-host branch comes first so a
+// relayed client (whose Host is the relay's edge IP) is not handed an operator
+// override that only makes sense on this host (2026-10-02: MMOG_HOST was
+// 127.0.0.1 for local phase-2 timeouts, which would have told VPN-relayed
+// friends to dial their own machines).
 func lkgHostForClient(r *http.Request) (host, source string) {
-	if h := getenv("MMOG_HOST", ""); h != "" {
-		return h, "MMOG_HOST"
-	}
 	reqHost := r.Host
 	if h, _, err := net.SplitHostPort(reqHost); err == nil {
 		reqHost = h
@@ -372,6 +445,24 @@ func handleGWPlayLkg(w http.ResponseWriter, r *http.Request, claims jwt.MapClaim
 	host, source := lkgHostForClient(r)
 	logrus.WithFields(logrus.Fields{"serverHost": host, "source": source, "request_host": r.Host}).Info("play/lkg: MMOG address")
 	port := getenv("FIRMAMENT_PORT", "48843")
+	// Clients arriving through a relay (playit.gg, ngrok, ...) must be told the
+	// RELAY's firmament port, not this process's local one: their connection
+	// comes in on the relay's edge port and is forwarded to the local socket,
+	// so answering "48843" would send the client to a port that answers
+	// nothing beyond the relay. The relay's ports cannot be derived here, so
+	// they are configured: DN_FIRMAMENT_PORT_PUBLIC is the relay's external
+	// port for the shared firmament+MMOG socket, DN_GATEWAY_PORT_PUBLIC the
+	// relay's external port for the gateway/web-services socket. Both set =>
+	// a client whose request Host carries the public gateway port is answered
+	// with the public firmament port. Local clients (Host 127.0.0.1:65443, or
+	// the LAN port) still get FIRMAMENT_PORT unchanged — set and forget.
+	if pubFm := getenv("DN_FIRMAMENT_PORT_PUBLIC", ""); pubFm != "" {
+		if pubGw := getenv("DN_GATEWAY_PORT_PUBLIC", ""); pubGw != "" {
+			if _, reqPort, err := net.SplitHostPort(r.Host); err == nil && reqPort == pubGw {
+				port = pubFm
+			}
+		}
+	}
 	gwJSON(w, map[string]any{
 		"Code":       0,
 		"serverHost": host,
@@ -433,9 +524,9 @@ func handleGWSessionCreate(w http.ResponseWriter, r *http.Request, claims jwt.Ma
 		"id":         sessionID,
 		"userId":     userID,
 		"user_id":    userID,
-		"UserName":   username,
-		"Username":   username,
-		"username":   username,
+		"UserName":   gatewayUsernameTag(username, userID), // see handleGWLogin
+		"Username":   gatewayUsernameTag(username, userID),
+		"username":   gatewayUsernameTag(username, userID),
 	})
 }
 
@@ -462,6 +553,15 @@ func handleGWBundles(w http.ResponseWriter, r *http.Request, claims jwt.MapClaim
 	gwJSON(w, gatewayAbsoluteImageURLs(gatewayBootstrapPayload(playerID, "bundles", waitForGatewayBootstrapPlayerDataReady(playerID)), r))
 }
 
+// catalogWriteTimeout is how long one catalog response may take to send:
+// DN_CATALOG_WRITE_TIMEOUT seconds, default 300.
+func catalogWriteTimeout() time.Duration {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DN_CATALOG_WRITE_TIMEOUT"))); err == nil && v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 300 * time.Second
+}
+
 // handleGWCatalog handles catalog endpoints.
 //
 // This waits for player data to be ready (same as handleGWBundles) rather than
@@ -486,7 +586,27 @@ func handleGWCatalog(w http.ResponseWriter, r *http.Request, claims jwt.MapClaim
 	// price as 0 and buys nothing ("cost 0", 2026-10-10). Compressed when the
 	// client asks for it; every fetch is logged with what it took, so a
 	// download that a slow connection never finishes is visible.
-	gzipped := strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
+	// NOT gzipped, whatever the client says it accepts (CHANGED 2026-10-15).
+	// It sends "Accept-Encoding: application/gzip" on the login fetch, but it
+	// cannot read the result: every gzipped catalog logged "Could not turn
+	// response into json object. / Could not handle response. Unknown
+	// response." (client log 2026-10-15), so the login round of the market
+	// never completed and the market was built only by the uncompressed
+	// re-fetch on entering the hangar. Where that one failed (slow link, the
+	// old 15 s cut) or never happened (a reconnect straight into a match),
+	// every price stayed 0 until a restart. The 2026-10-10 "verified" gzip
+	// purchase was paid from that hangar re-fetch, not the gzipped one.
+	// DN_CATALOG_GZIP=1 turns it back on for experiments.
+	gzipped := os.Getenv("DN_CATALOG_GZIP") == "1" && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
+	// The server's 15 s WriteTimeout covers the whole response, and it is too
+	// short for this one: every client fetches the catalog a second time
+	// without asking for compression (the full ~10 MB), and on slow links
+	// that never finished -- 25 "i/o timeout" failures on 2026-10-15, one
+	// player retrying 20 times, each left with no prices until a restart.
+	// This response alone gets catalogWriteTimeout.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(catalogWriteTimeout())); err != nil {
+		logrus.WithError(err).Warn("gateway: catalog write deadline not extended")
+	}
 	sent := len(body)
 	w.Header().Set("Content-Type", "application/json")
 	var werr error

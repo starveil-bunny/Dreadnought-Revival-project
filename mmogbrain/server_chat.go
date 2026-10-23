@@ -90,17 +90,26 @@ func serverChatProfile() map[string]any {
 }
 
 // announce posts one Server line to everyone in the Global channel.
-func (h *socialHub) announce(text string) {
+func (h *socialHub) announce(text string) { h.announceIn(defaultChatChannels[0], text) }
+
+// announceIn posts text as Server lines to everyone in channel.
+func (h *socialHub) announceIn(channel, text string) {
 	if !serverChatEnabled() {
 		return
 	}
-	channel := defaultChatChannels[0]
 	profile := serverChatProfile()
-	msg := chatMessageNotice("chat.channel.message", channel, serverChatEntry(), text)
+	// One notice per line: a newline inside one chat message is not known to
+	// render (sendServerLine splits the same way).
+	var msgs []map[string]any
+	for _, line := range strings.Split(text, "\n") {
+		msgs = append(msgs, chatMessageNotice("chat.channel.message", channel, serverChatEntry(), line))
+	}
 	sent := 0
 	for _, peer := range h.peersIn(channel) {
 		_ = peer.send(profile)
-		_ = peer.send(msg)
+		for _, m := range msgs {
+			_ = peer.send(m)
+		}
 		sent++
 	}
 	logrus.WithField("recipients", sent).Info("server chat: " + text)
@@ -176,6 +185,7 @@ var serverChatModeNames = map[string]string{
 	// own (SID_MATCHMAKINGTYPE_ONSLAUGHT / _HAVOC). It said "Havoc" until
 	// 2026-10-07 (operator report).
 	"Onslaught": "Onslaught",
+	"Havoc":     "Havoc",
 }
 
 var (

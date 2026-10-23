@@ -114,7 +114,7 @@ func gatewayBootstrapPayload(playerID string, requestedCatalog string, playerDat
 		// Here both names are bound to the same slice, so either winner is the
 		// right answer. Dropping the lowercase alias as "just a collision" is
 		// what failed the market fetch.
-		bundles := gatewayMarketEntities(gatewayBundleCatalogSeeds(), playerDataReady)
+		bundles := gatewayMarketEntities(gatewayBundleCatalogSeeds(playerID), playerDataReady)
 		payload["Bundles"] = bundles
 		payload["bundles"] = bundles
 		// The bundle index (0x142a5dd80 via 0x142a61be0) reads the response
@@ -147,7 +147,7 @@ func gatewayRequestedCatalogCollection(playerID string, requestedCatalog string,
 		// DN_BUNDLE_LISTING=0 sends it empty (no bundles in the Market).
 		entities := []any{}
 		if os.Getenv("DN_BUNDLE_LISTING") != "0" {
-			entities = gatewayBundleListing(playerDataReady)
+			entities = gatewayBundleListing(playerID, playerDataReady)
 		}
 		return map[string]any{
 			"entities":    entities,
@@ -214,8 +214,21 @@ func gatewayItemCatalogCollection(entities []any) map[string]any {
 	// length 0" and "GetShipPurchaseData Offer not found for ship ..." even
 	// with Items fully populated. Every item is offered, at the price 0 that
 	// gatewayMarketEntity already reports.
+	//
+	// "entities" carries the offers too. REVERTED 2026-10-15 (same evening):
+	// it went out empty for ~2 h (only its presence is checked by
+	// MarketManager's completion FUN_1403dac50) and the tech tree's price
+	// after a research read 0 again, which it had not on 2026-10-14 with the
+	// full list. GUESS: the "Concatenating item catalog..." step builds the
+	// offer list the tech tree prices from out of "entities". Unproven either
+	// way; the full list is the last state verified live.
+	// DN_CATALOG_ENTITIES=empty sends it empty again.
+	listed := entities
+	if os.Getenv("DN_CATALOG_ENTITIES") == "empty" {
+		listed = []any{}
+	}
 	return map[string]any{
-		"entities":    entities,
+		"entities":    listed,
 		"Items":       entities,
 		"ItemOffers":  entities,
 		"ForexOffers": []any{},
@@ -900,7 +913,7 @@ func gatewayCurrencyCatalogSeeds(_ string, _ string) []gatewayCatalogEntitySeed 
 	return nil
 }
 
-func gatewayBundleCatalogSeeds() []gatewayCatalogEntitySeed {
+func gatewayBundleCatalogSeeds(playerID string) []gatewayCatalogEntitySeed {
 	seeds := []gatewayCatalogEntitySeed{{
 		itemID:          9100001,
 		externalID:      "starter_bundle",
@@ -935,7 +948,7 @@ func gatewayBundleCatalogSeeds() []gatewayCatalogEntitySeed {
 	if os.Getenv("DN_PLACEHOLDER_BUNDLES") == "1" {
 		seeds = append(seeds, realCatalogBucketSeeds("Bundles", "bundle", "bundle", "CR", 1000, realCatalogBucketIDBase["Bundles"])...)
 	}
-	return append(seeds, marketBundleCatalogSeeds()...)
+	return append(seeds, marketBundleCatalogSeeds(playerID)...)
 }
 
 func gatewayMarketIdentity(seed gatewayCatalogEntitySeed, _ bool) (int32, int32, int32, string) {
@@ -1457,9 +1470,9 @@ func isShipVanityOffer(seed gatewayCatalogEntitySeed) bool {
 // id", "Field prices was not found" for each, then crashed reading 0x8
 // (operator, 2026-10-01). So the entries are the full offers, with entity_id
 // set to the bundle's external_id so the two halves match.
-func gatewayBundleListing(playerDataReady bool) []any {
+func gatewayBundleListing(playerID string, playerDataReady bool) []any {
 	out := []any{}
-	for _, seed := range marketBundleCatalogSeeds() {
+	for _, seed := range marketBundleCatalogSeeds(playerID) {
 		entity := gatewayMarketEntity(seed, playerDataReady)
 		entity["entity_id"] = seed.externalID
 		out = append(out, entity)

@@ -154,6 +154,11 @@ func vanityCatalogSeeds(owned map[int32]struct{}) []gatewayCatalogEntitySeed {
 			priceAmount:     price,
 			quantity:        1,
 			owned:           have,
+			// The item's own picture, decoded from the texture the client's
+			// data names for it (scripts/gen-vanity-icons.py). Empty for the
+			// items whose icon is not a decodable texture -- those send no
+			// picture rather than a wrong one.
+			image: dreadconfig.VanityIconFile(v.ItemID),
 		}
 		if !perShip || !isShipVanityItemID(v.ItemID) {
 			seeds = append(seeds, seed)

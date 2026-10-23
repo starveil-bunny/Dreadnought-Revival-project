@@ -149,6 +149,8 @@ def load_cooked_ids():
 # are its pawn (Ships/Assault/Light/T5/VH_AssaultL_Pawn_T5_BP), AI pawn and tier
 # art. It is the T5 after Vindicta in the game's own Oberon tech tree (operator
 # screenshot, 2026-09-28). CORRECTED: it was rejected as "removed from the game".
+# The dump missed it only because bpdump's glob was *PrecastLoadout_BP.uasset;
+# since 2026-10-20 it is *PrecastLoadout*_BP.uasset and the row is in the dump.
 CONTENT = os.path.normpath(os.path.join(ROOT, "..", "DreadGame", "Content"))
 
 

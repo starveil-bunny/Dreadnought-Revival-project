@@ -14,7 +14,7 @@ to every recovered value; anything still unknown stays `// GUESS:`.
 
 ## Tech tree: research and purchase costs are server-authored guesses
 
-**Status:** open, working placeholders in place. GitHub #66.
+**Status:** dropped indefinitely (operator 2026-10-17: "does not concern us"); placeholders stay. GitHub #66.
 
 - **Hull research (XP):** `techTreeXPCostByTier` in
   `mmogbrain/response_builders.go` is a ladder we chose
@@ -39,7 +39,10 @@ accepted as a design choice and documented as such.
 
 ## Match scores are always 0 (PvP scoring table missing)
 
-**Status:** open. Found 2026-09-25. GitHub #67. Kills, deaths and K/D display correctly;
+**Status:** fixed (live since S50). The original per-mode table (operator datamine, workbook sheets
+"old Scoring 1.11.1/1.12.0", `data/scoring/ScoringTable.json`, e2174d8) is served at `/battle/scoring` and
+loaded by the mod's scoring hook (`scoring: table LOADED -- 57 rows, present flag 1`). The text below is the
+original diagnosis. Found 2026-09-25. GitHub #67. Kills, deaths and K/D display correctly;
 every player's score is 0 on the scoreboard and the end-of-match screen.
 
 **Cause (verified from the exe and config):**
@@ -72,7 +75,7 @@ score on the scoreboard.
 
 ## Career goals (progression screen) are invented placeholders
 
-**Status:** open, working placeholders in place. Found 2026-09-25. GitHub #68.
+**Status:** dropped indefinitely (operator 2026-10-17: "does not concern us"); placeholders stay. Found 2026-09-25. GitHub #68.
 
 The main-menu progression screen is the career goals system (`YA_GetStaticCareerData` / `YA_GetCareerProgression`). Every goal it shows is authored by us in `mmogbrain/career_goals.go`: four goals with made-up titles ("Shakedown Cruise", "Hull Breaker", ...), made-up stage targets and credit rewards, and counter IDs the file itself calls "a best guess". Only `UnlockAllModes` is a real ID (the exe hardcodes it).
 

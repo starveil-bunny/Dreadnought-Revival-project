@@ -125,14 +125,50 @@ var loadPVETables = sync.OnceValue(func() pveTables {
 var pveScheduleAnchor = time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
 
 func pveSeasonID() string {
+	season, _, _ := pveSchedule(time.Now().UTC())
+	return season
+}
+
+// pveSeasonSetting is DN_PVE_SEASON: a season id, "rotate", or "off"
+// (unset = PVE_Season1).
+func pveSeasonSetting() string {
 	switch v := strings.TrimSpace(os.Getenv("DN_PVE_SEASON")); strings.ToLower(v) {
 	case "":
 		return "PVE_Season1"
+	case "rotate":
+		return "rotate"
 	case "off", "0", "none":
 		return ""
 	default:
 		return v
 	}
+}
+
+// pveRotation is the season order for DN_PVE_SEASON=rotate:
+// each season runs all its events once, then the next. Season 3
+// ("Battleship Down") is m_active 0 in DN_Seasons_DT -- GUESS: the client
+// shows it anyway.
+var pveRotation = []string{"PVE_Season1", "PVE_Season3"}
+
+// pveRotationAt is the rotation season running at since (from the anchor) and
+// the offset of since into that season's block.
+func pveRotationAt(since, period time.Duration) (string, time.Duration) {
+	var total time.Duration
+	for _, s := range pveRotation {
+		total += time.Duration(len(pveSeasonEvents(s))) * period
+	}
+	if total == 0 {
+		return "", 0
+	}
+	off := since % total
+	for _, s := range pveRotation {
+		d := time.Duration(len(pveSeasonEvents(s))) * period
+		if off < d {
+			return s, off
+		}
+		off -= d
+	}
+	return "", 0
 }
 
 func pveEventPeriod() time.Duration {
@@ -173,18 +209,28 @@ type pveScheduledEvent struct {
 // pveSchedule is every event of the running season with its window in the
 // current cycle, and the index of the one running now.
 func pveSchedule(now time.Time) (season string, events []pveScheduledEvent, active int) {
-	season = pveSeasonID()
-	ids := pveSeasonEvents(season)
-	if season == "" || len(ids) == 0 {
-		return "", nil, -1
-	}
 	period := pveEventPeriod()
 	since := now.Sub(pveScheduleAnchor)
 	if since < 0 {
 		since = 0
 	}
-	slot := int(since / period)
-	cycleStart := pveScheduleAnchor.Add(time.Duration(slot-slot%len(ids)) * period)
+	season = pveSeasonSetting()
+	var slot int
+	var cycleStart time.Time
+	if season == "rotate" {
+		var off time.Duration
+		season, off = pveRotationAt(since, period)
+		slot = int(off / period)
+		cycleStart = now.Add(-off).Truncate(time.Second)
+	}
+	ids := pveSeasonEvents(season)
+	if season == "" || len(ids) == 0 {
+		return "", nil, -1
+	}
+	if cycleStart.IsZero() {
+		slot = int(since / period)
+		cycleStart = pveScheduleAnchor.Add(time.Duration(slot-slot%len(ids)) * period)
+	}
 	for i, id := range ids {
 		start := cycleStart.Add(time.Duration(i) * period)
 		events = append(events, pveScheduledEvent{id: id, start: start, end: start.Add(period - time.Second)})
@@ -205,6 +251,12 @@ func activePvEEvent() (matchmaker.PvEEvent, bool) {
 		return matchmaker.PvEEvent{}, false
 	}
 	path, _, _ := strings.Cut(row.Map, ".") // package path, without the object name
+	// m_mapParameters is a URL option string ("?ylevelvariation=1" on the
+	// night episodes, DN_Events_DT); it was dropped before 2026-10-17, so
+	// night events loaded the day sublevels.
+	if p := strings.TrimSpace(row.MapParameters); strings.HasPrefix(p, "?") {
+		path += p
+	}
 	return matchmaker.PvEEvent{ID: id, MapPath: path, HostMode: mode}, true
 }
 

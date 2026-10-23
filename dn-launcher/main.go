@@ -350,7 +350,11 @@ type Config struct {
 	// (launcher sign-in and news) when it is not 443 -- e.g. a router mapping
 	// 8443 -> 443 because 443 is taken. Only the launcher uses that gateway;
 	// the game's ports (65443, 48843, UDP 7777-7877) are unaffected.
-	WebPort       string `json:"web_port"`
+	WebPort string `json:"web_port"`
+	// UIPort is the loopback port of the browser-mode launcher page
+	// (browser_windows.go), fixed so the link can be bookmarked; also
+	// DN_LAUNCHER_UI_PORT. Empty = defaultUIPort; "0" = any free port.
+	UIPort        string `json:"ui_port"`
 	AuthURL       string `json:"auth_url"`
 	GatewayIP     string `json:"gateway_ip"`
 	GatewayPort   string `json:"gateway_port"`
@@ -363,8 +367,13 @@ type Config struct {
 	VerboseLogging   bool `json:"verbose_logging"`
 	// LogWindow opens the game's log console (-LOG); also a toggle in the
 	// launcher window, and DN_LOG_WINDOW=1.
-	LogWindow      bool `json:"log_window"`
-	SkipOnboarding bool `json:"skip_onboarding"`
+	LogWindow bool `json:"log_window"`
+	// logWindowForced / verboseLogForced: DN_LOG_WINDOW / DN_VERBOSE_LOG asked
+	// for it for THIS run, so they beat the launcher window's saved toggle.
+	// The config file does not -- see where -LOG is built.
+	logWindowForced  bool
+	verboseLogForced bool
+	SkipOnboarding   bool `json:"skip_onboarding"`
 	// AllowSteam drops the -NoSteam switch, letting the client keep its Steam
 	// online subsystem alive. See the note where the switch is built.
 	AllowSteam bool `json:"allow_steam"`
@@ -372,6 +381,9 @@ type Config struct {
 	// machine and user; set it to carry an account to another machine, or to
 	// recover one after the identity file was lost.
 	PlayerID string `json:"player_id"`
+	// caFile is the saved CA of a server picked in the launcher window
+	// (servers_windows.go); empty = ca.crt beside the launcher / built-in.
+	caFile string
 }
 
 // defaultServer is the server a distributed launcher points at when its
@@ -392,6 +404,10 @@ func defaultConfig() Config {
 		GatewayPort:   "65443",
 		FirmamentHost: "", // empty = use GatewayIP (avoids need for hosts file entry)
 		FirmamentPort: "48843",
+		// On by default since 2026-10-12 (operator): nobody on this server
+		// needs the tutorial. "skip_onboarding": false or DN_SKIP_ONBOARDING=0
+		// restores the new-player flow.
+		SkipOnboarding: true,
 	}
 }
 
@@ -421,6 +437,7 @@ func loadConfig(exeDir string) Config {
 	// one-off debugging session) without editing dn-launcher.json.
 	if v := strings.TrimSpace(os.Getenv("DN_VERBOSE_LOG")); v != "" && v != "0" {
 		cfg.VerboseLogging = true
+		cfg.verboseLogForced = true
 	}
 	// DN_SKIP_ONBOARDING is a debugging escape hatch that jumps straight to the
 	// hangar. Onboarding is on by default so new players get the same first-run
@@ -432,11 +449,15 @@ func loadConfig(exeDir string) Config {
 	if v := strings.TrimSpace(os.Getenv("DN_GAME_PATH")); v != "" {
 		cfg.detectedGamePath = v
 	}
+	if v := strings.TrimSpace(os.Getenv("DN_LAUNCHER_UI_PORT")); v != "" {
+		cfg.UIPort = v
+	}
 	if v := strings.TrimSpace(os.Getenv("DN_LOG_WINDOW")); v != "" && v != "0" {
 		cfg.LogWindow = true
+		cfg.logWindowForced = true
 	}
-	if v := strings.TrimSpace(os.Getenv("DN_SKIP_ONBOARDING")); v != "" && v != "0" {
-		cfg.SkipOnboarding = true
+	if v := strings.TrimSpace(os.Getenv("DN_SKIP_ONBOARDING")); v != "" {
+		cfg.SkipOnboarding = v != "0"
 	}
 	if v := strings.TrimSpace(os.Getenv("DN_ALLOW_STEAM")); v != "" && v != "0" {
 		cfg.AllowSteam = true
@@ -511,8 +532,8 @@ func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
-	cfg := loadConfig(exeDir)
-	if err := runMachineSetup(exeDir, &cfg); err != nil {
+	cfg, err := applySavedServer(exeDir, loadConfig(exeDir))
+	if err != nil {
 		fatalf("[!] Setting up this PC for the server failed: %v", err)
 	}
 
@@ -655,22 +676,36 @@ func startGame(exeDir string, cfg Config, jwtToken, username string) (int, error
 		// UUI_LoginGateScreen::EnterGame runs before it will leave the loading
 		// screen — short-circuits to "satisfied" when it is set.
 		//
-		// This is off by default on purpose: new players are supposed to go
-		// through onboarding, exactly as they did on the live servers. The
-		// server persists the client's own onboarding save blob (YA_SaveGame ->
-		// the SGD field of YA_PlayerGet), so progress sticks across logins
-		// without skipping anything. Use this only to get straight to the
-		// hangar while debugging.
+		// On by default (see defaultConfig). With it off, new players go
+		// through onboarding as on the live servers; the server persists the
+		// client's own onboarding save blob (YA_SaveGame -> the SGD field of
+		// YA_PlayerGet), so progress sticks across logins.
 		args = append(args, "-noonboarding")
 		fmt.Println("[*] Onboarding disabled (DN_SKIP_ONBOARDING / skip_onboarding) — the tutorial gate is bypassed.")
 	}
 
-	if cfg.LogWindow || settings.LogWindow {
+	// The launcher window's own toggle wins over dn-launcher.json once it has
+	// been touched. It used to be OR'd with the config, so turning "Log window"
+	// OFF in the window changed nothing whenever dn-launcher.json said
+	// log_window:true (or DN_LOG_WINDOW was set in the environment) -- the
+	// window opened anyway. The saved toggle is only consulted when
+	// settings.json actually carries the key; otherwise there is no choice to
+	// honour and the config decides. DN_LOG_WINDOW still beats both: it is a
+	// per-run override, not a setting.
+	logWindow := cfg.LogWindow
+	if settingsSet["log_window"] && !cfg.logWindowForced {
+		logWindow = settings.LogWindow
+	}
+	if logWindow {
 		// -LOG only opens the console window; the log FILE (Saved\Logs\
 		// DreadGame.log) is written either way.
 		args = append(args, "-LOG")
 	}
-	if cfg.VerboseLogging || settings.VerboseLog {
+	verboseLog := cfg.VerboseLogging
+	if settingsSet["verbose_log"] && !cfg.verboseLogForced {
+		verboseLog = settings.VerboseLog
+	}
+	if verboseLog {
 		// Bumps every UE4 log category (LogNet, LogHTTP, LogOnline,
 		// LogYMmogbrain, LogWebServicesPlugin, etc.) to Verbose, and forces
 		// the log file to flush after every line so nothing is lost if the

@@ -82,6 +82,11 @@ func main() {
 	// game-manager's /instances route requires the shared secret; without it
 	// every formed match came back 403 and rolled straight back into the queue.
 	internalKey := os.Getenv("INTERNAL_API_KEY")
+	if internalKey == "changeme-internal-api-key" {
+		// The committed .env.example placeholder is not a secret; treat it as
+		// unset so we fall back to ADMIN_KEY (which requireAdminKey gates).
+		internalKey = ""
+	}
 	if internalKey == "" {
 		internalKey = os.Getenv("ADMIN_KEY")
 	}
@@ -176,7 +181,7 @@ func getenv(key, fallback string) string {
 // /internal endpoint.
 func requireAdminKey(log *logrus.Logger) string {
 	key := os.Getenv("ADMIN_KEY")
-	if key == "" || key == "changeme-admin-key" {
+	if key == "" || key == "changeme-admin-key" || key == "changeme-internal-api-key" {
 		log.Fatal(`ADMIN_KEY must be set to a real secret (not empty or the placeholder "changeme-admin-key")`)
 	}
 	return key
@@ -195,6 +200,25 @@ func requireJWTSecret(log *logrus.Logger) []byte {
 }
 
 func jwtMiddleware(secret []byte, log *logrus.Logger) mux.MiddlewareFunc {
+	return jwtMiddlewareFor(secret, log, "dreadnought")
+}
+
+// jwtMiddlewareFor admits tokens issued for any of audiences: "dreadnought"
+// (the game's, and what the launcher's own password sign-in receives) or
+// "launcher" (the Steam-ticket sign-in dn-launcher's Steam path asks for).
+//
+// /launcher/me used to require "launcher" alone, and the launcher's sign-in
+// form never had such a token: dn-launcher loginAccount posts
+// grant_type=password as a plain form (auth-server handlers.loginPassword ->
+// issueAndReturnJWT(w, user, nil, "dreadnought")), so the account card never
+// loaded and the rank badge kept its HTML default (operator report 2026-10-17
+// 11:22, auth log "grant_type":"password","is_rpc":false). Asking the sign-in
+// for a "launcher" token instead is not an option: the same token is handed to
+// the game, whose C++ profileService compares aud strictly (auth-server/jwt
+// Issue comment), and both /launcher handlers act only on the caller's own
+// account (launcherUID from the token's user_id), so accepting the game
+// audience here widens nothing.
+func jwtMiddlewareFor(secret []byte, log *logrus.Logger, audiences ...string) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -223,9 +247,10 @@ func jwtMiddleware(secret []byte, log *logrus.Logger) mux.MiddlewareFunc {
 			}
 			hasAud := false
 			for _, a := range c.Audience {
-				if a == "dreadnought" {
-					hasAud = true
-					break
+				for _, want := range audiences {
+					if a == want {
+						hasAud = true
+					}
 				}
 			}
 			if !hasAud {
@@ -281,7 +306,7 @@ func internalKeyMiddleware(key string) mux.MiddlewareFunc {
 func adminKeyMiddleware(key string) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("X-Admin-Key") != key {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Admin-Key")), []byte(key)) != 1 {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
 			}
@@ -361,6 +386,11 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	// Battle-server mod: a player's loadout by the id their client picked.
 	// Loopback only; see battle_loadout.go.
 	r.HandleFunc("/battle/loadout", battleLoadoutHandler).Methods(http.MethodGet)
+	r.HandleFunc("/battle/boss", battleBossHandler).Methods(http.MethodGet)       // admin_bosses.go
+	r.HandleFunc("/battle/hunters", battleHuntersHandler).Methods(http.MethodGet) // admin_hunters.go
+	// Battle-server mod: the loadout to spawn when the player picked nothing at
+	// orbit. Loopback only; see battle_loadout.go.
+	r.HandleFunc("/battle/default-loadout", battleDefaultLoadoutHandler).Methods(http.MethodGet)
 	// Battle-server mod: a player's match result, once per match. Loopback
 	// only; see battle_result.go.
 	r.HandleFunc("/battle/result", battleResultHandler).Methods(http.MethodGet)
@@ -369,7 +399,27 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	// Battle-server mod: the scoring table the host cannot get without a
 	// login. Loopback only; see scoring_table.go.
 	r.HandleFunc("/battle/scoring", battleScoringHandler).Methods(http.MethodGet)
+	r.HandleFunc("/battle/commands", battleCommandsHandler).Methods(http.MethodGet)  // match_chat.go
+	r.HandleFunc("/battle/snapshot", battleSnapshotHandler).Methods(http.MethodPost) // match_viewer.go
+	r.HandleFunc("/battle/terrain", battleTerrainHandler).Methods(http.MethodPost)   // match_viewer.go
+	r.HandleFunc("/admin/command", adminCommandHandler).Methods(http.MethodPost)     // chat_commands.go
+	r.HandleFunc("/battle/ribbons", battleRibbonsHandler).Methods(http.MethodGet)
+	// Battle-server mod: a Havoc run at Game Over (havoc.go). Loopback only.
+	r.HandleFunc("/battle/havoc", battleHavocHandler).Methods(http.MethodGet)
 	r.HandleFunc("/online", onlineHandler).Methods(http.MethodGet)
+	r.HandleFunc("/launcher/status", launcherStatusHandler).Methods(http.MethodGet) // launcher_status.go
+	r.Handle("/launcher/me", jwtMiddlewareFor(secret, log, "launcher", "dreadnought")(http.HandlerFunc(launcherMeHandler))).Methods(http.MethodGet)
+	launcherAuth := jwtMiddlewareFor(secret, log, "launcher", "dreadnought") // launcher_viewer.go
+	r.Handle("/launcher/viewer", launcherAuth(http.HandlerFunc(launcherViewerHandler))).Methods(http.MethodGet)
+	r.Handle("/launcher/viewer/", launcherAuth(http.HandlerFunc(launcherViewerHandler))).Methods(http.MethodGet) // the page's "/viewer/?battle=" (admin_viewer.html poll)
+	r.Handle("/launcher/viewer/terrain", launcherAuth(http.HandlerFunc(launcherViewerTerrainHandler))).Methods(http.MethodGet)
+	r.Handle("/launcher/viewer/chat", launcherAuth(http.HandlerFunc(launcherViewerChatHandler))).Methods(http.MethodPost)
+	r.Handle("/launcher/viewer/page", launcherAuth(http.HandlerFunc(launcherViewerPage))).Methods(http.MethodGet)
+	r.Handle("/launcher/fleet", launcherAuth(http.HandlerFunc(launcherFleetHandler))).Methods(http.MethodGet)
+	r.Handle("/launcher/fleet/page", launcherAuth(http.HandlerFunc(launcherFleetPage))).Methods(http.MethodGet)
+	r.Handle("/launcher/fleet/art", launcherAuth(http.HandlerFunc(launcherFleetArt))).Methods(http.MethodGet)
+	r.Handle("/launcher/fleet/action", launcherAuth(http.HandlerFunc(launcherFleetAction))).Methods(http.MethodPost)
+	r.Handle("/launcher/skip-tutorial", jwtMiddlewareFor(secret, log, "launcher", "dreadnought")(http.HandlerFunc(launcherSkipTutorialHandler))).Methods(http.MethodPost)
 
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API

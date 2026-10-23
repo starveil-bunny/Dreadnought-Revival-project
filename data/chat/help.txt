@@ -1,0 +1,31 @@
+// /help text
+// Lines after [admin] are shown only to admins
+Commands (/ or !):
+/help [word]
+/online
+/season :: which season
+/event :: which event reward
+/xp :: which xp mult
+[admin]
+-- admin --
+/season < 1 | 3 | debug | rotate | off> :: set season
+/event <invader | off | {item ids}> :: set reward
+/xp <multiplier> :: set mult
+/match < havoc | tdm | pod | turbo | onslaught | conquest | te | pve | pg> [map] | off :: select type/map
+/say <text>
+/turbo < on | off>
+/npc <normal | hard | brutal>
+/wave <skip | 1-50> :: wave control
+/bots <1 | 2 | 3 | 4> :: bot amount mult
+/enemy <ShipId> | off | list :: set bot type
+/spawn <ShipId> | boss [1-8] [x2-x10] :: spawn boss
+/boss [ShipId] [x2-x10] :: set boss
+/team <player> <1 | 2> :: swap team
+/shake 1-10 :: funny
+/flash white | red | pink | black | gold | blue :: funny
+/slowmo 0.2-1 :: slowmo
+/kill me | all | <player> :: troll
+/nuke
+/meteor [1-40] :: survive
+/host <raw command> :: debug
+/difficulty recruit | veteran | legendary

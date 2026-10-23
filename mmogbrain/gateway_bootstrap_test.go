@@ -135,6 +135,13 @@ func gatewayCatalogEntities(t *testing.T, payload map[string]any, key string) []
 		if !ok {
 			t.Fatalf("entities has unexpected type %T", payload["entities"])
 		}
+		// With DN_CATALOG_ENTITIES=empty the item catalogs send "entities"
+		// empty (only its presence is checked); their entries are Items.
+		if len(entities) == 0 {
+			if items, ok := payload["Items"].([]any); ok && len(items) > 0 {
+				return items
+			}
+		}
 		return entities
 	}
 	entities, ok := catalog["entities"].([]any)
@@ -405,7 +412,7 @@ func TestGatewayMarketEntitiesCarryBothNameFields(t *testing.T) {
 	if len(seeds) == 0 {
 		t.Fatal("market item catalog is empty")
 	}
-	seeds = append(seeds, gatewayBundleCatalogSeeds()...)
+	seeds = append(seeds, gatewayBundleCatalogSeeds("")...)
 	for _, seed := range seeds {
 		entity := gatewayMarketEntity(seed, true)
 		display, ok := entity["Name"].(string)

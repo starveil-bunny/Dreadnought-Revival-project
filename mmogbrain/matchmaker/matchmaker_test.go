@@ -25,16 +25,18 @@ func TestModesOnlyGetMapsWithTheirSublevel(t *testing.T) {
 	}
 }
 
-// Onslaught uses the regular rotation plus Amirani, not Derelict ("Site 23",
-// recognised by a tester as the Turbo TDM map, 2026-10-08).
+// Onslaught uses the regular rotation, which since 2026-10-17 carries every
+// MP map (operator: "put those all up for matchmaking"), Amirani included.
 func TestOnslaughtUsesTheRegularMaps(t *testing.T) {
 	maps := mapsByGameMode["Onslaught"]
-	if len(maps) != len(availableMaps)+1 {
-		t.Fatalf("Onslaught maps %v, want the %d rotation maps plus Amirani", maps, len(availableMaps))
+	if len(maps) != len(availableMaps) {
+		t.Fatalf("Onslaught maps %v, want the %d rotation maps", maps, len(availableMaps))
 	}
+	amirani := false
 	for _, m := range maps {
-		if m.Name == "Derelict" {
-			t.Errorf("Onslaught may run on Derelict")
-		}
+		amirani = amirani || m.Name == "Amirani"
+	}
+	if !amirani {
+		t.Errorf("Onslaught lost Amirani")
 	}
 }

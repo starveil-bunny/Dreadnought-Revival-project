@@ -27,6 +27,7 @@ func registerAdminPlayerManagement(api *mux.Router) {
 	api.HandleFunc("/players/{pid}/currency", adminAPIPlayerCurrency).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/ships", adminAPIPlayerGrantShip).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/contracts/reset", adminAPIPlayerResetContracts).Methods(http.MethodPost)
+	api.HandleFunc("/players/{pid}/items/remove", adminAPIPlayerRemoveItem).Methods(http.MethodPost)
 }
 
 type adminContract struct {
@@ -110,6 +111,7 @@ func adminAPIPlayerDetail(w http.ResponseWriter, r *http.Request) {
 		Contracts []adminContract `json:"contracts"`
 		Ships     []adminShip     `json:"ships"`
 		Heroes    []adminShip     `json:"heroes"`
+		Cosmetics []adminItem     `json:"cosmetics"` // admin_items.go
 	}
 	out.PID = pid
 	if err := database.QueryRow(`SELECT COALESCE(display_name,''), current_rank, soft_currency, premium_currency, free_xp, created_at
@@ -156,6 +158,7 @@ func adminAPIPlayerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		return out.Heroes[i].Name < out.Heroes[j].Name
 	})
+	out.Cosmetics = adminPlayerCosmetics(database, pid)
 	writeAdminJSON(w, out)
 }
 

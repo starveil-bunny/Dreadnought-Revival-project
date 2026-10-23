@@ -23,6 +23,71 @@ import (
 
 const fieldStatus = "status"
 
+// cuteFrontHost is the server's public name (run/secrets.env PUBLIC_HOST). The
+// gateway routes INTERNAL hosts by table and 404s everything else; this host
+// instead gets a friendly front page (the bunny in assets/) so a person typing
+// the domain into a browser sees "yes, the server is up" instead of
+// {"error":"unknown host"}. Never an API host: the game and launcher only ever
+// dial the table hosts (profile-api.*, legacyapi.*, mmog.*, masterserver.*/835860).
+const cuteFrontHost = "your-server.example.org"
+
+// The front page and its image are loaded once at startup (this toolchain
+// rejects //go:embed). Two path bases cover how the binary is started: from
+// the repo root (start-services.sh -> gateway/assets/) and from inside the
+// module (cwd = gateway/ -> assets/). A missing bunny is not fatal: the host
+// just falls back to the same 404 as any other unknown host.
+//
+// The HTML carries Open Graph/Twitter tags so Discord (and the rest of that
+// family) embeds the bunny when the link is pasted into a channel; og:image
+// points at /bunny.jpg, served raw below (jpg, not webp, for maximal client
+// compatibility). The public front lives on the VPS (Caddy, real cert) — this
+// gateway copy is the fallback for direct-to-gateway visits and must stay
+// content-compatible with /srv/bunny/index.html.
+var (
+	cuteFrontHTML = buildCuteFrontHTML()
+	cuteFrontJPG  = loadFrontAsset("cute-bunny.jpg")
+)
+
+// cuteFrontWebRoot is where the browser/OG clients fetch the image from; baked
+// into the generated HTML. (The host is fixed, not from PUBLIC_HOST: the page
+// only exists for that host anyway.)
+const cuteFrontWebRoot = "https://" + cuteFrontHost + "/bunny.jpg"
+
+const cuteFrontHTMLTemplate = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cute Bunny</title>
+<meta property="og:title" content="Cute Bunny">
+<meta property="og:description" content="bunny bunny bunny">
+<meta property="og:image" content="cuteFrontWebRootURL">
+<meta property="og:image:width" content="725">
+<meta property="og:image:height" content="719">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="cuteFrontWebRootURL">
+<style>html,body{height:100%;margin:0;background:#101018}body{display:grid;place-items:center}img{max-width:96%;max-height:96%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}</style>
+</head><body><img src="/bunny.jpg" alt="cute bunny"></body></html>
+`
+
+func loadFrontAsset(name string) []byte {
+	for _, p := range []string{"gateway/assets/" + name, "assets/" + name} {
+		if b, err := os.ReadFile(p); err == nil {
+			return b
+		}
+	}
+	return nil
+}
+
+func buildCuteFrontHTML() []byte {
+	html := loadFrontAsset("cute-bunny.html")
+	if html == nil && cuteFrontJPG != nil {
+		// No hand-written page: generate from the template, substituting the
+		// og:image URL (both OG and Twitter tags).
+		html = []byte(strings.ReplaceAll(cuteFrontHTMLTemplate, "cuteFrontWebRootURL", cuteFrontWebRoot))
+	}
+	return html
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -125,6 +190,10 @@ func main() {
 	crashReceiverAddr := getenv("CRASH_RECEIVER_ADDR", ":57005")
 	crashReportDir := getenv("CRASH_REPORT_DIR", "crash-reports")
 	certFile := getenv("TLS_CERT", "certs/server.crt")
+	// CA_CERT: the CA that issued certFile, served at /dn/ca.crt. Missing =
+	// that path 404s (launchers then cannot add this server by address).
+	//nolint:gosec // operator-configured certificate path.
+	caCertPEM, _ := os.ReadFile(getenv("CA_CERT", "certs/ca.crt"))
 	keyFile := getenv("TLS_KEY", "certs/server.key")
 
 	// Route table — maps Host headers to internal services
@@ -185,6 +254,16 @@ func main() {
 			promhttp.Handler().ServeHTTP(w, r)
 			return
 		}
+		// The server's CA, for a launcher pointed at this server from its
+		// server picker (dn-launcher/servers_windows.go). Public by nature --
+		// it is what players install; the key never leaves certs/. Any host,
+		// since such a launcher dials the IP.
+		if r.URL.Path == "/dn/ca.crt" && len(caCertPEM) > 0 {
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			w.Header().Set("Content-Length", fmt.Sprint(len(caCertPEM)))
+			_, _ = w.Write(caCertPEM)
+			return
+		}
 
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -193,6 +272,34 @@ func main() {
 
 		proxy, ok := routeMap[host]
 		if !ok {
+			if host == cuteFrontHost {
+				// Front page for a human in a browser. Served byte-for-byte; no
+				// cache headers so a replaced bunny shows up on the next visit.
+				switch r.URL.Path {
+				case "/", "/index.html":
+					if len(cuteFrontHTML) > 0 {
+						w.Header().Set("Content-Type", "text/html; charset=utf-8")
+						w.Header().Set("Content-Length", fmt.Sprint(len(cuteFrontHTML)))
+						_, _ = w.Write(cuteFrontHTML)
+						return
+					}
+				case "/bunny.jpg":
+					if len(cuteFrontJPG) > 0 {
+						w.Header().Set("Content-Type", "image/jpeg")
+						w.Header().Set("Content-Length", fmt.Sprint(len(cuteFrontJPG)))
+						_, _ = w.Write(cuteFrontJPG)
+						return
+					}
+				case "/bunny.webp":
+					// The original lossless-ish webp, if anyone wants it.
+					if webp := loadFrontAsset("cute-bunny.webp"); len(webp) > 0 {
+						w.Header().Set("Content-Type", "image/webp")
+						w.Header().Set("Content-Length", fmt.Sprint(len(webp)))
+						_, _ = w.Write(webp)
+						return
+					}
+				}
+			}
 			http.Error(w, `{"error":"unknown host"}`, http.StatusNotFound)
 			log.WithField("host", host).Warn("no route for host")
 			return
@@ -222,6 +329,18 @@ func main() {
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host, ok := redirectHost(r.Host, redirectHosts)
 			if !ok {
+				// The public domain is a browser-facing host too: keep its
+				// HTTP->HTTPS upgrade instead of answering "unknown host".
+				rawHost := r.Host
+				if h, _, err := net.SplitHostPort(rawHost); err == nil {
+					rawHost = h
+				}
+				if rawHost == cuteFrontHost {
+					target := "https://" + rawHost + r.URL.RequestURI()
+					//nolint:gosec // Same fixed-host rationale as below.
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+					return
+				}
 				http.Error(w, `{"error":"unknown host"}`, http.StatusBadRequest)
 				return
 			}

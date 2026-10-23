@@ -400,6 +400,7 @@ func handleFirmamentConn(log *logrus.Logger, conn net.Conn, secret []byte) {
 		// The friend list is pushed, never requested (social_presence.go),
 		// and the player's friends learn they are online.
 		socialHubInstance.pushFriendListing(playerID)
+		sendChatHelpOnLogin(peer) // chat_commands.go
 		socialHubInstance.broadcastFriendState(playerID, true)
 	}
 

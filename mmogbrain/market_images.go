@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,7 +29,20 @@ func handleMarketImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, filepath.Join(dreadconfig.MarketImagesDir(), name))
+	http.ServeFile(w, r, marketImageFile(name))
+}
+
+// marketImageFile: with DN_BUNNY_IMAGES=1 the bunny photo of the same name from
+// data/market-images-bunny (scripts/bunny-photo-market-images.py) when it exists.
+// Same file names, so the catalog does not change; off by default.
+func marketImageFile(name string) string {
+	if os.Getenv("DN_BUNNY_IMAGES") == "1" {
+		bunny := filepath.Join(filepath.Dir(dreadconfig.MarketImagesDir()), "market-images-bunny", name)
+		if _, err := os.Stat(bunny); err == nil {
+			return bunny
+		}
+	}
+	return filepath.Join(dreadconfig.MarketImagesDir(), name)
 }
 
 // gatewayAbsoluteImageURLs makes the catalog's picture paths absolute on the

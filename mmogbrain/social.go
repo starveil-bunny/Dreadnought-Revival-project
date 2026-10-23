@@ -31,6 +31,7 @@ package main
 // "Adding Chat room type Global." and "Adding Chat room type English.".
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -201,10 +202,15 @@ func (p *socialPeer) close() {
 // send queues a message. It reports an error only when the peer is gone or so
 // far behind that dropping is the right answer; it never waits on the socket.
 func (p *socialPeer) send(payload any) error {
-	line, err := json.Marshal(payload)
-	if err != nil {
+	// No HTML escaping: the client shows "\u003c" literally instead of "<"
+	// (Server help text in Global, live client 2026-10-15).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
 		return err
 	}
+	line := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	line = append(line, '\r', '\n')
 	return p.writeRaw(line)
 }

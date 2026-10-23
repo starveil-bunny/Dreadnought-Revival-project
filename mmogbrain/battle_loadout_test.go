@@ -54,7 +54,9 @@ func TestBattlePlayerNameLookup(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:5000"
 	rec := httptest.NewRecorder()
 	battlePlayerHandler(rec, req)
-	if rec.Code != http.StatusOK || rec.Body.String() != "name=Tester\n" {
+	// captain= added 2026-10-14: the host copies it into the player state's
+	// m_captainDisplayInformation (otherwise every captain draws as default).
+	if want := "name=Tester\ncaptain=" + defaultCaptainDisplayInfo + "\n"; rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
 	req = httptest.NewRequest(http.MethodGet, "/battle/player?pid="+pid, nil)
@@ -63,5 +65,59 @@ func TestBattlePlayerNameLookup(t *testing.T) {
 	battlePlayerHandler(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("non-loopback: %d", rec.Code)
+	}
+}
+
+// The default-loadout endpoint exists for the one case the client never sends
+// an id: a player who picked nothing at orbit (StartMatch with no pawn logs and
+// returns, so nothing respawns them). The property the host depends on is that
+// the id returned is resolvable through the SAME path the clicked id would take
+// (/battle/loadout), because it goes on to ServerSpawnNearActor.
+func TestBattleDefaultLoadoutResolvesAsAPickedID(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	const pid = "0123456789abcdef0123456789abcdef"
+	if err := seedMmogPlayerState(database, pid); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/battle/default-loadout?pid="+pid, nil)
+	req.RemoteAddr = "127.0.0.1:5000"
+	rec := httptest.NewRecorder()
+	battleDefaultLoadoutHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var id string
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "id=") {
+			id = strings.TrimPrefix(line, "id=")
+		}
+	}
+	if id == "" {
+		t.Fatalf("no id= in:\n%s", rec.Body.String())
+	}
+	if _, ok := battleLoadoutFor(pid, id); !ok {
+		t.Fatalf("the default id %q is not one /battle/loadout resolves", id)
+	}
+	// A fresh account's flagship is its first fleet entry
+	// (buildConfigBackedStarterFleet sets flagship from loadouts[0]).
+	state := mmogPlayerStateForPID(pid)
+	want := withLoadoutVariants(pid, ownedShipLoadoutsForPlayerData(state, pid))[0].entryID()
+	if id != want {
+		t.Errorf("default id %q, want the flagship %q", id, want)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/battle/default-loadout?pid="+pid, nil)
+	req.RemoteAddr = "10.0.0.5:5000"
+	rec = httptest.NewRecorder()
+	battleDefaultLoadoutHandler(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-loopback: %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/battle/default-loadout", nil)
+	req.RemoteAddr = "127.0.0.1:5000"
+	rec = httptest.NewRecorder()
+	battleDefaultLoadoutHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("no pid: %d", rec.Code)
 	}
 }

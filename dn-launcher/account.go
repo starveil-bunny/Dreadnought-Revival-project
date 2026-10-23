@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,10 @@ import (
 // their account until they choose to sign in.
 
 const credentialFileName = "account.json"
+
+// credentialServer is the filename-safe key of the server picked in the
+// launcher window; empty for the default server (account.json, as before).
+var credentialServer string
 
 // storedCredentials is what persists between launches. The password is never
 // kept -- only the refresh-able token and who it belongs to. The blob is
@@ -53,6 +58,11 @@ func credentialPath() (string, error) {
 	//nolint:gosec // Confined to this user's private launcher directory.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create account directory: %w", err)
+	}
+	if credentialServer != "" {
+		// A server picked in the launcher window keeps its own sign-in:
+		// accounts live on the server (servers_windows.go).
+		return filepath.Join(dir, "account-"+credentialServer+".json"), nil
 	}
 	return filepath.Join(dir, credentialFileName), nil
 }
@@ -111,12 +121,40 @@ func authBaseURL(authURL string) string {
 	return trimmed
 }
 
+// launcherHTTPClient returns the launcher's shared HTTP client.
+//
+// It is built once per server configuration and reused: the transport captures
+// serverDialIP, serverWebPort and serverCAPool when it is constructed, so a
+// cached client has to go when UseServer swaps them -- and only then. The old
+// version built a fresh &http.Client and transport per request, which meant
+// every call paid a full TCP + TLS handshake: through the relay that is ~245 ms
+// against ~87 ms on a reused connection (measured 2026-10-17; see the ping note
+// in skins_windows.go Live).
 func launcherHTTPClient() *http.Client {
-	return &http.Client{
+	key := fmt.Sprintf("%s|%s|%p", serverDialIP, serverWebPort, serverCAPool)
+	launcherClientMu.Lock()
+	defer launcherClientMu.Unlock()
+	if launcherClient != nil && launcherClientKey == key {
+		return launcherClient
+	}
+	if launcherClient != nil {
+		if t, ok := launcherClient.Transport.(*http.Transport); ok {
+			t.CloseIdleConnections() // the previous server's pooled connections
+		}
+	}
+	launcherClient = &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: launcherTransport(),
 	}
+	launcherClientKey = key
+	return launcherClient
 }
+
+var (
+	launcherClientMu  sync.Mutex
+	launcherClient    *http.Client
+	launcherClientKey string
+)
 
 // registerAccount creates an account. The server requires a username, an email
 // and at least six characters of password, and answers 409 if either unique

@@ -1,0 +1,1575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle viewer</title>
+<style>
+:root { --bg: #07090d; --panel: rgba(14, 18, 25, 0.92); --line: #1f2733; --text: #d7dee8; --dim: #7d8896; --accent: #f0b43c; --t1: #4f9dff; --t2: #ff5a5a; --t0: #a0a8b4; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.35 system-ui, sans-serif; overflow: hidden; }
+#app { display: grid; grid-template-rows: 38px 1fr; grid-template-columns: 1fr 300px; height: 100%; }
+#top { grid-column: 1 / 3; display: flex; align-items: stretch; background: #0b0e13; border-bottom: 1px solid var(--line); }
+#tabs { display: flex; overflow-x: auto; flex: 1; }
+#tabs button { background: none; border: 0; border-right: 1px solid var(--line); color: var(--dim); padding: 0 16px; font: inherit; cursor: pointer; white-space: nowrap; }
+#tabs button.on { color: var(--text); background: #141a23; box-shadow: inset 0 -2px var(--accent); }
+#tabs button .n { color: var(--accent); margin-left: 6px; }
+#tabs .none { color: var(--dim); padding: 10px 16px; }
+#status { color: var(--dim); padding: 10px 14px; white-space: nowrap; }
+#view { position: relative; min-width: 0; min-height: 0; }
+/* Launcher (player mode): the launcher's backdrop shows around the view; the
+   view itself stays as it is. */
+html.player, html.player body { background: transparent; }
+html.player #view { background: var(--bg); }
+html.player #top { background: rgba(8,11,16,.72); backdrop-filter: blur(6px); }
+html.player #side { background: rgba(9,13,19,.8); backdrop-filter: blur(6px); }
+#vclose { background: none; border: 0; border-left: 1px solid var(--line); color: var(--text); padding: 0 18px; font: inherit; letter-spacing: .12em; cursor: pointer; }
+#vclose:hover { color: var(--accent); }
+#cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; outline: none; }
+#ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#side { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+#stabs { display: flex; border-bottom: 1px solid var(--line); }
+#stabs button { flex: 1; background: none; border: 0; color: var(--dim); padding: 9px 0; font: inherit; cursor: pointer; }
+#stabs button.on { color: var(--text); box-shadow: inset 0 -2px var(--accent); }
+.pane { flex: 1; overflow-y: auto; padding: 8px 0; }
+.team { margin-bottom: 10px; }
+.team h3 { margin: 0; padding: 4px 12px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; display: flex; justify-content: space-between; }
+.sep { height: 1px; background: var(--line); margin: 3px 12px; }
+.ship { display: grid; grid-template-columns: 22px 1fr 44px; gap: 8px; align-items: center; padding: 3px 12px; cursor: pointer; }
+.ship:hover { background: rgba(255,255,255,.04); }
+.ship.sel { background: rgba(240,180,60,.12); }
+.ship .ic { width: 20px; height: 20px; }
+.ship .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ship.bot .nm { color: var(--dim); }
+.hp { height: 4px; background: rgba(255,255,255,.08); border-radius: 2px; overflow: hidden; }
+.hp i { display: block; height: 100%; }
+#selbox { border-top: 1px solid var(--line); padding: 10px 12px; }
+#selbox .t { font-weight: 600; }
+#selbox .d { color: var(--dim); margin: 2px 0 8px; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 12px; }
+.btns h4 { grid-column: 1 / 3; margin: 10px 0 0; font-size: 11px; color: var(--dim); letter-spacing: .08em; text-transform: uppercase; font-weight: 500; }
+.sl { grid-column: 1 / 3; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+.sl input { flex: 1; }
+button.b { background: #18202b; border: 1px solid #263140; color: var(--text); border-radius: 4px; padding: 6px 4px; font: inherit; cursor: pointer; }
+button.b.on { border-color: var(--accent); color: var(--accent); }
+button.b:hover { border-color: var(--accent); }
+button.b.red { color: #ff8a8a; }
+#chat { position: absolute; left: 12px; bottom: 12px; width: min(460px, 60%); pointer-events: none; }
+#chatlog { max-height: 220px; overflow-y: auto; font-size: 13px; text-shadow: 0 1px 2px #000; pointer-events: auto; scrollbar-width: none; }
+#chatlog div { padding: 1px 0; }
+#chatlog .ch { color: var(--dim); }
+#chatlog .me { color: var(--accent); }
+#chatlog .sys { color: #9fd3a8; }
+#chatlog .err { color: #ff8a8a; }
+#chatin { width: 100%; margin-top: 4px; background: rgba(0,0,0,.55); border: 1px solid #2a3442; color: var(--text); padding: 6px 8px; font: inherit; border-radius: 3px; pointer-events: auto; }
+#chatin:focus { outline: none; border-color: var(--accent); }
+#hint { position: absolute; right: 10px; bottom: 8px; color: var(--dim); font-size: 11px; pointer-events: none; text-align: right; }
+#lock { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; align-items: center; justify-content: center; }
+#lock button { background: #1d2a3a; border: 1px solid #2a3442; color: var(--text); padding: 8px 14px; font: inherit; cursor: pointer; }
+#lock button:hover { background: #26384d; }
+#lock input { background: #11161e; border: 1px solid #2a3442; color: var(--text); padding: 8px 10px; font: inherit; width: 260px; }
+#feed { position: absolute; right: 12px; top: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; pointer-events: none; font-size: 13px; text-shadow: 0 1px 2px #000; }
+#feed div { background: rgba(0,0,0,.45); padding: 2px 8px; border-radius: 3px; transition: opacity .6s; }
+.kx { color: var(--dim); margin: 0 6px; }
+.sc { padding: 0 12px; }
+.sc .tot { display: flex; justify-content: space-around; font-size: 22px; font-weight: 600; margin: 4px 0 10px; }
+.sc .tot small { display: block; font-size: 11px; color: var(--dim); font-weight: 400; text-align: center; }
+.sc table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
+.sc th { color: var(--dim); font-weight: 500; text-align: right; padding: 2px 3px; }
+.sc td { text-align: right; padding: 2px 3px; }
+.sc th:first-child, .sc td:first-child { text-align: left; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc tr.bot td:first-child { color: var(--dim); }
+.sc tr.me td { color: var(--accent); }
+.sc h4 { margin: 10px 0 4px; font-size: 11px; color: var(--dim); letter-spacing: .08em; text-transform: uppercase; font-weight: 500; }
+.sc .kl { font-size: 12px; padding: 1px 0; }
+.ship.me .nm { color: var(--accent); }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="lock" class="hidden"><form id="lockf"><input id="key" type="password" placeholder="Admin key" autocomplete="current-password"> <button type="submit" id="keygo">Open viewer</button><div id="keyerr" style="margin-top:8px;color:#e07a6a"></div></form></div>
+<div id="app">
+  <div id="top"><div id="tabs"></div><div id="status"></div></div>
+  <div id="view">
+    <canvas id="cv" tabindex="0"></canvas>
+    <canvas id="ov"></canvas>
+    <div id="chat"><div id="chatlog"></div><input id="chatin" maxlength="200" placeholder="Enter to chat · /command"></div>
+    <div id="feed"></div>
+    <div id="hint">WASD · Space/Shift · LMB orbit · RMB look · click ship · F fit</div>
+  </div>
+  <div id="side">
+    <div id="stabs"><button data-p="ships" class="on">Ships</button><button data-p="score">Score</button><button data-p="ctl">Controls</button></div>
+    <div id="p-ships" class="pane"></div>
+    <div id="p-score" class="pane sc hidden"></div>
+    <div id="p-ctl" class="pane hidden">
+      <div class="btns">
+        <h4>Fun</h4>
+        <button class="b" data-cmd="/meteor 12">Meteors</button>
+        <button class="b" data-cmd="/meteor 40">Storm</button>
+        <button class="b" data-cmd="/boss">Boss</button>
+        <button class="b" data-cmd="/spawn boss 3">3 bosses</button>
+        <button class="b" data-cmd="/shake 6">Shake</button>
+        <button class="b red" data-cmd="/nuke">Nuke</button>
+        <button class="b" data-cmd="/flash pink">Pink</button>
+        <button class="b" data-cmd="/flash gold">Gold</button>
+        <h4>Speed</h4>
+        <button class="b" data-cmd="/slowmo 0.4">Slow-mo</button>
+        <button class="b" data-cmd="/slowmo 1">Normal</button>
+        <button class="b" data-cmd="/turbo on">Turbo</button>
+        <button class="b" data-cmd="/turbo off">Turbo off</button>
+        <h4>Bots</h4>
+        <button class="b" data-cmd="/npc brutal">Brutal</button>
+        <button class="b" data-cmd="/npc normal">Normal</button>
+        <button class="b" data-cmd="/wave skip">Skip wave</button>
+        <h4>View</h4>
+        <button class="b" id="ps2">PS2 Models</button>
+        <h4>Mesh detail</h4>
+        <label class="sl">Terrain <input type="range" id="det-t" min="1" max="4" step="1"> <span id="det-tv"></span></label>
+        <label class="sl">Objects <input type="range" id="det-o" min="0.5" max="3" step="0.5"> <span id="det-ov"></span></label>
+      </div>
+    </div>
+    <div id="selbox" class="hidden"></div>
+  </div>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return sessionStorage.getItem(k) || localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} },
+    del(k) { try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch (e) {} },
+  };
+  // Player mode: the launcher's battle view (mmogbrain launcherViewerPage sets
+  // DN_PLAYER). Any live battle (their own first), chat only, no controls. The
+  // launcher frames this page and carries its requests (postMessage to the
+  // parent, which asks the launcher's Go side to fetch from the server).
+  const PLAYER = window.DN_PLAYER || null;
+  let key = PLAYER ? 'player' : store.get('adminKey');
+  // No key (a bookmark, or a tab not opened from the dashboard): key intake
+  // first, before anything below gets a chance to throw.
+  function showLock() { if (PLAYER) return; $('lock').classList.remove('hidden'); $('key').focus(); }
+  if (!key) showLock();
+  if (PLAYER) {
+    document.documentElement.classList.add('player');
+    const x = document.createElement('button');
+    x.id = 'vclose'; x.textContent = 'CLOSE';
+    x.onclick = () => window.parent.postMessage({ dnvClose: 1 }, '*');
+    $('top').append(x);
+    document.querySelector('#stabs [data-p="ctl"]').remove(); $('p-ctl').remove();
+    $('chatin').placeholder = 'Enter to chat · /t for team (in your own battle)';
+    $('hint').textContent = 'WASD · Space/Shift · LMB orbit · RMB look · click ship · F fit · Esc close';
+  }
+  const pending = new Map();
+  let reqSeq = 0;
+  window.addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || m.dnvReply === undefined) return;
+    const p = pending.get(m.dnvReply); if (!p) return;
+    pending.delete(m.dnvReply);
+    if (m.status >= 200 && m.status < 300) { try { p.ok(JSON.parse(m.body)); } catch (err) { p.no(new Error('bad reply')); } }
+    else p.no(new Error(m.status ? String(m.body || '').replace(/^\{"error":"|"\}\s*$/g, '').trim() || 'error ' + m.status : (m.body || 'launcher offline')));
+  });
+  function papi(path, opts = {}) {
+    return new Promise((ok, no) => {
+      const id = ++reqSeq;
+      pending.set(id, { ok, no });
+      setTimeout(() => { if (pending.delete(id)) no(new Error('timed out')); }, 10000);
+      window.parent.postMessage({ dnv: id, method: opts.method || 'GET', path, body: opts.body || '' }, '*');
+    });
+  }
+  function el(tag, attrs = {}, ...kids) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else if (k === 'style') e.style.cssText = v; else e.setAttribute(k, v);
+    }
+    for (const k of kids) if (k != null) e.append(k instanceof Node ? k : String(k));
+    return e;
+  }
+  async function api(path, opts = {}) {
+    const res = await fetch('/admin/api' + path, { ...opts, headers: { 'X-Admin-Key': key || '', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) } });
+    if (res.status === 403) { if (key) $('keyerr').textContent = 'That key was rejected.'; key = null; store.del('adminKey'); showLock(); throw new Error('forbidden'); }
+    if (!res.ok) throw new Error((await res.text()).replace(/^\{"error":"|"\}\s*$/g, ''));
+    return res.json();
+  }
+  $('lockf').onsubmit = (e) => { e.preventDefault(); key = $('key').value; store.set('adminKey', key); $('lock').classList.add('hidden'); poll(); };
+
+  // --- state ------------------------------------------------------------------
+  const TEAM = { 1: '#4f9dff', 2: '#ff5a5a', 0: '#a0a8b4' };
+  const KINDS = ['ArtilleryCruiser', 'Corvette', 'Destroyer', 'Dreadnought', 'TacticalCruiser'];
+  const icons = {};
+  for (const k of KINDS) { const im = new Image(); im.src = PLAYER ? (PLAYER.icons || {})[k] || '' : '/admin/viewer/icons/' + k + '.png'; icons[k] = { im, tint: {} }; }
+  function tinted(kind, col) {
+    const i = icons[kind]; if (!i || !i.im.complete || !i.im.naturalWidth) return null;
+    if (!i.tint[col]) {
+      const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+      g.drawImage(i.im, 0, 0, 64, 64); g.globalCompositeOperation = 'source-in'; g.fillStyle = col; g.fillRect(0, 0, 64, 64);
+      i.tint[col] = c; c.url = c.toDataURL();
+    }
+    return i.tint[col];
+  }
+  const S = {
+    battles: [], id: '', b: null, ships: [], hist: new Map(), projHist: [], offs: [], lag: 3400, gaps: [], lastT: 0, lastFrame: 0, terrain: null, terrainFor: '',
+    chatLast: '', sel: null, pivot: null, follow: null,
+    cam: { p: [0, 0, 0], yaw: 0, pitch: -0.5 }, fitted: '', keys: new Set(), drag: null,
+  };
+  // The host's per-pawn vid when it sends one; class+team+order otherwise, which
+  // shifts a bot's history onto its neighbour when one of them dies.
+  const shipKey = (s) => s.vid ? 'v' + s.vid : s.pid || `${s.class}@${s.team}#${s.i}`;
+
+  // --- data -------------------------------------------------------------------
+  function tabTitle(b) { return [b.mode_name || b.mode || '?', b.map_name || '?'].join(' · '); }
+  function renderTabs() {
+    const box = $('tabs');
+    if (!S.battles.length) { box.replaceChildren(el('div', { class: 'none' }, 'No live battles')); return; }
+    const count = {};
+    box.replaceChildren(...S.battles.map((b) => {
+      const t = tabTitle(b), n = count[t] = (count[t] ?? -1) + 1;
+      return el('button', { class: b.battle_match_id === S.id ? 'on' : '', onclick: () => pick(b.battle_match_id) }, t, el('span', { class: 'n' }, b.mine ? 'yours' : '#' + n));
+    }));
+  }
+  // Every battle change resets per-battle state, including the automatic one
+  // when the shown battle ends: vids restart at 1 per host, so another
+  // battle's ships would otherwise interpolate from this one's positions.
+  function setBattle(id) {
+    S.id = id; S.meSeen = false; S.killSeen = -1; $('feed').replaceChildren(); scoreSig = ''; S.ships = []; S.hist.clear(); S.projHist = []; S.offs = []; S.gaps = []; S.lastT = 0; S.sel = S.follow = S.pivot = null; S.fitted = ''; S.chatLast = ''; S.terrain = null;
+    $('chatlog').replaceChildren();
+  }
+  function pick(id) {
+    if (id === S.id) return;
+    setBattle(id); renderTabs(); poll();
+  }
+  // The host posts a snapshot every ~100 ms (host VIEWER_SNAP_MS), and the
+  // battle is polled at that rate, with one request in flight. The battle list
+  // is polled every BATTLES_MS. At the old 1 s poll of a 1 s snapshot, playback
+  // ran seconds behind and moved in coarse, visibly linear legs (operator,
+  // 2026-10-17).
+  const POLL_MS = PLAYER ? 200 : 100, BATTLES_MS = 2000, HIST_MAX = 40, PROJ_HIST_MAX = 30;
+  let battlesAt = -1e9, polling = false, sideSig = '';
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      let b;
+      if (PLAYER) {
+        const want = S.id;
+        // '/viewer/?battle=': launchers up to f680456 pass only "/viewer" or "/viewer/..." (query included), so "/viewer?battle=" never left them.
+        const d = await papi('/viewer' + (want ? '/?battle=' + encodeURIComponent(want) : ''));
+        if (S.id !== want) return; // a tab was picked while this was in flight
+        b = d.battle;
+        const sig = (d.battles || []).map((x) => x.battle_match_id).join(',');
+        S.battles = d.battles || [];
+        if (sig !== S.tabSig) { S.tabSig = sig; renderTabs(); }
+        if (!b) { if (S.id) setBattle(''); S.b = null; S.ships = []; if (sideSig) { sideSig = ''; renderShips(); } $('status').textContent = d.enabled === false ? 'Battle view is off on this server' : 'Not in a battle'; return; }
+        if (b.battle_match_id !== S.id) { setBattle(b.battle_match_id); renderTabs(); }
+        S.myTeam = d.team;
+      } else if (performance.now() - battlesAt > BATTLES_MS || !S.battles.some((b) => b.battle_match_id === S.id)) {
+        battlesAt = performance.now();
+        const d = await api('/battles');
+        S.battles = d.battles || [];
+        if (!S.battles.some((b) => b.battle_match_id === S.id)) setBattle(S.battles[0] ? S.battles[0].battle_match_id : '');
+        renderTabs();
+      }
+      if (!S.id) { S.b = null; S.ships = []; if (sideSig) { sideSig = ''; renderShips(); } $('status').textContent = ''; return; }
+      if (!PLAYER) b = await api('/battles/' + encodeURIComponent(S.id));
+      if (b.battle_match_id !== S.id) return;
+      S.b = b;
+      const seen = {};
+      const ships = (b.ships || []).map((s) => { const k = `${s.class}@${s.team}`; s.i = seen[k] = (seen[k] ?? -1) + 1; return s; });
+      // Playback buffer: each ship's positions, stamped with when the host took
+      // them (now - age_ms), drawn a lag in the past (playT), between the two
+      // samples around that time.
+      // Stamp: the server's receive time mapped onto this clock. Reply arrival
+      // minus age_ms put a sample late by its reply time (400-770 ms on slow
+      // polls), out of step with its neighbours, and shots interpolated
+      // between mis-stamped samples ran backwards (operator 2026-10-17). The
+      // offset is the smallest arrival-minus-taken seen lately: the fastest
+      // reply is the closest to the true clock difference.
+      const now = performance.now();
+      let taken = now - (b.age_ms || 0);
+      if (b.taken_ms) {
+        const off = now - b.taken_ms;
+        S.offs.push(off); while (S.offs.length > 100) S.offs.shift();
+        taken = b.taken_ms + Math.min(...S.offs);
+      }
+      if (taken > S.lastT + 30) {
+        if (S.lastT) { S.gaps.push(taken - S.lastT); while (S.gaps.length > 40) S.gaps.shift(); }
+        S.lastT = taken;
+      }
+      for (const s of ships) {
+        const k = shipKey(s), h = S.hist.get(k) || [], last = h[h.length - 1];
+        // Only newer stamps: a late post's older one broke the bracket scan.
+        if (!last || taken > last.t + 30) { h.push({ t: taken, p: W3(s.x, s.y, s.z), yaw: s.yaw }); h.yaws = null; }
+        while (h.length > HIST_MAX) h.shift();
+        S.hist.set(k, h);
+      }
+      for (const k of S.hist.keys()) if (!ships.some((s) => shipKey(s) === k)) S.hist.delete(k);
+      const lp = S.projHist[S.projHist.length - 1];
+      if (!lp || taken > lp.t + 30) S.projHist.push({ t: taken, p: (b.projectiles || []).map((q) => W3(q[0], q[1], q[2])), k: b.proj_kinds || '', id: b.proj_ids || null, prev: lp || null });
+      while (S.projHist.length > PROJ_HIST_MAX) S.projHist.shift();
+      if (S.projHist.length) S.projHist[0].prev = null; // or the chain keeps every snapshot alive
+      S.ships = ships;
+      if (S.sel) S.sel = ships.find((s) => shipKey(s) === shipKey(S.sel)) || null;
+      if (S.follow) S.follow = ships.find((s) => shipKey(s) === shipKey(S.follow)) || null;
+      // Player mode: ride along with your own ship once it shows up.
+      if (PLAYER && !S.meSeen) { const me = ships.find((s) => s.me); if (me) { S.meSeen = true; S.fitted = S.id; select(me, true); } }
+      const np = ships.filter((s) => s.player).length;
+      $('status').textContent = `${np} player${np === 1 ? '' : 's'} · ${ships.length - np} bots${b.age_ms > 5000 ? ' · stale' : ''}`;
+      if (b.terrain && (S.terrainFor !== S.id || S.terrainAt !== b.terrain_at)) {
+        S.terrainFor = S.id; S.terrainAt = b.terrain_at;
+        (PLAYER ? papi('/viewer/terrain?battle=' + encodeURIComponent(S.id)) : api('/battles/' + encodeURIComponent(S.id) + '/terrain')).then((t) => { if (S.terrainFor === b.battle_match_id) { S.terrainRaw = t; S.terrain = buildTerrain(t); if (S.fitted === S.id + ':ships') S.fitted = ''; } }).catch(() => { S.terrainFor = ''; });
+      } else if (!b.terrain && S.terrainFor !== S.id) S.terrain = null;
+      if (S.fitted !== S.id && S.fitted !== S.id + ':ships') fit();
+      // The sidebar is rebuilt only when what it shows has changed: at ten
+      // polls a second, rebuilding it every time is DOM churn for nothing.
+      const sig = ships.map((s) => shipKey(s) + ':' + s.hp + ':' + s.team + ':' + s.name).join('|') + '#' + (S.sel ? shipKey(S.sel) : '');
+      if (sig !== sideSig) { sideSig = sig; renderShips(); renderSel(); }
+      renderChat(b.chat || []);
+      renderScore(b.score);
+    } catch (e) { if (e.message !== 'forbidden') $('status').textContent = String(e.message || e); }
+    finally { polling = false; }
+  }
+  async function pollLoop() {
+    const t0 = performance.now();
+    // Locked: no request until the form is submitted (its onsubmit polls).
+    if ($('lock').classList.contains('hidden')) await poll();
+    const locked = !$('lock').classList.contains('hidden');
+    setTimeout(pollLoop, locked ? 1000 : Math.max(0, POLL_MS - (performance.now() - t0)));
+  }
+
+  // Terrain, water and objects are built once per battle into GPU meshes (see
+  // the renderer). Positions are relative to the cropped grid's centre (T.o),
+  // so float32 keeps sub-unit precision across a 300 km map. The host's grid
+  // samples sit at the cell centres.
+  //
+  //   crop     to the cells that actually have a surface. The host's grid
+  //            spans the boundary volumes, which on Highlands is 2.7x the
+  //            ground;
+  //   terrain  one quad per cell with a terrain top. Its corners are averaged
+  //            with the neighbours in its CLIFF group (groupMean), so slopes come out
+  //            smooth and cliffs stay cliffs. At every step down to a lower
+  //            neighbour there is a wall, and at a hole or the rim a skirt
+  //            down to the map's low end. A cell without a surface stays
+  //            empty;
+  //   water    a pane at the water level (the mode of the water samples). It
+  //            covers the cells that report water, plus the cells that are
+  //            empty or below the level, but only inside the footprint (a cell
+  //            with surface somewhere in all four directions along its row and
+  //            column). So it never spills past the map, and never runs under
+  //            ground that is above it;
+  //   objects  per actor, its own top-down heightfield (host objh) as a
+  //            surface: each cell's corners take the mean of the cells around
+  //            them within OBJ_STEP, so slopes come out as slopes and only a
+  //            real step is a wall; an outline corner with nothing on either
+  //            side is cut diagonally, so a round or angled outline is not a
+  //            staircase; walls drop from the outline to the actor's bottom.
+  //            An actor without a heightfield is a plain box.
+  const COL_TER_LO = [0.30, 0.36, 0.45], COL_TER_HI = [0.58, 0.64, 0.73]; // gray-blue
+  const COL_WATER = [0.07, 0.20, 0.48], COL_OBJ = [0.36, 0.66, 0.75]; // deep blue, steel cyan
+  // Mesh vertices are interleaved x y z, nx ny nz, r g b (relative to o).
+  function pushTri(A, o, a, b, c, n, col) {
+    for (const p of [a, b, c]) A.push(p[0] - o[0], p[1] - o[1], p[2] - o[2], n[0], n[1], n[2], col[0], col[1], col[2]);
+  }
+  // Quad a-b-c-d (planar enough), its normal turned toward hint: nothing is
+  // culled, so the winding is free.
+  function pushQuad(A, o, a, b, c, d, hint, col) {
+    const u = sub(c, a), v = sub(d, b);
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const m = Math.hypot(n[0], n[1], n[2]);
+    if (!m) return;
+    n = [n[0] / m, n[1] / m, n[2] / m];
+    if (dot(n, hint) < 0) n = [-n[0], -n[1], -n[2]];
+    pushTri(A, o, a, b, c, n, col); pushTri(A, o, a, c, d, n, col);
+  }
+  // A corner's height as seen from a cell at height z, given the heights of
+  // the (up to four) cells around it: the mean of z's group, the heights split
+  // into groups at gaps over step in sorted order. Every cell in a group gets
+  // the same corner, so a surface has no cracks or shingles; two groups always
+  // differ by more than a step, which is where the walls go.
+  function groupMean(v, z, step) {
+    v.sort((p, q) => p - q);
+    let sum = 0, n = 0, mine = false;
+    for (let k = 0; k < v.length; k++) {
+      if (k && v[k] - v[k - 1] > step) { if (mine) break; sum = 0; n = 0; }
+      sum += v[k]; ++n;
+      if (v[k] === z) mine = true;
+    }
+    return n ? sum / n : z;
+  }
+  // Triangle a-b-c, normal turned toward hint.
+  function pushTri3(A, o, a, b, c, hint, col) {
+    const u = sub(b, a), v = sub(c, a);
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const m = Math.hypot(n[0], n[1], n[2]);
+    if (!m) return;
+    n = [n[0] / m, n[1] / m, n[2] / m];
+    if (dot(n, hint) < 0) n = [-n[0], -n[1], -n[2]];
+    pushTri(A, o, a, b, c, n, col);
+  }
+  // Mesh detail (Controls): terrain cells and object heightfield cells are
+  // resampled by these factors before the meshes are built, so the operator
+  // can trade smoothness for frame time (request 2026-10-17). Remembered.
+  const DETAIL = { t: 2, o: 1 };
+  try { const d = JSON.parse(localStorage.getItem('viewerDetail') || '{}'); if (d.t) DETAIL.t = d.t; if (d.o) DETAIL.o = d.o; } catch (e) {}
+  function buildTerrain(t) {
+    const N = t.nx * t.ny;
+    let zt = new Float32Array(N).fill(NaN), zow = new Float32Array(N).fill(NaN), zob = new Float32Array(N).fill(NaN), live = new Uint8Array(N);
+    const wetZ = new Map();
+    let lo = Infinity, hi = -Infinity;
+    for (let c = 0; c < N; c++) {
+      const v = t.cells ? t.cells[c] : (t.z[c] == null ? 'n' : 't' + t.z[c]);
+      if (v === 'n') continue;
+      live[c] = 1;
+      for (const p of v.split(',')) {
+        const z = +p.slice(1);
+        if (p[0] === 't') { if (!(zt[c] >= z)) zt[c] = z; if (z < lo) lo = z; if (z > hi) hi = z; }
+        else if (p[0] === 'w') { zow[c] = z; wetZ.set(z, (wetZ.get(z) || 0) + 1); }
+        else if (p[0] === 'o') { if (!(zob[c] >= z)) zob[c] = z; }
+      }
+    }
+    // Ground under objects. The host types a hit by actor name, so a city's
+    // floor slab or a rock on a slope comes back 'o', not 't' (HVC_Map2: the
+    // whole city sat in a hole, the slopes were pockmarked). A cell with an
+    // object top but no terrain, reachable from terrain through such cells,
+    // gets ground filled in from around it (breadth-first, then smoothed),
+    // never above its own object top: open floor comes out at floor level,
+    // and the ground runs on under the buildings. Interpolated, not sampled.
+    {
+      const fill = new Uint8Array(N), q = [];
+      for (let c = 0; c < N; c++) if (!isNaN(zt[c])) q.push(c);
+      const nb8 = (c, f) => {
+        const i = c % t.nx, j = (c - i) / t.nx;
+        for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+          if ((a || b) && i + a >= 0 && j + b >= 0 && i + a < t.nx && j + b < t.ny) f((j + b) * t.nx + i + a);
+        }
+      };
+      const holes = [];
+      for (let h = 0; h < q.length; h++) nb8(q[h], (d) => {
+        if (!isNaN(zt[d]) || isNaN(zob[d])) return;
+        let s = 0, n = 0;
+        nb8(d, (e) => { if (!isNaN(zt[e])) { s += zt[e]; ++n; } });
+        zt[d] = Math.min(s / n, zob[d]); fill[d] = 1; q.push(d); holes.push(d);
+      });
+      for (let it = 0; it < 24; it++) for (const d of holes) {
+        let s = 0, n = 0;
+        nb8(d, (e) => { if (!isNaN(zt[e])) { s += zt[e]; ++n; } });
+        zt[d] = Math.min(s / n, zob[d]);
+      }
+    }
+    // Terrain-only tops (before the fill): the water pane is cut only by real
+    // ground above it, never by objects -- they occlude it themselves, and
+    // their finer outline left black slivers where a coarse object cell had
+    // cut the pane (operator screenshot 2026-10-17).
+    let srcIdx = (k) => k; // grid index -> host cell index
+    {
+      // Resample by DETAIL.t: each new cell bilinear between the source cells
+      // round it, but only among those within a cliff of the nearest one, so
+      // cliffs stay cliffs and an edge never smears into the void. Water,
+      // object tops and liveness take the nearest cell. Interpolated, not
+      // sampled -- the host grid is the data.
+      const f = Math.max(1, Math.round(DETAIL.t));
+      if (f > 1) {
+        const nx = t.nx * f, ny = t.ny * f, M2 = nx * ny, cliff = 3 * t.dx;
+        const near = (a, i, j) => a[Math.min(t.ny - 1, Math.max(0, j)) * t.nx + Math.min(t.nx - 1, Math.max(0, i))];
+        const interp = (a) => {
+          const r = new Float32Array(M2).fill(NaN);
+          for (let J = 0; J < ny; J++) for (let I = 0; I < nx; I++) {
+            const u = (I + 0.5) / f - 0.5, v = (J + 0.5) / f - 0.5, iu = Math.floor(u), jv = Math.floor(v), fu = u - iu, fv = v - jv;
+            const zn = near(a, Math.round(u), Math.round(v));
+            if (isNaN(zn)) continue;
+            let s = 0, w = 0;
+            for (const [di, dj, ww] of [[0, 0, (1 - fu) * (1 - fv)], [1, 0, fu * (1 - fv)], [0, 1, (1 - fu) * fv], [1, 1, fu * fv]]) {
+              const z = near(a, iu + di, jv + dj);
+              if (!isNaN(z) && Math.abs(z - zn) <= cliff) { s += z * ww; w += ww; }
+            }
+            r[J * nx + I] = w > 0 ? s / w : zn;
+          }
+          return r;
+        };
+        const nearest = (a, T) => {
+          const r = new T(M2);
+          for (let J = 0; J < ny; J++) for (let I = 0; I < nx; I++) r[J * nx + I] = near(a, Math.floor(I / f), Math.floor(J / f));
+          return r;
+        };
+        zt = interp(zt); zow = nearest(zow, Float32Array); zob = nearest(zob, Float32Array); live = nearest(live, Uint8Array);
+        const snx = t.nx;
+        srcIdx = (k) => { const I = k % nx; return Math.floor((k - I) / nx / f) * snx + Math.floor(I / f); };
+        t = Object.assign({}, t, { nx, ny, dx: t.dx / f, dy: t.dy / f, x0: t.x0 - t.dx / 2 + t.dx / (2 * f), y0: t.y0 - t.dy / 2 + t.dy / (2 * f) });
+      }
+    }
+    // Water surface at a host point (its cell's own sample, else the level),
+    // for clipping objects at the surface the way terrain is.
+    let waterAt = () => NaN;
+    const boxes = t.boxes || [];
+    if (!(lo <= hi)) for (const b of boxes) { lo = Math.min(lo, b.lo[2]); hi = Math.max(hi, b.hi[2]); }
+    if (!(lo <= hi)) lo = hi = 0;
+    // Crop to the footprint (and to the boundary boxes when there is no surface
+    // at all, so a map that is all void still frames something).
+    let i0 = t.nx, i1 = -1, j0 = t.ny, j1 = -1;
+    for (let j = 0; j < t.ny; j++) for (let i = 0; i < t.nx; i++) if (live[j * t.nx + i]) {
+      if (i < i0) i0 = i; if (i > i1) i1 = i;
+      if (j < j0) j0 = j; if (j > j1) j1 = j;
+    }
+    if (i1 < i0) for (const b of boxes) {
+      i0 = Math.min(i0, Math.floor((b.lo[0] - t.x0) / t.dx)); i1 = Math.max(i1, Math.ceil((b.hi[0] - t.x0) / t.dx));
+      j0 = Math.min(j0, Math.floor((b.lo[1] - t.y0) / t.dy)); j1 = Math.max(j1, Math.ceil((b.hi[1] - t.y0) / t.dy));
+    }
+    const M = 2;
+    i0 = Math.max(0, i0 - M); i1 = Math.min(t.nx - 1, i1 + M);
+    j0 = Math.max(0, j0 - M); j1 = Math.min(t.ny - 1, j1 + M);
+    if (i1 < i0) i0 = i1 = 0;
+    if (j1 < j0) j0 = j1 = 0;
+    const CX = i1 - i0 + 1, CY = j1 - j0 + 1, dx = t.dx, dy = t.dy;
+    const x0 = t.x0 + i0 * dx, y0 = t.y0 + j0 * dy;
+    const o = [x0 + dx * (CX - 1) / 2, -(y0 + dy * (CY - 1) / 2), (lo + hi) / 2];
+    const at = (i, j) => (i < 0 || j < 0 || i >= CX || j >= CY ? -1 : (j + j0) * t.nx + (i + i0));
+    const cell = (i, j) => { const k = at(i, j); return k < 0 ? NaN : zt[k]; };
+    // Water level: the level most water samples agree on. GUESS: fewer than 8
+    // samples at one level are strays (a ray meeting water inside a structure),
+    // not a sea.
+    let level = null, best = 0;
+    for (const [z, n] of wetZ) if (n > best) { best = n; level = z; }
+    if (best < 8) level = null;
+    const floor = level == null ? lo : Math.min(lo, level);
+    const V = [], WV = [];
+    // --- terrain
+    // GUESS: a step steeper than ~72 degrees between cell centres is a cliff
+    // (at ~50 a steep slope crossed the line cell by cell and came out as rows
+    // of short dark walls -- HVC_Map2, 2026-10-17).
+    const CLIFF = dx * 3;
+    const CORN = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const ch = new Float32Array(CX * CY * 4).fill(NaN);
+    for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+      const z = cell(i, j);
+      if (isNaN(z)) continue;
+      for (let k = 0; k < 4; k++) {
+        const [si, sj] = CORN[k];
+        const v = [z];
+        for (const [a, b] of [[i + si, j], [i, j + sj], [i + si, j + sj]]) {
+          const w = cell(a, b);
+          if (!isNaN(w)) v.push(w);
+        }
+        ch[(j * CX + i) * 4 + k] = groupMean(v, z, CLIFF);
+      }
+    }
+    const cpt = (i, j, k, z) => [x0 + (i + CORN[k][0] / 2) * dx, -(y0 + (j + CORN[k][1] / 2) * dy), z];
+    // Sides: [di, dj, own corners, the neighbour's matching corners].
+    const SIDES = [[1, 0, [1, 2], [0, 3]], [-1, 0, [0, 3], [1, 2]], [0, 1, [3, 2], [0, 1]], [0, -1, [0, 1], [3, 2]]];
+    const UP = [0, 0, 1], DOWN = [0, 0, -1];
+    for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+      const z = cell(i, j);
+      if (isNaN(z)) continue;
+      const f = Math.max(0, Math.min(1, (z - lo) / (hi - lo || 1)));
+      const col = [0, 1, 2].map((c) => COL_TER_LO[c] + (COL_TER_HI[c] - COL_TER_LO[c]) * f);
+      const h = (k) => ch[(j * CX + i) * 4 + k];
+      pushQuad(V, o, cpt(i, j, 0, h(0)), cpt(i, j, 1, h(1)), cpt(i, j, 2, h(2)), cpt(i, j, 3, h(3)), UP, col);
+      for (const [di, dj, own, nb] of SIDES) {
+        const hint = [di, -dj, 0], nz = cell(i + di, j + dj);
+        const hA = h(own[0]), hB = h(own[1]);
+        let bA, bB;
+        if (isNaN(nz)) bA = bB = floor;
+        else {
+          const nh = (k) => ch[((j + dj) * CX + (i + di)) * 4 + k];
+          bA = Math.min(hA, nh(nb[0])); bB = Math.min(hB, nh(nb[1]));
+        }
+        if (hA - bA < 1 && hB - bB < 1) continue;
+        pushQuad(V, o, cpt(i, j, own[0], hA), cpt(i, j, own[1], hB), cpt(i, j, own[1], bB), cpt(i, j, own[0], bA), hint, col);
+      }
+    }
+    // --- water
+    if (level != null) {
+      const rowLo = new Int32Array(CY).fill(CX), rowHi = new Int32Array(CY).fill(-1);
+      const colLo = new Int32Array(CX).fill(CY), colHi = new Int32Array(CX).fill(-1);
+      for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) if (!isNaN(cell(i, j))) {
+        if (i < rowLo[j]) rowLo[j] = i; if (i > rowHi[j]) rowHi[j] = i;
+        if (j < colLo[i]) colLo[i] = j; if (j > colHi[i]) colHi[i] = j;
+      }
+      // Each cell's pane sits at its own water sample; the global level only
+      // fills the footprint's gaps. Glacier carries two ocean meshes
+      // (Arena_Oceanplane at -3345 round the arena, Arena_FarOceanplane at
+      // -3455 out to the horizon): with one level, the mode, the far plane
+      // won and the arena's own sea was not water, so the ice floes stood
+      // over black (operator screenshot 2026-10-17).
+      const wz = (i, j) => {
+        const k0 = at(i, j), w = zow[k0];
+        // Under terrain too: the depth test hides it there. Dropping cells whose
+        // ground stood above the water left black holes round the floes, where
+        // the terrain mesh (drawn between cell centres) covers less than the
+        // dropped cell (operator screenshot 2026-10-17 17:32).
+        return !isNaN(w) ? w : rowLo[j] < i && i < rowHi[j] && colLo[i] < j && j < colHi[i] ? level : NaN;
+      };
+      waterAt = (x, y) => {
+        const i = Math.round((x - x0) / dx), j = Math.round((y - y0) / dy), k0 = at(i, j);
+        if (k0 < 0) return NaN;
+        return !isNaN(zow[k0]) ? zow[k0] : level;
+      };
+      // Fade: the pane thins out with distance from the nearest terrain or
+      // object cell and is gone by WATER_FADE, so the sea frames the map
+      // instead of a far ocean plane filling the view to its square edge
+      // (operator request 2026-10-17). Multi-source BFS, 8-neighbour steps.
+      // GUESS: radius -- about a third of a typical arena's half-width.
+      const WATER_FADE = 40000, R = Math.max(2, Math.round(WATER_FADE / dx));
+      const dist = new Int32Array(CX * CY).fill(R + 1), q = [];
+      for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+        const k = at(i, j);
+        if (!isNaN(zt[k]) || !isNaN(zob[k])) dist[j * CX + i] = 0, q.push(j * CX + i);
+      }
+      for (let h = 0; h < q.length; h++) {
+        const c = q[h], i = c % CX, j = (c - i) / CX, d = dist[c] + 1;
+        if (d > R) continue;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const a = i + di, b = j + dj;
+          if (a < 0 || b < 0 || a >= CX || b >= CY || dist[b * CX + a] <= d) continue;
+          dist[b * CX + a] = d; q.push(b * CX + a);
+        }
+      }
+      const fade = (i, j) => (i < 0 || j < 0 || i >= CX || j >= CY ? 0 : Math.max(0, 1 - dist[j * CX + i] / R));
+      const cornerFade = (i, j) => (fade(i - 1, j - 1) + fade(i, j - 1) + fade(i - 1, j) + fade(i, j)) / 4; // corner (i-.5, j-.5)
+      // One quad per cell (alpha differs per corner), riding in the normal's
+      // length: the shader normalises it for light and, for water only,
+      // multiplies alpha by it.
+      const wv = (x, y, z, a) => WV.push(x - o[0], y - o[1], z - o[2], 0, 0, Math.max(a, 1e-3), COL_WATER[0], COL_WATER[1], COL_WATER[2]);
+      for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+        const lv = wz(i, j);
+        if (isNaN(lv) || dist[j * CX + i] > R) continue;
+        const xa = x0 + (i - 0.5) * dx, xb = x0 + (i + 0.5) * dx, ya = -(y0 + (j - 0.5) * dy), yb = -(y0 + (j + 0.5) * dy);
+        const fa = cornerFade(i, j), fb = cornerFade(i + 1, j), fc = cornerFade(i + 1, j + 1), fd = cornerFade(i, j + 1);
+        wv(xa, ya, lv, fa); wv(xb, ya, lv, fb); wv(xb, yb, lv, fc);
+        wv(xa, ya, lv, fa); wv(xb, yb, lv, fc); wv(xa, yb, lv, fd);
+      }
+    }
+    // --- playable limit: the outline of the columns under the warning (r) and
+    // warp (x) boundary volumes, at the terrain's low and high ends, so it reads
+    // as a fence. Line vertices: x y z, r g b a, size.
+    const FL = [];
+    for (const [k, rgba] of [['r', [0.94, 0.7, 0.24, 0.5]], ['x', [0.94, 0.35, 0.35, 0.5]]]) {
+      const L2 = new Float64Array(CX * CY);
+      for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+        const v = t.cells ? t.cells[srcIdx(at(i, j))] : '';
+        for (const p of v.split(',')) if (p[0] === k) L2[j * CX + i] = +p.slice(1);
+      }
+      const has = (i, j) => i >= 0 && j >= 0 && i < CX && j < CY && L2[j * CX + i] !== 0;
+      for (let j = 0; j < CY; j++) for (let i = 0; i < CX; i++) {
+        if (!has(i, j)) continue;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          if (has(i + di, j + dj)) continue;
+          const fx = x0 + (i + di / 2) * dx, fy = y0 + (j + dj / 2) * dy, ex = dj ? dx / 2 : 0, ey = di ? dy / 2 : 0;
+          for (const z of [lo, hi]) FL.push(fx - ex - o[0], -(fy - ey) - o[1], z - o[2], ...rgba, 1, fx + ex - o[0], -(fy + ey) - o[1], z - o[2], ...rgba, 1);
+        }
+      }
+    }
+    // --- objects. An object box covering much of the grid is not a structure
+    // but a terrain-like mesh actor, and is left to the surface. GUESS: the
+    // 0.25 threshold; the largest real structure seen is ~9 km across on a
+    // ~280 km map.
+    const OBJ_MAX_COVER = 0.25, mapArea = Math.max(1, CX * dx * CY * dy);
+    let oi = 0;
+    for (const ob of t.objects || []) {
+      const w = ob.hi[0] - ob.lo[0], h = ob.hi[1] - ob.lo[1], d = ob.hi[2] - ob.lo[2];
+      if (!(w > 0 && h > 0 && d >= 0) || w * h > mapArea * OBJ_MAX_COVER) continue;
+      // A small per-object shade step, so touching structures read as two.
+      const sh = 0.86 + 0.24 * ((oi++ * 0.618034) % 1), col = COL_OBJ.map((c) => Math.min(1, c * sh));
+      const base = ob.lo[2];
+      let hf = null;
+      if (ob.h) {
+        const parts = ob.h.split(' '), nx = +parts[0], ny = +parts[1], zs = (parts[2] || '').split(',');
+        if (nx > 0 && ny > 0 && zs.length === nx * ny) hf = { nx, ny, z: zs.map((s) => (s === 'n' ? NaN : +s)) };
+      }
+      const box = !hf;
+      if (box) hf = { nx: 1, ny: 1, z: [ob.hi[2]] };
+      else if (DETAIL.o !== 1) {
+        // Resample by DETAIL.o, bilinear among the cells within the step of
+        // the nearest (as the terrain); below 1 it thins to the nearest cell.
+        const f = DETAIL.o, nx = Math.max(1, Math.round(hf.nx * f)), ny = Math.max(1, Math.round(hf.ny * f)), z = new Array(nx * ny);
+        const sx = hf.nx / nx, sy = hf.ny / ny, step = 1.5 * Math.max(w / hf.nx, h / hf.ny);
+        const g = (i, j) => (i < 0 || j < 0 || i >= hf.nx || j >= hf.ny ? NaN : hf.z[j * hf.nx + i]);
+        for (let J = 0; J < ny; J++) for (let I = 0; I < nx; I++) {
+          const u = (I + 0.5) * sx - 0.5, v = (J + 0.5) * sy - 0.5, iu = Math.floor(u), jv = Math.floor(v), fu = u - iu, fv = v - jv;
+          const zn = g(Math.min(hf.nx - 1, Math.max(0, Math.round(u))), Math.min(hf.ny - 1, Math.max(0, Math.round(v))));
+          if (isNaN(zn) || f < 1) { z[J * nx + I] = zn; continue; }
+          let s = 0, ww = 0;
+          for (const [di, dj, k] of [[0, 0, (1 - fu) * (1 - fv)], [1, 0, fu * (1 - fv)], [0, 1, (1 - fu) * fv], [1, 1, fu * fv]]) {
+            const zz = g(iu + di, jv + dj);
+            if (!isNaN(zz) && Math.abs(zz - zn) <= step) { s += zz * k; ww += k; }
+          }
+          z[J * nx + I] = ww > 0 ? s / ww : zn;
+        }
+        hf = { nx, ny, z };
+      }
+      const cw = w / hf.nx, chh = h / hf.ny;
+      // Underside (host objb, the same cells traced bottom-up), looked up by
+      // the nearest source cell; without it every column reaches the bottom.
+      let bf = null;
+      if (ob.b && !box) {
+        const parts = ob.b.split(' '), nx = +parts[0], ny = +parts[1], zs = (parts[2] || '').split(',');
+        if (nx > 0 && ny > 0 && zs.length === nx * ny) bf = { nx, ny, z: zs.map((s) => (s === 'n' ? NaN : +s)) };
+      }
+      const botAt = (i, j) => {
+        if (!bf || i < 0 || j < 0 || i >= hf.nx || j >= hf.ny) return base;
+        const b = bf.z[Math.min(bf.ny - 1, Math.floor((j + 0.5) * bf.ny / hf.ny)) * bf.nx + Math.min(bf.nx - 1, Math.floor((i + 0.5) * bf.nx / hf.nx))];
+        return isNaN(b) || b >= zat(i, j) - 1 ? base : b;
+      };
+      // GUESS: a rise steeper than ~56 degrees between cell centres is a step
+      // (a wall), not a slope; no mesh data, only the sampled heights.
+      const OBJ_STEP = 1.5 * Math.max(cw, chh);
+      const zat = (i, j) => (i < 0 || j < 0 || i >= hf.nx || j >= hf.ny ? NaN : hf.z[j * hf.nx + i]);
+      // Height of grid corner (gx, gy) as seen from a cell at height zc.
+      const hAt = (zc, gx, gy) => {
+        const v = [];
+        for (const [a, b] of [[gx - 1, gy - 1], [gx, gy - 1], [gx - 1, gy], [gx, gy]]) {
+          const z = zat(a, b);
+          if (!isNaN(z)) v.push(z);
+        }
+        return groupMean(v, zc, OBJ_STEP);
+      };
+      // Host xy -> viewer (Y flipped).
+      const P = (x, y, z) => [x, -y, z];
+      // Corner k of a cell: 0 (i,j) 1 (i+1,j) 2 (i+1,j+1) 3 (i,j+1); edge k runs
+      // corner k -> k+1 and borders neighbour NB[k]; corner k sits between
+      // edges k-1 and k, with the diagonal neighbour DG[k].
+      const CO = [[0, 0], [1, 0], [1, 1], [0, 1]], NB = [[0, -1], [1, 0], [0, 1], [-1, 0]], DG = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+      for (let j = 0; j < hf.ny; j++) for (let i = 0; i < hf.nx; i++) {
+        const z = zat(i, j);
+        if (isNaN(z)) continue;
+        const X0 = ob.lo[0] + i * cw, Y0 = ob.lo[1] + j * chh, cx = X0 + cw / 2, cy = Y0 + chh / 2;
+        // Nothing under the water surface is drawn (it cannot be seen through
+        // it): a cell wholly under is skipped, walls stop at the surface.
+        const wl = waterAt(cx, cy);
+        if (z <= wl) continue;
+        const bz = botAt(i, j), bw = Math.max(bz, wl);
+        const miss = (d) => isNaN(zat(i + d[0], j + d[1]));
+        // Outline polygon: points {x, y, z, seg}, seg = the edge index the
+        // segment to the next point lies on, -1 for a chamfer diagonal.
+        const pts = [];
+        for (let k = 0; k < 4; k++) {
+          const gx = i + CO[k][0], gy = j + CO[k][1], x = ob.lo[0] + gx * cw, y = ob.lo[1] + gy * chh;
+          const kp = (k + 3) % 4, kn = (k + 1) % 4;
+          if (!box && miss(NB[kp]) && miss(NB[k]) && miss(DG[k])) {
+            const xp = ob.lo[0] + (i + CO[kp][0]) * cw, yp = ob.lo[1] + (j + CO[kp][1]) * chh;
+            const xn = ob.lo[0] + (i + CO[kn][0]) * cw, yn = ob.lo[1] + (j + CO[kn][1]) * chh;
+            pts.push({ x: (x + xp) / 2, y: (y + yp) / 2, z, seg: -1 }, { x: (x + xn) / 2, y: (y + yn) / 2, z, seg: k });
+          } else pts.push({ x, y, z: hAt(z, gx, gy), gx, gy, seg: k });
+        }
+        const C = P(cx, cy, z);
+        for (let a = 0; a < pts.length; a++) {
+          const A = pts[a], B = pts[(a + 1) % pts.length];
+          if (Math.hypot(B.x - A.x, B.y - A.y) < 1) continue;
+          pushTri3(V, o, C, P(A.x, A.y, A.z), P(B.x, B.y, B.z), UP, col);
+          if (bz > base + 1 && bz > wl) pushTri3(V, o, P(cx, cy, bz), P(A.x, A.y, bz), P(B.x, B.y, bz), DOWN, col);
+          // Wall under this segment: to the underside on the outline, to the
+          // neighbour's own surface where it is lower (the higher cell draws it).
+          const nb = A.seg >= 0 ? NB[A.seg] : null, zn = nb ? zat(i + nb[0], j + nb[1]) : NaN;
+          const hint = [(A.x + B.x) / 2 - cx, -((A.y + B.y) / 2 - cy), 0];
+          // Under it, the step up to a neighbour whose underside is higher.
+          if (!isNaN(zn)) {
+            const t = Math.min(botAt(i + nb[0], j + nb[1]), A.z, B.z);
+            if (t > bw + 1) pushQuad(V, o, P(A.x, A.y, t), P(B.x, B.y, t), P(B.x, B.y, bw), P(A.x, A.y, bw), hint, col);
+          }
+          let ba = bz, bb = bz;
+          if (!isNaN(zn)) {
+            if (A.gx == null || B.gx == null) continue;
+            ba = Math.max(bz, hAt(zn, A.gx, A.gy)); bb = Math.max(bz, hAt(zn, B.gx, B.gy));
+            if (!(A.z + B.z > ba + bb + 2)) continue;
+          }
+          if (wl > ba) ba = Math.min(wl, A.z);
+          if (wl > bb) bb = Math.min(wl, B.z);
+          pushQuad(V, o, P(A.x, A.y, A.z), P(B.x, B.y, B.z), P(B.x, B.y, bb), P(A.x, A.y, ba), hint, col);
+        }
+      }
+    }
+    // The raw grid is deliberately NOT carried into the result: nothing outside
+    // this function reads it once the geometry exists.
+    return {
+      at: t.at, nx: CX, ny: CY, x0, y0, dx, dy, lo, hi, o, boxes,
+      mesh: Float32Array.from(V), water: Float32Array.from(WV), lines: Float32Array.from(FL), gpu: null,
+    };
+  }
+  // --- sidebar ----------------------------------------------------------------
+  function hpBar(hp) {
+    const c = hp > 50 ? '#47c07a' : hp > 20 ? '#e2a33b' : '#f06a6a';
+    return el('div', { class: 'hp' }, el('i', { style: `width:${hp < 0 ? 0 : hp}%;background:${c}` }));
+  }
+  function iconEl(s) {
+    const c = tinted(s.kind, TEAM[s.team] || TEAM[0]);
+    if (!c) return el('span', { class: 'ic' });
+    return el('img', { class: 'ic', src: c.url, alt: '' });
+  }
+  function renderShips() {
+    const box = $('p-ships');
+    if (!S.ships.length) { box.replaceChildren(); return; }
+    const teams = [...new Set(S.ships.map((s) => s.team))].sort((a, b) => (a || 99) - (b || 99));
+    box.replaceChildren(...teams.map((t) => {
+      const list = S.ships.filter((s) => s.team === t);
+      const players = list.filter((s) => s.player).sort((a, b) => a.name.localeCompare(b.name));
+      const bots = list.filter((s) => !s.player).sort((a, b) => a.name.localeCompare(b.name));
+      const row = (s) => el('div', { class: 'ship' + (s.player ? '' : ' bot') + (s.me ? ' me' : '') + (S.sel && shipKey(S.sel) === shipKey(s) ? ' sel' : ''), onclick: () => select(s, true) },
+        iconEl(s), el('span', { class: 'nm' }, s.name), hpBar(s.hp));
+      return el('div', { class: 'team' },
+        el('h3', { style: `color:${TEAM[t] || TEAM[0]}` }, el('span', {}, t ? 'Team ' + t : 'Other'), el('span', {}, list.length)),
+        ...players.map(row), players.length && bots.length ? el('div', { class: 'sep' }) : null, ...bots.map(row));
+    }));
+  }
+  function renderSel() {
+    const box = $('selbox'), s = S.sel;
+    if (!s) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    const kids = [el('div', { class: 't' }, s.name), el('div', { class: 'd' }, `${s.player ? 'Player' : 'Bot'}${s.hull ? ' · ' + s.hull : ''} · Team ${s.team || '?'} · ${s.hp >= 0 ? s.hp + '%' : '?'}`)];
+    if (s.player && !PLAYER) kids.push(el('div', { class: 'btns', style: 'padding:0' },
+      el('button', { class: 'b red', onclick: () => cmd(`/kill ${s.name}`) }, 'Destroy'),
+      el('button', { class: 'b', onclick: () => cmd(`/team ${s.name} ${s.team === 1 ? 2 : 1}`) }, 'Swap team')));
+    box.replaceChildren(...kids);
+  }
+  document.querySelectorAll('#stabs button').forEach((b) => (b.onclick = () => {
+    document.querySelectorAll('#stabs button').forEach((x) => x.classList.toggle('on', x === b));
+    for (const p of ['ships', 'score', 'ctl']) if ($('p-' + p)) $('p-' + p).classList.toggle('hidden', b.dataset.p !== p);
+  }));
+  document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => cmd(b.dataset.cmd)));
+
+  // --- score -----------------------------------------------------------------
+  // b.score (mmogbrain viewerScoreboard): team kills and Onslaught points (-1
+  // outside it), per player K/D/A/score, and the kill log (newest last). New
+  // kills also pop up in the feed at the top right for a few seconds.
+  let scoreSig = '';
+  const tc = (t) => `color:${TEAM[t] || TEAM[0]}`;
+  function killLine(k, cls) {
+    return el('div', { class: cls },
+      k.killer ? el('span', { style: tc(k.kt) }, k.killer) : null, el('span', { class: 'kx' }, k.killer ? '✕' : '✕ wrecked'), el('span', { style: tc(k.vt) }, k.victim || '?'));
+  }
+  function renderScore(sc) {
+    const feed = sc ? sc.feed || [] : [];
+    const top = feed.length ? feed[feed.length - 1].seq : 0;
+    if (S.killSeen < 0) S.killSeen = top; // no pop-ups for kills before the view opened
+    for (const k of feed) if (k.seq > S.killSeen) {
+      const d = killLine(k, ''); $('feed').append(d);
+      while ($('feed').childElementCount > 5) $('feed').firstChild.remove();
+      setTimeout(() => { d.style.opacity = 0; setTimeout(() => d.remove(), 700); }, 6000);
+    }
+    S.killSeen = Math.max(S.killSeen, top);
+    const sig = JSON.stringify(sc || null);
+    if (sig === scoreSig) return;
+    scoreSig = sig;
+    const box = $('p-score');
+    if (!sc) { box.replaceChildren(el('div', { style: 'color:var(--dim);padding:8px 0' }, 'No score yet')); return; }
+    const pts = sc.points && sc.points[0] >= 0;
+    const tot = (t) => el('div', { style: tc(t) }, sc.kills[t - 1], pts ? ' · ' + sc.points[t - 1] : '', el('small', {}, 'Team ' + t + (pts ? ' kills · points' : ' kills')));
+    const kids = [el('div', { class: 'tot' }, tot(1), tot(2))];
+    const myName = (S.ships.find((s) => s.me) || {}).name;
+    for (const t of [1, 2]) {
+      const ps = (sc.players || []).filter((p) => p.team === t).sort((a, b) => b.score - a.score || b.kills - a.kills);
+      if (!ps.length) continue;
+      kids.push(el('table', {}, el('tr', {}, el('th', { style: tc(t) }, 'Team ' + t), el('th', {}, 'K'), el('th', {}, 'D'), el('th', {}, 'A'), el('th', {}, 'Score')),
+        ...ps.map((p) => el('tr', { class: (p.bot ? 'bot' : '') + (myName && p.name === myName ? ' me' : '') }, el('td', {}, p.name), el('td', {}, p.kills), el('td', {}, p.deaths), el('td', {}, p.assists), el('td', {}, p.score)))));
+    }
+    kids.push(el('h4', {}, 'Kills'));
+    if (!feed.length) kids.push(el('div', { class: 'kl', style: 'color:var(--dim)' }, 'None yet'));
+    for (const k of feed.slice().reverse()) kids.push(killLine(k, 'kl'));
+    box.replaceChildren(...kids);
+  }
+
+  // --- chat -------------------------------------------------------------------
+  function chatLine(cls, ...parts) {
+    const log = $('chatlog'), stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.append(el('div', { class: cls }, ...parts));
+    while (log.childElementCount > 200) log.firstChild.remove();
+    if (stick) log.scrollTop = log.scrollHeight;
+  }
+  function renderChat(lines) {
+    // The server returns the newest 60; show the ones after what was shown.
+    const key = (l) => l.at + '|' + l.name + '|' + l.text;
+    const last = S.chatLast;
+    let start = 0;
+    if (last) { const i = lines.map(key).lastIndexOf(last); start = i >= 0 ? i + 1 : 0; }
+    for (const l of lines.slice(start)) chatLine('', el('span', { class: 'ch' }, l.team ? '[Team] ' : '[All] '), el('b', {}, l.name + ': '), l.text);
+    if (lines.length) S.chatLast = key(lines[lines.length - 1]);
+  }
+  // Player mode: "/t text" to your team, anything else to All; no commands.
+  async function say(t) {
+    let team = false;
+    if (/^\/t(eam)?\s/i.test(t)) { team = true; t = t.replace(/^\/\S+\s+/, ''); }
+    else if (t[0] === '/' || t[0] === '!') return chatLine('err', 'Only chat here: type a message, or /t message for your team.');
+    try { await papi('/viewer/chat', { method: 'POST', body: JSON.stringify({ text: t, team, battle: S.id }) }); poll(); }
+    catch (e) { chatLine('err', e.message || String(e)); }
+  }
+  async function cmd(line) {
+    if (!S.id) return chatLine('err', 'No battle selected');
+    chatLine('me', line);
+    try { const r = await api(`/battles/${encodeURIComponent(S.id)}/command`, { method: 'POST', body: JSON.stringify({ line }) }); if (r.reply) chatLine('sys', r.reply); }
+    catch (e) { if (e.message !== 'forbidden') chatLine('err', e.message || String(e)); }
+  }
+  $('chatin').onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.target.blur(); $('cv').focus(); return; }
+    if (e.key !== 'Enter') return;
+    const t = e.target.value.trim(); e.target.value = '';
+    if (t && PLAYER) say(t);
+    else if (t) cmd(t[0] === '/' || t[0] === '!' ? t : '/say ' + t);
+    else { e.target.blur(); $('cv').focus(); }
+  };
+
+  // --- camera -----------------------------------------------------------------
+  // World is Unreal's (left-handed, Z up); y is mirrored on the way in so the
+  // view is not a mirror image.
+  const W3 = (x, y, z) => [x, -y, z];
+  // Playback time: now minus a lag. The lag moves toward the median gap
+  // between snapshot stamps plus one poll and a margin (the newest sample is
+  // up to a poll old on arrival), and is never less than the newest sample's
+  // age plus the margin, so the drawn time cannot pass the buffer and park.
+  // A one-off stall leaves the median alone instead of pinning a max.
+  function playT() {
+    const now = performance.now(), dt = Math.min(now - (S.lastFrame || now), 200);
+    S.lastFrame = now;
+    // The floor stops one gap past the target: beyond that the host has
+    // stalled, and running further behind only builds lag to fast-forward
+    // through afterwards (simulated 6 s stall: lag 3.3 -> 10.2 s, then 13 s of
+    // up to 3.3x catch-up). Lag drops at most 0.5 ms per ms, so catch-up runs
+    // the clock at <= 1.5x instead of rubber-banding.
+    // The target rides the slow tail, not the median: polls that took
+    // 400-770 ms against a 100 ms median (profile 2026-10-17 17:42) ran the
+    // clock past the newest sample every few seconds -- pause, then go.
+    const g = [...S.gaps].sort((a, c) => a - c), med = g.length ? g[g.length >> 1] : 300;
+    const p90 = g.length ? g[Math.min(g.length - 1, Math.floor(g.length * 0.9))] : 300;
+    const target = Math.min(Math.max(med, p90) + POLL_MS + 300, 8000);
+    const want = S.lastT ? Math.max(target, Math.min(now - S.lastT + 300, target + med)) : target;
+    S.lag = want > S.lag ? want : S.lag - Math.min(S.lag - want, 0.5 * dt);
+    return now - S.lag;
+  }
+  let RT = -1; // playback time of the frame being drawn (set once per draw)
+  const rtNow = () => (RT < 0 ? (RT = playT()) : RT); // a click before the first frame
+  function shipSample(s, rt) {
+    const h = S.hist.get(shipKey(s));
+    if (!h || !h.length) return W3(s.x, s.y, s.z);
+    if (rt <= h[0].t) return h[0].p;
+    for (let i = 1; i < h.length; i++) if (rt <= h[i].t) {
+      const a = h[i - 1], c = h[i], u = (rt - a.t) / (c.t - a.t || 1);
+      return [a.p[0] + (c.p[0] - a.p[0]) * u, a.p[1] + (c.p[1] - a.p[1]) * u, a.p[2] + (c.p[2] - a.p[2]) * u];
+    }
+    return h[h.length - 1].p;
+  }
+  // A shot in one snapshot is the same shot in the next when the host's
+  // object id matches (proj_ids), else (an older host) its nearest neighbour
+  // of the same kind (proj_kinds: m missile, b ballistic, p other). Either
+  // way the pairing must fit its motion so far: shells are pooled, so one
+  // object hits ship B and is fired again from ship C, and pairing that
+  // would slide a round across the map. With a previous position the next
+  // must land near the straight-line prediction; a new shot only within
+  // PROJ_MATCH. GUESS: PROJ_MATCH is how far a round can move between 100 ms
+  // snapshots, PROJ_TOL how far it can curve (missiles turn, shells drop);
+  // no muzzle-speed or turn-rate data has been read. Each pairing also leaves
+  // the later snapshot a back-link, which the missile trails and the
+  // predictions walk.
+  const PROJ_MATCH = 15000, PROJ_TOL = 1500, TRAIL_STEPS = 8; // GUESS: 0.8 s of missile path reads as a trail (0.3 s looked like a dot)
+  function projPair(a, c) {
+    if (a.m && a.mFor === c) return a.m;
+    const used = new Uint8Array(c.p.length), m = new Int32Array(a.p.length).fill(-1), back = new Int32Array(c.p.length).fill(-1);
+    if (a.prev) projPair(a.prev, a);
+    const byId = a.id && c.id ? new Map(c.id.map((v, j) => [v, j])) : null;
+    for (let k = 0; k < a.p.length; k++) {
+      const q = a.p[k], kk = a.k[k] || 'p';
+      // Where it should be at c.t if it keeps going straight; tolerance grows
+      // with the step so a fast round is not held to a slow one's margin.
+      let ctr = q, tol = PROJ_MATCH;
+      const z = a.prev && a.back && a.back[k] >= 0 ? a.prev.p[a.back[k]] : null;
+      if (z) {
+        const f = (c.t - a.t) / (a.t - a.prev.t || 1);
+        ctr = [q[0] + (q[0] - z[0]) * f, q[1] + (q[1] - z[1]) * f, q[2] + (q[2] - z[2]) * f];
+        tol = Math.max(PROJ_TOL, 0.5 * Math.hypot(ctr[0] - q[0], ctr[1] - q[1], ctr[2] - q[2]));
+      }
+      let best = -1, bd = tol * tol;
+      const near = (j) => {
+        if (j == null || used[j] || (c.k[j] || 'p') !== kk) return;
+        const r = c.p[j], d = (r[0] - ctr[0]) ** 2 + (r[1] - ctr[1]) ** 2 + (r[2] - ctr[2]) ** 2;
+        if (d < bd) { bd = d; best = j; }
+      };
+      if (byId) near(byId.get(a.id[k]));
+      else for (let j = 0; j < c.p.length; j++) near(j);
+      if (best >= 0) { used[best] = 1; m[k] = best; back[best] = k; }
+    }
+    a.m = m; a.mFor = c; a.mUsed = used; c.back = back;
+    return m;
+  }
+  // The projectiles at playback time rt, as [x, y, z, kind], plus one trail per
+  // missile: its interpolated head, then its positions in older snapshots.
+  function projAt(rt) {
+    const H = S.projHist, pts = [], trails = [];
+    if (!H.length) return { pts, trails };
+    const i = H.findIndex((e) => e.t >= rt);
+    const trail = (h, idx, head) => {
+      const tr = [head];
+      for (let s = 0; s < TRAIL_STEPS && idx >= 0; s++) {
+        tr.push(H[h].p[idx]);
+        if (h === 0) break;
+        projPair(H[h - 1], H[h]); idx = H[h].back[idx]; --h;
+      }
+      return tr;
+    };
+    // Before the buffer, or parked past its newest sample (a stall): the
+    // nearest snapshot as it stands, trails included -- they vanished at
+    // every stall when this branch drew points only.
+    if (i <= 0) {
+      const h = i < 0 ? H.length - 1 : 0, e = H[h];
+      e.p.forEach((q, k) => {
+        const kind = e.k[k] || 'p';
+        pts.push([q[0], q[1], q[2], kind]);
+        if (kind === 'm') trails.push(trail(h, k, q));
+      });
+      return { pts, trails };
+    }
+    const a = H[i - 1], c = H[i], u = (rt - a.t) / (c.t - a.t || 1), m = projPair(a, c);
+    for (let k = 0; k < a.p.length; k++) {
+      const q = a.p[k], j = m[k], kind = a.k[k] || 'p';
+      let p;
+      if (j >= 0) { const r = c.p[j]; p = [q[0] + (r[0] - q[0]) * u, q[1] + (r[1] - q[1]) * u, q[2] + (r[2] - q[2]) * u]; }
+      else if (u < 0.5) p = q;
+      else continue;
+      pts.push([p[0], p[1], p[2], kind]);
+      if (kind === 'm') trails.push(trail(i - 1, k, p));
+    }
+    if (u >= 0.5) c.p.forEach((r, j) => { if (!a.mUsed[j]) pts.push([r[0], r[1], r[2], c.k[j] || 'p']); });
+    return { pts, trails };
+  }
+  function shipPos(s) { return shipSample(s, rtNow()); }
+  // Heading at the playback time from the host's yaw (degrees, UE: about +Z
+  // from +X; W3 flips Y), interpolated the short way round; null without one.
+  function shipYaw(s) {
+    // Samples without a yaw (ActorRotation failed that tick) are skipped, not
+    // honoured: dropping to the travel direction made strafing ships swing.
+    // Before the first yaw-bearing sample it holds that sample's heading;
+    // the filtered view is cached per push.
+    const all = S.hist.get(shipKey(s)), rt = rtNow();
+    if (!all) return null;
+    const h = all.yaws || (all.yaws = all.filter((e) => e.yaw != null));
+    if (!h.length) return null;
+    let i = h.findIndex((e) => e.t >= rt);
+    if (i < 0) return h[h.length - 1].yaw;
+    if (i === 0) return h[0].yaw;
+    const a = h[i - 1], c = h[i], u = (rt - a.t) / (c.t - a.t || 1), d = ((c.yaw - a.yaw + 540) % 360) - 180;
+    return a.yaw + d * u;
+  }
+  // Direction of travel (world units per ms) at the playback time, for the model.
+  function shipVel(s) {
+    const rt = rtNow(), a = shipSample(s, rt - 250), c = shipSample(s, rt);
+    return sub(c, a);
+  }
+  function basis() {
+    const c = S.cam, cp = Math.cos(c.pitch);
+    const f = [cp * Math.cos(c.yaw), cp * Math.sin(c.yaw), Math.sin(c.pitch)];
+    const r = [Math.sin(c.yaw), -Math.cos(c.yaw), 0];
+    const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+    return { f, r, u };
+  }
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const len = (a) => Math.hypot(a[0], a[1], a[2]);
+  function lookAt(target) {
+    const d = sub(target, S.cam.p), h = Math.hypot(d[0], d[1]);
+    S.cam.yaw = Math.atan2(d[1], d[0]); S.cam.pitch = Math.atan2(d[2], h);
+  }
+  function fit() {
+    const pts = S.ships.map((s) => W3(s.x, s.y, s.z));
+    const T = S.terrain;
+    let c, r;
+    if (T) {
+      c = [T.x0 + T.dx * (T.nx - 1) / 2, -(T.y0 + T.dy * (T.ny - 1) / 2), (T.lo + T.hi) / 2];
+      r = Math.max(T.dx * T.nx, T.dy * T.ny) * 0.42;
+      S.fitted = S.id;
+    } else if (pts.length) {
+      c = [0, 1, 2].map((i) => pts.reduce((a, p) => a + p[i], 0) / pts.length);
+      r = Math.max(20000, ...pts.map((p) => len(sub(p, c))));
+      S.fitted = S.id + ':ships';
+    } else return;
+    S.pivot = c; S.follow = null;
+    S.cam.p = [c[0] - r * 1.3, c[1] - r * 0.4, c[2] + r * 0.9];
+    lookAt(c);
+  }
+  function pivotPoint() { return S.follow ? shipPos(S.follow) : S.pivot; }
+  function select(s, focus) {
+    S.sel = s;
+    if (focus && s) {
+      const p = shipPos(s), d = len(sub(S.cam.p, p)), want = Math.min(d, 25000);
+      const b = basis();
+      S.cam.p = [p[0] - b.f[0] * want, p[1] - b.f[1] * want, p[2] - b.f[2] * want];
+    }
+    if (s) { S.follow = s; S.pivot = shipPos(s); }
+    renderShips(); renderSel();
+  }
+  // Swings the camera around the pivot and turns the view by the same angles,
+  // so whatever offset the view had from the pivot (RMB look) is kept.
+  function orbit(dyaw, dpitch) {
+    const pv = pivotPoint(); if (!pv) return look(dyaw, dpitch);
+    const d = sub(S.cam.p, pv), dist = len(d);
+    const el0 = Math.asin(Math.max(-1, Math.min(1, d[2] / dist)));
+    const el1 = Math.max(-1.5, Math.min(1.5, el0 + dpitch)), yaw = Math.atan2(d[1], d[0]) + dyaw;
+    S.cam.p = [pv[0] + dist * Math.cos(el1) * Math.cos(yaw), pv[1] + dist * Math.cos(el1) * Math.sin(yaw), pv[2] + dist * Math.sin(el1)];
+    look(dyaw, -(el1 - el0));
+  }
+  function look(dyaw, dpitch) { S.cam.yaw += dyaw; S.cam.pitch = Math.max(-1.55, Math.min(1.55, S.cam.pitch + dpitch)); }
+
+  const cv = $('cv');
+  cv.oncontextmenu = (e) => e.preventDefault();
+  cv.onpointerdown = (e) => { cv.focus(); S.drag = { b: e.button, x: e.clientX, y: e.clientY, moved: false }; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; };
+  cv.onpointermove = (e) => {
+    const d = S.drag; if (!d) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
+    d.x = e.clientX; d.y = e.clientY;
+    if (d.b === 2) look(-dx * 0.004, -dy * 0.004); else orbit(-dx * 0.006, dy * 0.006);
+  };
+  cv.onpointerup = (e) => {
+    const d = S.drag; S.drag = null; cv.style.cursor = 'grab';
+    if (!d || d.moved || d.b !== 0) return;
+    const rc = cv.getBoundingClientRect(), mx = e.clientX - rc.left, my = e.clientY - rc.top;
+    let best = null, bd = 18;
+    for (const s of S.ships) if (s._p) { const dd = Math.hypot(s._p[0] - mx, s._p[1] - my); if (dd < bd) { bd = dd; best = s; } }
+    if (best) select(best, false); else { S.sel = null; renderShips(); renderSel(); }
+  };
+  cv.onwheel = (e) => {
+    e.preventDefault();
+    const pv = pivotPoint(), b = basis(), k = Math.exp(e.deltaY * 0.0015);
+    if (pv) { const d = sub(S.cam.p, pv); S.cam.p = [pv[0] + d[0] * k, pv[1] + d[1] * k, pv[2] + d[2] * k]; }
+    else { const s = 5000 * (1 - k) * 10; S.cam.p = [S.cam.p[0] + b.f[0] * s, S.cam.p[1] + b.f[1] * s, S.cam.p[2] + b.f[2] * s]; }
+  };
+  const MOVE = { KeyW: 1, KeyS: 1, KeyA: 1, KeyD: 1, Space: 1, ShiftLeft: 1, ShiftRight: 1 };
+  window.addEventListener('keydown', (e) => {
+    if (document.activeElement === $('chatin') || document.activeElement === $('key')) return;
+    if (PLAYER && e.key === 'Escape') { window.parent.postMessage({ dnvClose: 1 }, '*'); return; }
+    if (e.key === 'Enter') { e.preventDefault(); $('chatin').focus(); return; }
+    if (e.code === 'KeyF') { fit(); return; }
+    if (MOVE[e.code]) { S.keys.add(e.code); e.preventDefault(); }
+  });
+  for (const [id, key] of [['det-t', 't'], ['det-o', 'o']]) {
+    const el = $(id), lab = $(id + 'v');
+    if (!el) continue; // player mode removed p-ctl, which holds the sliders
+    el.value = DETAIL[key]; lab.textContent = DETAIL[key] + 'x';
+    el.oninput = () => { lab.textContent = el.value + 'x'; };
+    el.onchange = () => {
+      DETAIL[key] = +el.value;
+      try { localStorage.setItem('viewerDetail', JSON.stringify(DETAIL)); } catch (e) {}
+      if (S.terrainRaw) S.terrain = buildTerrain(S.terrainRaw);
+    };
+  }
+  window.addEventListener('keyup', (e) => S.keys.delete(e.code));
+  window.addEventListener('blur', () => S.keys.clear());
+
+  // --- render -----------------------------------------------------------------
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    if (S.keys.size) {
+      const b = basis(), pv = pivotPoint();
+      const speed = Math.max(4000, (pv ? len(sub(S.cam.p, pv)) : 30000) * 0.9);
+      const fw = (S.keys.has('KeyW') ? 1 : 0) - (S.keys.has('KeyS') ? 1 : 0);
+      const rt = (S.keys.has('KeyD') ? 1 : 0) - (S.keys.has('KeyA') ? 1 : 0);
+      const up = (S.keys.has('Space') ? 1 : 0) - (S.keys.has('ShiftLeft') || S.keys.has('ShiftRight') ? 1 : 0);
+      const m = [0, 1, 2].map((i) => (b.f[i] * fw + b.r[i] * rt + (i === 2 ? up : 0)) * speed * dt);
+      S.cam.p = [S.cam.p[0] + m[0], S.cam.p[1] + m[1], S.cam.p[2] + m[2]];
+      // Flying detaches from a followed ship but keeps orbiting where it was.
+      if (S.follow) { S.pivot = shipPos(S.follow); S.follow = null; }
+    } else if (S.follow && !S.drag) {
+      // Ride along with the followed ship.
+      const p = shipPos(S.follow), pv = S.pivot || p, d = sub(p, pv);
+      S.cam.p = [S.cam.p[0] + d[0], S.cam.p[1] + d[1], S.cam.p[2] + d[2]]; S.pivot = p;
+    } else if (S.follow) S.pivot = shipPos(S.follow);
+    // Scheduled before drawing, so one bad frame cannot stop the loop.
+    requestAnimationFrame(frame);
+    draw();
+  }
+  // A ship's heading in the viewer's frame (radians about +z): the host's yaw
+  // (degrees, UE: about +Z from +X, and W3 flips y), or, from an older host
+  // that sends none, its direction of travel.
+  function shipAngle(s) {
+    const yw = shipYaw(s);
+    if (yw != null) return -yw * Math.PI / 180;
+    const v = shipVel(s);
+    return Math.hypot(v[0], v[1]) > 1 ? Math.atan2(v[1], v[0]) : null;
+  }
+
+  // Ship models: one lofted hull per class. The plan-view outline is read off
+  // the class icon (viewer_icons/*.png, 32 px, nose up) as [icon row,
+  // half-width px] from nose to tail, plus the Corvette's two forward prongs as
+  // [row, half-width, offset from the centreline]. The cross-section is a low
+  // diamond. Only the outline comes from data; the heights are a GUESS.
+  const HULLS = {
+    ArtilleryCruiser: [[3, 0.5], [8, 1], [9, 1.5], [13, 2], [20, 3], [21, 4], [24, 4], [25, 3.5], [26, 3], [27, 2], [28, 1]],
+    Corvette: [[12, 4], [16, 7], [17, 9], [18, 8], [19, 7], [20, 6], [21, 4], [22, 3], [23, 1]],
+    Destroyer: [[2, 2], [3, 3], [6, 4], [10, 5], [13, 6], [17, 7], [21, 8], [22, 7], [23, 5], [24, 4], [25, 3], [26, 2], [28, 1]],
+    Dreadnought: [[5, 1], [6, 2], [7, 3], [8, 7], [10, 8], [13, 9], [16, 10], [19, 11], [21, 11], [22, 9], [23, 7], [24, 5], [25, 3], [26, 1]],
+    TacticalCruiser: [[6, 1], [7, 2], [8, 3], [10, 4], [11, 5], [13, 6], [14, 7], [16, 8], [17, 9], [19, 10], [21, 10], [22, 8.5], [23, 7], [24, 6]],
+  };
+  // Onslaught AI ships have no icons; these outlines are invented (GUESS).
+  // CommandShip: an extruded trefoil (operator: "an extruded nuclear symbol"),
+  // three 60 degree blades round an empty middle, built in shipMesh. AttackBoat: a dart.
+  HULLS.AttackBoat = [[2, 1], [6, 3], [12, 5], [18, 6], [24, 7], [28, 5], [30, 3]];
+  const PRONGS = { Corvette: [[8, 0.8, 4.5], [17, 1.5, 7]] };
+  // FighterSwarm: seven small fighters in an arrowhead, [row, centreline offset].
+  const FIGHTER = [[0, 0.4], [2, 1.6], [4, 2.4], [5, 1.2], [6, 0.6]];
+  const SWARM = [[2, 0], [9, 5], [9, -5], [16, 10], [16, -10], [17, 0], [23, 5]];
+  // GUESS: ship lengths in uu (no hull dimensions read). The on-screen floor
+  // in draw keeps every ship readable at map scale anyway.
+  // CommandShip: bigger than any player hull; AttackBoat: half a Corvette;
+  // FighterSwarm: the whole formation's span.
+  const SHIP_LEN = { CommandShip: 4500, AttackBoat: 750, FighterSwarm: 1200, Corvette: 1500, Destroyer: 2000, ArtilleryCruiser: 2300, TacticalCruiser: 2200, Dreadnought: 2800 };
+  function shipMesh(kind) {
+    const V = [], O = [0, 0, 0], white = [1, 1, 1];
+    // st: [row, half-width, centreline offset] per station, nose first.
+    const loft = (st) => {
+      const sec = st.map(([r, w, cy]) => {
+        const x = 16 - r, ht = Math.max(0.5, w * 0.45), hb = Math.max(0.3, w * 0.22);
+        return [[x, cy - w, 0], [x, cy, ht], [x, cy + w, 0], [x, cy, -hb]];
+      });
+      for (let s = 0; s + 1 < sec.length; s++) for (let e = 0; e < 4; e++) {
+        const a = sec[s][e], b = sec[s][(e + 1) % 4], c = sec[s + 1][(e + 1) % 4], d = sec[s + 1][e];
+        const cy = (sec[s][1][1] + sec[s + 1][1][1]) / 2;
+        pushQuad(V, O, a, b, c, d, [0, (a[1] + b[1] + c[1] + d[1]) / 4 - cy, (a[2] + b[2] + c[2] + d[2]) / 4], white);
+      }
+      const f = sec[0], l = sec[sec.length - 1];
+      pushQuad(V, O, f[0], f[1], f[2], f[3], [1, 0, 0], white);
+      pushQuad(V, O, l[0], l[1], l[2], l[3], [-1, 0, 0], white);
+    };
+    if (kind === 'CommandShip') {
+      const r0 = 3.5, r1 = 15, h = 2.5, P = (r, t, z) => [r * Math.cos(t), r * Math.sin(t), z];
+      for (let b = 0; b < 3; b++) {
+        const c = b * 2 * Math.PI / 3, S = 4, ts = [];
+        for (let i = 0; i <= S; i++) ts.push(c + (i / S - 0.5) * Math.PI / 3);
+        for (let i = 0; i < S; i++) {
+          const t0 = ts[i], t1 = ts[i + 1], m = (t0 + t1) / 2, out = [Math.cos(m), Math.sin(m), 0];
+          for (const z of [h, -h]) pushQuad(V, O, P(r0, t0, z), P(r1, t0, z), P(r1, t1, z), P(r0, t1, z), [0, 0, z], white);
+          pushQuad(V, O, P(r1, t0, h), P(r1, t1, h), P(r1, t1, -h), P(r1, t0, -h), out, white);
+          pushQuad(V, O, P(r0, t0, h), P(r0, t1, h), P(r0, t1, -h), P(r0, t0, -h), out.map((v) => -v), white);
+        }
+        for (const [t, sg] of [[ts[0], -1], [ts[S], 1]])
+          pushQuad(V, O, P(r0, t, h), P(r1, t, h), P(r1, t, -h), P(r0, t, -h), [-Math.sin(t) * sg, Math.cos(t) * sg, 0], white);
+      }
+      return Float32Array.from(V);
+    }
+    if (kind === 'FighterSwarm') {
+      for (const [dr, dc] of SWARM) loft(FIGHTER.map(([r, w]) => [r + dr, w, dc]));
+      return Float32Array.from(V);
+    }
+    loft((HULLS[kind] || HULLS.Destroyer).map(([r, w]) => [r, w, 0]));
+    for (const sg of [1, -1]) for (const p of [PRONGS[kind]]) if (p) loft(p.map(([r, w, c]) => [r, w, c * sg]));
+    return Float32Array.from(V);
+  }
+
+  // --- WebGL ------------------------------------------------------------------
+  // Depth is logarithmic (written per fragment), so a 300 km map and a ship
+  // 20 m from the camera share one depth buffer without z-fighting.
+  const NEAR = 20, FAR = 5e6, FC = 1 / Math.log2(FAR + 1);
+  const LIGHT = (() => { const l = [-0.45, 0.35, 0.82], m = Math.hypot(...l); return l.map((v) => v / m); })();
+  const BG = [7 / 255, 9 / 255, 13 / 255];
+  const gl = cv.getContext('webgl2', { antialias: true, alpha: false });
+  // A GPU reset (amdgpu reset 2026-10-19 19:35, a DreadGame page fault) loses
+  // every WebGL context; the view stayed blank. Reload rebuilds all GL state.
+  cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setTimeout(() => location.reload(), 1500); });
+  const ov = $('ov'), og = ov.getContext('2d');
+  function program(vs, fs) {
+    const p = gl.createProgram();
+    for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      gl.attachShader(p, s);
+    }
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {}, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+    return { p, u };
+  }
+  // Lit meshes: terrain, objects, water, ships.
+  const PM = gl && program(`#version 300 es
+    uniform mat4 uVP, uM; uniform vec3 uTint;
+    layout(location = 0) in vec3 aP; layout(location = 1) in vec3 aN; layout(location = 2) in vec3 aC;
+    out vec3 vC; out vec3 vN; out float vW;
+    void main() { gl_Position = uVP * (uM * vec4(aP, 1.0)); vN = mat3(uM) * aN; vC = aC * uTint; vW = gl_Position.w; }`, `#version 300 es
+    precision highp float;
+    uniform vec3 uL, uFogC; uniform float uAmb, uFog, uFC, uA, uWat;
+    in vec3 vC; in vec3 vN; in float vW; out vec4 o;
+    void main() {
+      float l = uAmb + (1.0 - uAmb) * max(dot(normalize(vN), uL), 0.0);
+      o = vec4(mix(vC * l, uFogC, (1.0 - exp(-max(vW, 0.0) * uFog)) * 0.7), uWat > 0.5 ? uA * min(length(vN), 1.0) : uA);
+      gl_FragDepth = log2(1.0 + max(vW, 0.0)) * uFC;
+    }`);
+  // Unlit points, lines and ribbons: projectiles, trails, beams, the fence.
+  const PF = gl && program(`#version 300 es
+    uniform mat4 uVP; uniform float uPS;
+    layout(location = 0) in vec3 aP; layout(location = 1) in vec4 aC; layout(location = 2) in float aS;
+    out vec4 vC; out float vW;
+    void main() { gl_Position = uVP * vec4(aP, 1.0); gl_PointSize = aS * uPS; vC = aC; vW = gl_Position.w; }`, `#version 300 es
+    precision highp float;
+    uniform float uFC, uRound;
+    in vec4 vC; in float vW; out vec4 o;
+    void main() {
+      if (uRound > 0.5 && length(gl_PointCoord - 0.5) > 0.5) discard;
+      o = vC;
+      gl_FragDepth = log2(1.0 + max(vW, 0.0)) * uFC;
+    }`);
+  // A VAO over one buffer: lit = x y z nx ny nz r g b, flat = x y z r g b a size.
+  function vao(data, lit, usage) {
+    const v = gl.createVertexArray(), b = gl.createBuffer();
+    gl.bindVertexArray(v); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, data, usage || gl.STATIC_DRAW);
+    const F = 4, attrs = lit ? [[0, 3, 0], [1, 3, 3], [2, 3, 6]] : [[0, 3, 0], [1, 4, 3], [2, 1, 7]], stride = (lit ? 9 : 8) * F;
+    for (const [loc, n, off] of attrs) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off * F); }
+    gl.bindVertexArray(null);
+    return { v, b, n: data.length / (lit ? 9 : 8) };
+  }
+  const SHIP_VAO = {};
+  const shipVao = (kind) => SHIP_VAO[kind] || (SHIP_VAO[kind] = vao(shipMesh(kind), true));
+  let terrGpu = null;
+  function uploadTerrain(T) {
+    if (terrGpu) for (const k of ['mesh', 'water', 'lines']) { gl.deleteBuffer(terrGpu[k].b); gl.deleteVertexArray(terrGpu[k].v); }
+    terrGpu = T.gpu = { mesh: vao(T.mesh, true), water: vao(T.water, true), lines: vao(T.lines, false) };
+  }
+  const dyn = gl && vao(new Float32Array(8), false, gl.STREAM_DRAW);
+  let dynBuf = new Float32Array(8 * 4096);
+  const I4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  function mul4(A, B) {
+    const R = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += A[k * 4 + i] * B[j * 4 + k];
+      R[j * 4 + i] = s;
+    }
+    return R;
+  }
+  const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const TEAM_RGB = Object.fromEntries(Object.entries(TEAM).map(([k, v]) => [k, hexRgb(v)]));
+  const C_PROJ = [1, 0.85, 0.25, 1], C_TRAIL = [0.83, 0.85, 0.88], C_BEAM = [1, 0.18, 0.15];
+
+  // PS2 Models (Controls): the client's hull meshes (scripts/gen-admin-art.py
+  // --models, /admin/art) instead of the lofted outlines, team-coloured
+  // through each material's colour mask. Hulls without a mesh (Onslaught AI)
+  // keep the outline. glTF axes: +x nose, +y up, z across (vertex plot of
+  // VH_AssaultH/VH_DreadH: engines at -x).
+  const PS2 = { on: localStorage.getItem('dnPs2') === '1', art: null, models: {}, texs: {} };
+  const ps2Btn = $('ps2');
+  ps2Btn.classList.toggle('on', PS2.on);
+  ps2Btn.onclick = () => { PS2.on = !PS2.on; localStorage.setItem('dnPs2', PS2.on ? '1' : '0'); ps2Btn.classList.toggle('on', PS2.on); };
+  const ps2Key = (s) => { const m = /VH_(Assault|Dread|Scout|Sniper|Support)(H|M|L)/.exec(s.class || ''); return m ? m[1] + m[2] : ''; };
+  function ps2Tex(url) {
+    if (!url) return null;
+    if (url in PS2.texs) return PS2.texs[url];
+    PS2.texs[url] = null;
+    const im = new Image();
+    im.onload = () => {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      PS2.texs[url] = t;
+    };
+    im.src = url;
+    return null;
+  }
+  // A ship model: { len, prims: [{ v: vao, n, mat }] }, null while loading or missing.
+  function ps2Model(key) {
+    if (!PS2.on || !key) return null;
+    if (key in PS2.models) return PS2.models[key];
+    PS2.models[key] = null;
+    (async () => {
+      if (!PS2.art) PS2.art = fetch('/admin/art/art.json').then((r) => r.json());
+      const m = (((await PS2.art).models || {}).base || {})[key];
+      if (!m) return;
+      const buf = await (await fetch('/admin/art/' + m.glb)).arrayBuffer(), dv = new DataView(buf);
+      const jl = dv.getUint32(12, true), J = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, jl))), bin = 20 + jl + 8;
+      const acc = (i) => {
+        const a = J.accessors[i], bv = J.bufferViews[a.bufferView], n = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[a.type];
+        const C = { 5126: Float32Array, 5125: Uint32Array, 5123: Uint16Array, 5121: Uint8Array }[a.componentType], sz = C.BYTES_PER_ELEMENT;
+        const st = (bv.byteStride || n * sz) / sz, off = bin + (bv.byteOffset || 0) + (a.byteOffset || 0);
+        const raw = new C(buf.slice(off, off + ((a.count - 1) * st + n) * sz)), out = new C(a.count * n);
+        for (let k = 0; k < a.count; k++) for (let c = 0; c < n; c++) out[k * n + c] = raw[k * st + c];
+        return out;
+      };
+      const prims = [];
+      let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (const mesh of J.meshes) for (const p of mesh.primitives) {
+        const P = acc(p.attributes.POSITION), N = p.attributes.NORMAL != null ? acc(p.attributes.NORMAL) : null, U = p.attributes.TEXCOORD_0 != null ? acc(p.attributes.TEXCOORD_0) : null;
+        const cnt = P.length / 3, V = new Float32Array(cnt * 8);
+        for (let k = 0; k < cnt; k++) {
+          // glTF (x, y, z) -> viewer (x, -z, y): nose +x, up +z.
+          const x = P[k * 3], y = -P[k * 3 + 2], z = P[k * 3 + 1];
+          V.set([x, y, z, N ? N[k * 3] : 0, N ? -N[k * 3 + 2] : 0, N ? N[k * 3 + 1] : 1, U ? U[k * 2] : 0, U ? U[k * 2 + 1] : 0], k * 8);
+          lo = [Math.min(lo[0], x), Math.min(lo[1], y), Math.min(lo[2], z)]; hi = [Math.max(hi[0], x), Math.max(hi[1], y), Math.max(hi[2], z)];
+        }
+        prims.push({ V, I: p.indices != null ? acc(p.indices) : null, mat: m.mats[p.material] || {} });
+      }
+      const c = [0, 1, 2].map((i) => (lo[i] + hi[i]) / 2);
+      PS2.models[key] = { len: hi[0] - lo[0] || 1, prims: prims.map(({ V, I, mat }) => {
+        for (let k = 0; k < V.length; k += 8) { V[k] -= c[0]; V[k + 1] -= c[1]; V[k + 2] -= c[2]; }
+        const v = gl.createVertexArray(), b = gl.createBuffer();
+        gl.bindVertexArray(v); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, V, gl.STATIC_DRAW);
+        for (const [loc, n, off] of [[0, 3, 0], [1, 3, 3], [2, 2, 6]]) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, 32, off * 4); }
+        let it = 0;
+        if (I) { const e = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, e); const I32 = I instanceof Uint8Array ? new Uint16Array(I) : I; gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I32, gl.STATIC_DRAW); it = I32 instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT; }
+        gl.bindVertexArray(null);
+        return { v, n: I ? I.length : V.length / 8, it, d: mat.d ? '/admin/art/' + mat.d : '', mc: mat.mc ? '/admin/art/' + mat.mc : '' };
+      }) };
+    })().catch(() => {});
+    return null;
+  }
+  // GUESS: team colour as the ship's custom colours, a grey-tinted team colour as its base.
+  const PT = gl && program(`#version 300 es
+    uniform mat4 uVP, uM;
+    layout(location = 0) in vec3 aP; layout(location = 1) in vec3 aN; layout(location = 2) in vec2 aU;
+    out vec3 vN; out vec2 vU; out float vW;
+    void main() { gl_Position = uVP * (uM * vec4(aP, 1.0)); vN = mat3(uM) * aN; vU = aU; vW = gl_Position.w; }`, `#version 300 es
+    precision highp float;
+    uniform sampler2D uD, uMc; uniform float uHasD, uHasMc, uFog, uFC; uniform vec3 uTint, uL, uFogC;
+    in vec3 vN; in vec2 vU; in float vW; out vec4 o;
+    void main() {
+      vec3 alb = uHasD > 0.5 ? texture(uD, vU).rgb : vec3(0.5);
+      vec3 m = uHasMc > 0.5 ? texture(uMc, vU).rgb : vec3(0.0);
+      float k = clamp(m.r + m.g + m.b, 0.0, 1.0);
+      vec3 tint = mix(mix(vec3(0.62), uTint, 0.4), uTint, k);
+      float l = 0.45 + 0.55 * max(dot(normalize(vN), uL), 0.0);
+      o = vec4(mix(alb * tint * 2.0 * l, uFogC, (1.0 - exp(-max(vW, 0.0) * uFog)) * 0.7), 1.0);
+      gl_FragDepth = log2(1.0 + max(vW, 0.0)) * uFC;
+    }`);
+  function ps2Draw(list, VP, fog) {
+    if (!list.length) return;
+    gl.useProgram(PT.p);
+    gl.uniformMatrix4fv(PT.u.uVP, false, VP); gl.uniform3fv(PT.u.uL, LIGHT); gl.uniform3fv(PT.u.uFogC, BG);
+    gl.uniform1f(PT.u.uFog, fog); gl.uniform1f(PT.u.uFC, FC); gl.uniform1i(PT.u.uD, 0); gl.uniform1i(PT.u.uMc, 1);
+    for (const { M, tint, model } of list) {
+      gl.uniformMatrix4fv(PT.u.uM, false, M); gl.uniform3fv(PT.u.uTint, tint);
+      for (const p of model.prims) {
+        const d = ps2Tex(p.d), mc = ps2Tex(p.mc);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, d); gl.uniform1f(PT.u.uHasD, d ? 1 : 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, mc); gl.uniform1f(PT.u.uHasMc, mc ? 1 : 0);
+        gl.bindVertexArray(p.v);
+        if (p.it) gl.drawElements(gl.TRIANGLES, p.n, p.it, 0); else gl.drawArrays(gl.TRIANGLES, 0, p.n);
+      }
+    }
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  function draw() {
+    RT = playT();
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+    const PW = Math.round(W * dpr), PH = Math.round(H * dpr);
+    if (cv.width !== PW || cv.height !== PH) { cv.width = ov.width = PW; cv.height = ov.height = PH; }
+    og.setTransform(dpr, 0, 0, dpr, 0, 0); og.clearRect(0, 0, W, H);
+    if (!gl) { og.fillStyle = '#ff8a8a'; og.font = '14px system-ui'; og.fillText('This browser has no WebGL2', 16, 26); return; }
+    const b = basis(), F = H / (2 * Math.tan(0.6)), cam = S.cam.p;
+    const T = S.terrain, o = T ? T.o : [0, 0, 0];
+    if (T && (!T.gpu || T.gpu !== terrGpu)) uploadTerrain(T);
+    // View-projection, relative to o: view rows r, u, -f, then a perspective
+    // with the same vertical field as proj() below, so picking agrees.
+    const c = sub(cam, o), tf = Math.tan(0.6), asp = W / H || 1;
+    const VIEW = [b.r[0], b.u[0], -b.f[0], 0, b.r[1], b.u[1], -b.f[1], 0, b.r[2], b.u[2], -b.f[2], 0, -dot(b.r, c), -dot(b.u, c), dot(b.f, c), 1];
+    const PROJ = [1 / (asp * tf), 0, 0, 0, 0, 1 / tf, 0, 0, 0, 0, -(FAR + NEAR) / (FAR - NEAR), -1, 0, 0, -2 * FAR * NEAR / (FAR - NEAR), 0];
+    const VP = mul4(PROJ, VIEW);
+    const proj = (p) => {
+      const d = sub(p, cam), z = dot(d, b.f);
+      if (z < NEAR) return null;
+      return [W / 2 + F * dot(d, b.r) / z, H / 2 - F * dot(d, b.u) / z, z];
+    };
+    gl.viewport(0, 0, PW, PH);
+    gl.clearColor(BG[0], BG[1], BG[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+    // --- lit pass: terrain + objects, then ships.
+    gl.useProgram(PM.p);
+    gl.uniformMatrix4fv(PM.u.uVP, false, VP); gl.uniformMatrix4fv(PM.u.uM, false, I4);
+    gl.uniform3f(PM.u.uTint, 1, 1, 1); gl.uniform3fv(PM.u.uL, LIGHT); gl.uniform3fv(PM.u.uFogC, BG);
+    gl.uniform1f(PM.u.uFog, T ? 0.35 / Math.max(T.nx * T.dx, T.ny * T.dy) : 0); gl.uniform1f(PM.u.uFC, FC);
+    gl.uniform1f(PM.u.uAmb, 0.38); gl.uniform1f(PM.u.uA, 1);
+    if (T && terrGpu.mesh.n) { gl.bindVertexArray(terrGpu.mesh.v); gl.drawArrays(gl.TRIANGLES, 0, terrGpu.mesh.n); }
+    gl.uniform1f(PM.u.uAmb, 0.6);
+    const drawn = [], ps2 = [];
+    for (const s of S.ships) {
+      const w = shipPos(s), p = proj(w);
+      s._p = null;
+      const ang = shipAngle(s);
+      if (ang != null) s._ang = ang;
+      const dist = p ? p[2] : len(sub(w, cam));
+      // GUESS: the on-screen floor (px of hull length) that keeps a ship
+      // readable when the whole map is in view.
+      // The floor scales with the class (sqrt of length), so a command ship
+      // still reads bigger and an attack boat smaller when zoomed out.
+      const L = SHIP_LEN[s.kind] || 2000;
+      const lenUU = Math.max(L, (s.player ? 34 : 24) * Math.sqrt(L / 2000) * dist / F), sc = lenUU / 32;
+      const a = s._ang || 0, ca = Math.cos(a) * sc, sa = Math.sin(a) * sc;
+      const model = ps2Model(ps2Key(s));
+      if (model) {
+        const k = lenUU / model.len, ck = Math.cos(a) * k, sk = Math.sin(a) * k;
+        ps2.push({ M: new Float32Array([ck, sk, 0, 0, -sk, ck, 0, 0, 0, 0, k, 0, w[0] - o[0], w[1] - o[1], w[2] - o[2], 1]), tint: TEAM_RGB[s.team] || TEAM_RGB[0], model });
+      } else {
+        gl.uniformMatrix4fv(PM.u.uM, false, new Float32Array([ca, sa, 0, 0, -sa, ca, 0, 0, 0, 0, sc, 0, w[0] - o[0], w[1] - o[1], w[2] - o[2], 1]));
+        gl.uniform3fv(PM.u.uTint, TEAM_RGB[s.team] || TEAM_RGB[0]);
+        const sv = shipVao(s.kind);
+        gl.bindVertexArray(sv.v); gl.drawArrays(gl.TRIANGLES, 0, sv.n);
+      }
+      if (p) drawn.push({ s, p, size: Math.max(14, Math.min(60, lenUU * F / p[2] * 0.8)) });
+    }
+    ps2Draw(ps2, VP, T ? 0.35 / Math.max(T.nx * T.dx, T.ny * T.dy) : 0);
+    // --- flat pass: fence lines, projectile points, missile trails.
+    gl.useProgram(PF.p);
+    gl.uniformMatrix4fv(PF.u.uVP, false, VP); gl.uniform1f(PF.u.uFC, FC); gl.uniform1f(PF.u.uPS, dpr);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.uniform1f(PF.u.uRound, 0);
+    if (T && terrGpu.lines.n) { gl.bindVertexArray(terrGpu.lines.v); gl.drawArrays(gl.LINES, 0, terrGpu.lines.n); }
+    const { pts, trails } = projAt(RT);
+    let n = 0;
+    const put = (x, y, z, col, a, size) => {
+      if ((n + 1) * 8 > dynBuf.length) { const nb = new Float32Array(dynBuf.length * 2); nb.set(dynBuf); dynBuf = nb; }
+      const k = n++ * 8;
+      dynBuf[k] = x - o[0]; dynBuf[k + 1] = y - o[1]; dynBuf[k + 2] = z - o[2];
+      dynBuf[k + 3] = col[0]; dynBuf[k + 4] = col[1]; dynBuf[k + 5] = col[2]; dynBuf[k + 6] = a; dynBuf[k + 7] = size;
+    };
+    // A ribbon a->b facing the camera, px wide on screen (and at least minUU
+    // in the world), its alpha running aA -> aB.
+    const ribbon = (A, B, col, aA, aB, px, minUU) => {
+      const d = sub(B, A), mid = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2], v = sub(mid, cam);
+      let sd = [d[1] * v[2] - d[2] * v[1], d[2] * v[0] - d[0] * v[2], d[0] * v[1] - d[1] * v[0]];
+      const m = Math.hypot(sd[0], sd[1], sd[2]);
+      if (!m) return;
+      const wA = Math.max(minUU, px * len(sub(A, cam)) / F) / 2 / m, wB = Math.max(minUU, px * len(sub(B, cam)) / F) / 2 / m;
+      const q = (P, w, sg) => [P[0] + sd[0] * w * sg, P[1] + sd[1] * w * sg, P[2] + sd[2] * w * sg];
+      const a1 = q(A, wA, 1), a2 = q(A, wA, -1), b1 = q(B, wB, 1), b2 = q(B, wB, -1);
+      for (const [P, al] of [[a1, aA], [a2, aA], [b1, aB], [a2, aA], [b2, aB], [b1, aB]]) put(P[0], P[1], P[2], col, al, 1);
+    };
+    for (const tr of trails) for (let i = 0; i + 1 < tr.length; i++)
+      ribbon(tr[i], tr[i + 1], C_TRAIL, 0.75 * (1 - i / (tr.length - 1)), 0.75 * (1 - (i + 1) / (tr.length - 1)), 2, 30);
+    // Beams: none yet -- the host does not send beam state until the beam
+    // probe's findings are wired (AYBeamWeapon is not a projectile actor).
+    for (const bm of S.b && S.b.beams || []) ribbon(W3(bm[0], bm[1], bm[2]), W3(bm[3], bm[4], bm[5]), C_BEAM, 0.95, 0.95, 3, 40);
+    const tris = n;
+    for (const q of pts) put(q[0], q[1], q[2], C_PROJ, 1, q[3] === 'm' ? 6 : 4);
+    if (n) {
+      gl.bindVertexArray(dyn.v); gl.bindBuffer(gl.ARRAY_BUFFER, dyn.b);
+      gl.bufferData(gl.ARRAY_BUFFER, dynBuf.subarray(0, n * 8), gl.STREAM_DRAW);
+      if (tris) { gl.depthMask(false); gl.drawArrays(gl.TRIANGLES, 0, tris); gl.depthMask(true); }
+      if (n > tris) { gl.uniform1f(PF.u.uRound, 1); gl.drawArrays(gl.POINTS, tris, n - tris); }
+    }
+    // --- water last: translucent over whatever is under it, no depth write.
+    if (T && terrGpu.water.n) {
+      gl.useProgram(PM.p);
+      gl.uniformMatrix4fv(PM.u.uM, false, I4); gl.uniform3f(PM.u.uTint, 1, 1, 1);
+      gl.uniform1f(PM.u.uAmb, 0.7); gl.uniform1f(PM.u.uA, 0.82); gl.uniform1f(PM.u.uWat, 1);
+      gl.depthMask(false); gl.bindVertexArray(terrGpu.water.v); gl.drawArrays(gl.TRIANGLES, 0, terrGpu.water.n); gl.depthMask(true);
+      gl.uniform1f(PM.u.uWat, 0);
+    }
+    gl.bindVertexArray(null);
+    // --- overlay: pivot, selection, HP bars, names.
+    const pv = pivotPoint();
+    if (pv && !S.follow) { const p = proj(pv); if (p) { og.strokeStyle = 'rgba(240,180,60,.5)'; og.lineWidth = 1; og.beginPath(); og.arc(p[0], p[1], 3, 0, 7); og.stroke(); } }
+    drawn.sort((a, e) => e.p[2] - a.p[2]);
+    for (const { s, p, size } of drawn) {
+      if (S.sel === s) { og.strokeStyle = '#f0b43c'; og.lineWidth = 1.5; og.beginPath(); og.arc(p[0], p[1], size * 0.7, 0, 7); og.stroke(); }
+      if (s.hp >= 0) { og.fillStyle = 'rgba(0,0,0,.6)'; og.fillRect(p[0] - 12, p[1] + size / 2 + 2, 24, 3); og.fillStyle = s.hp > 50 ? '#47c07a' : s.hp > 20 ? '#e2a33b' : '#f06a6a'; og.fillRect(p[0] - 12, p[1] + size / 2 + 2, 24 * s.hp / 100, 3); }
+      if (s.player || S.sel === s) {
+        og.font = (s.player ? '600 12px ' : '11px ') + 'system-ui'; og.textAlign = 'center';
+        og.fillStyle = '#000'; og.fillText(s.name, p[0] + 1, p[1] - size / 2 - 4 + 1);
+        og.fillStyle = s.player ? '#fff' : '#c8d0da'; og.fillText(s.name, p[0], p[1] - size / 2 - 4); og.textAlign = 'left';
+      }
+      s._p = [p[0], p[1]];
+    }
+    if (S.id && !S.ships.length) { og.fillStyle = '#5b6573'; og.font = '14px system-ui'; og.fillText('Waiting for ships', 16, 26); }
+  }
+  pollLoop();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

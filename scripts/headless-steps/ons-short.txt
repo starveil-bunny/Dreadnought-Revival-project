@@ -1,0 +1,46 @@
+# Onslaught, no NPCs: spawn, fly out, idle ~5 min for a companion. Run:
+#   dn headless LABEL --fresh --no-npcs --pin onslaught:Skybridge --companion scripts/headless-steps/ons-hunters.sh --steps scripts/headless-steps/ons-short.txt
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 380 605     # Agosta (first card)
+sleep 3
+key space         # READY  (no wait-log InProgress: the battle world logs it
+sleep 3           # on join, before the ship picker even shows)
+shot ready
+wait-log Starting game music   # ~60 s orbit intro, then control
+sleep 5
+shot spawned
+hold w 25         # out of the spawn dock toward the lanes, then idle for the boss
+sleep 15
+shot t01
+sleep 15
+shot t02
+sleep 15
+shot t03
+sleep 15
+shot t04
+sleep 15
+shot t05
+sleep 15
+shot t06
+sleep 15
+shot t07
+sleep 15
+shot t08
+sleep 15
+shot t09
+sleep 15
+shot t10

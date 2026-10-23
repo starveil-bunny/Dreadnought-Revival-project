@@ -1,0 +1,38 @@
+# Bot names in the stock client: spawn-fight flow, then the in-match scoreboard
+# (Tab held via down/up) twice. Run with spawn-fight.sh SPAWN_CMD=/boss.
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+click 380 605     # Agosta (first card)
+sleep 3
+key space         # READY  (no wait-log InProgress: the battle world logs it
+sleep 3           # on join, before the ship picker even shows)
+shot ready
+wait-log Starting game music   # ~60 s orbit intro, then control
+sleep 5
+shot spawned
+hold w 10
+sleep 30
+down Tab          # first Tab press after flying is not registered (botname1-3): warm-up
+sleep 2
+shot scoreboard
+up Tab
+sleep 40
+down Tab
+sleep 2
+shot scoreboard2
+up Tab
+sleep 5
+shot final-view
