@@ -1,9 +1,9 @@
 # fork
 
 upstream: darkace1998/Dreadnought-Revival-project
-server hostnames/IPs in this tree are placeholders (your-server.example.org, 203.0.113.x). set your own:
-- `gateway/main.go` cuteFrontHost
-- `dn-launcher/servers_windows.go` bunnyServerAddress
+hostnames/IPs in this tree are placeholders (your-server.example.org, 203.0.113.x).
+server: `gateway/main.go` cuteFrontHost = your public host
+launcher: no default server. first start: setup > add server (address) > trust cert > sign in / register
 
 ## install (windows)
 
@@ -11,8 +11,8 @@ server hostnames/IPs in this tree are placeholders (your-server.example.org, 203
 
 - game folder: steam default, else browse. Next disabled until the folder has DreadGame
 - `DreadnoughtLauncher.exe` -> `DreadnoughtLauncher.exe.old` (first run only)
-- writes `DreadnoughtLauncher.exe` (dn-launcher), `ca.crt`, `dn-launcher.json` if bundled, `dn-uninstall.exe`
-- CA -> CurrentUser\Root (certutil -user). no admin. windows confirm prompt.
+- writes `DreadnoughtLauncher.exe` (dn-launcher), `dn-uninstall.exe`, + `ca.crt` / `dn-launcher.json` if bundled
+- bundled CA -> CurrentUser\Root (certutil -user). no admin. windows confirm prompt.
 - steam verify restores the stock launcher. rerun.
 - uninstall: `dn-uninstall.exe` or Apps. restores the .old. CA stays: certmgr.msc
 
@@ -21,8 +21,8 @@ linux: `dn-launcher/linux/dn-launcher-linux.sh`
 ## build installer
 
 ```
-scripts/gen-certs.sh                       # certs/ca.crt, once
-SERVER=host [WEB_PORT=8443] [CONFIG=dn-launcher.json] scripts/build-installer.sh
+scripts/build-installer.sh                 # blank
+SERVER=host [WEB_PORT=8443] CA=certs/ca.crt [CONFIG=dn-launcher.json] scripts/build-installer.sh
 -> run/dn-install.exe
 ```
 

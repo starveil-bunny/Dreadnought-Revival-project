@@ -26,9 +26,6 @@ type launcherSettings struct {
 	// VerboseLog raises the client log to Verbose (see startGame), for bug
 	// reports. Much larger log files.
 	VerboseLog bool `json:"verbose_log"`
-	// ViewerOff hides the battle view (the server's map of your battle, with
-	// match chat). On by default; the server must also offer it.
-	ViewerOff bool `json:"viewer_off,omitempty"`
 	// LogoFx is the wordmark's border at start ("" off, rgb, aurora, trans,
 	// bi, lesbian, custom; clicking the logo cycles them for the session) and
 	// LogoCustom the custom gradient's colours, "#rrggbb,#rrggbb[,...]".

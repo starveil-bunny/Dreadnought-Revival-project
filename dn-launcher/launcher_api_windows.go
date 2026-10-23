@@ -49,7 +49,7 @@ func (a *launcherAPI) Init() map[string]any {
 	}
 	settings := loadSettings()
 	out := map[string]any{"signedIn": a.token != "", "username": a.username, "server": server,
-		"game": gameInfo(a.exeDir, a.cfg), "logWindow": settings.LogWindow, "verboseLog": settings.VerboseLog, "battleViewer": !settings.ViewerOff,
+		"game": gameInfo(a.exeDir, a.cfg), "logWindow": settings.LogWindow, "verboseLog": settings.VerboseLog,
 		"logoFx": settings.LogoFx, "logoCustom": settings.LogoCustom,
 		"servers": a.serverInfo(), "setupDone": settings.SetupDone,
 		"skin": skinName(settings), "skins": skins}
@@ -115,8 +115,6 @@ func (a *launcherAPI) SetOption(name string, on bool) bool {
 		settings.LogWindow = on
 	case "verboseLog":
 		settings.VerboseLog = on
-	case "battleViewer":
-		settings.ViewerOff = !on
 	default:
 		return false
 	}

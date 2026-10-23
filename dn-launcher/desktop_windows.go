@@ -306,7 +306,7 @@ const desktopPageHTML = `<!doctype html>
           <div class="row2"><input id="srv-name" maxlength="40" placeholder="My friend's server">
             <button class="srv" style="flex:none" onclick="addServer()">Add</button></div>
         </details>
-        <p class="hint">Hosting your own? Pick <b>This PC</b> if the server runs on this computer, or add its address.
+        <p class="hint">Hosting your own? Add <b>localhost</b> if the server runs on this computer, or add its address.
           <button class="link" onclick="dnOpenHostGuide()">How to host a server</button></p>
         <div class="msg" id="srvmsg"></div>
         <button class="go" id="srv-next" onclick="serverNext()">Next</button>
@@ -523,7 +523,7 @@ const desktopPageHTML = `<!doctype html>
       const b = document.createElement('button');
       b.className = 'srv' + (s.selected ? ' sel' : '');
       const n = document.createElement('b'); n.textContent = s.name;
-      const a = document.createElement('small'); a.textContent = s.address || 'not set';
+      const a = document.createElement('small'); a.textContent = s.address === s.name ? '' : (s.address || 'not set');
       b.append(n, a);
       if (s.kind === 'custom') {
         const x = document.createElement('span'); x.className = 'x'; x.textContent = '\u2715'; x.title = 'Remove';
@@ -597,7 +597,10 @@ const desktopPageHTML = `<!doctype html>
     if (r.ok) { showGame(r.game); say('playmsg', ''); say(msg, 'Saved.', 'good'); }
     else if (r.error) say(msg, r.error, 'bad');
   }
-  function afterCert() { if (state.signedIn) home(state.username); else show('signin'); }
+  function afterCert() {
+    if (state.servers && state.servers.unset) { changeServer(); $('srv-add').open = true; return; }
+    if (state.signedIn) home(state.username); else show('signin');
+  }
   function setupFinished() {
     if (wiz !== 'setup') return;
     wiz = null;

@@ -18,7 +18,12 @@ BrandingText " "
 !define MUI_UNICON "icon.ico"
 !define MUI_ABORTWARNING
 
-!define MUI_WELCOMEPAGE_TEXT "Replaces the Dreadnought launcher with the Revival launcher and installs the server certificate.$\r$\n$\r$\nThe original launcher is kept as DreadnoughtLauncher.exe.old.$\r$\n$\r$\nClose Steam's Dreadnought before continuing."
+!if /FileExists "payload\ca.crt"
+  !define WHAT "Replaces the Dreadnought launcher with the Revival launcher and installs the server certificate."
+!else
+  !define WHAT "Replaces the Dreadnought launcher with the Revival launcher."
+!endif
+!define MUI_WELCOMEPAGE_TEXT "${WHAT}$\r$\n$\r$\nThe original launcher is kept as DreadnoughtLauncher.exe.old.$\r$\n$\r$\nClose Steam's Dreadnought before continuing."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Dreadnought game folder (contains DreadnoughtLauncher.exe and DreadGame)."
 !insertmacro MUI_PAGE_DIRECTORY

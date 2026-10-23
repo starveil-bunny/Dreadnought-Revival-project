@@ -42,25 +42,20 @@ func TestParseServerAddress(t *testing.T) {
 	}
 }
 
-// The picker always offers Default, This PC and the Cute Bunny preset; added
-// servers follow, and a launcher whose default already IS this PC (or the
-// bunny server) does not list it twice.
+// The picker always offers Default and This PC; added servers follow, and a
+// launcher whose default already IS this PC does not list it twice.
 func TestServerChoices(t *testing.T) {
 	defer func(c Config) { baseConfig = c }(baseConfig)
 	baseConfig = defaultConfig()
 	baseConfig.Server = "play.example.org"
 	s := launcherSettings{Servers: []savedServer{{Name: "Friend", Address: "friend.example"}, {Name: "dup", Address: thisPCAddress}}}
 	got := serverChoices(s)
-	if len(got) != 4 || got[0].id() != "" || got[1].Address != thisPCAddress || got[2].Address != bunnyServerAddress || got[3].Name != "Friend" {
+	if len(got) != 3 || got[0].id() != "" || got[1].Address != thisPCAddress || got[2].Name != "Friend" {
 		t.Fatalf("choices = %+v", got)
 	}
 	baseConfig.Server = thisPCAddress
-	if got := serverChoices(s); len(got) != 3 {
+	if got := serverChoices(s); len(got) != 2 || got[1].Name != "Friend" {
 		t.Fatalf("with a this-PC default, choices = %+v", got)
-	}
-	baseConfig.Server = bunnyServerAddress
-	if got := serverChoices(s); len(got) != 3 || got[2].Name != "Friend" {
-		t.Fatalf("with a bunny default, choices = %+v", got)
 	}
 	cfg := configFor(savedServer{Address: "friend.example", WebPort: "8443"})
 	if cfg.Server != "friend.example" || cfg.WebPort != "8443" || cfg.caFile == "" || cfg.FirmamentHost != "" {

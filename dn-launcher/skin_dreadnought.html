@@ -207,6 +207,15 @@
   </form>
 </div>
 
+<div class="ov" id="ov-server">
+  <form class="card" onsubmit="event.preventDefault(); addServer('sv-addr')">
+    <h2>Server</h2>
+    <input id="sv-addr" placeholder="Server IP/URL" spellcheck="false">
+    <button class="btn" type="submit">Connect</button>
+    <div class="err" id="sv-err"></div>
+  </form>
+</div>
+
 <div class="ov" id="ov-cert">
   <div class="card">
     <h2>Trust server certificate</h2>
@@ -247,7 +256,6 @@
   <div class="cap">Options</div>
   <label class="tog"><input type="checkbox" id="opt-logWindow" onchange="setOpt('logWindow', this)">Log window</label>
   <label class="tog"><input type="checkbox" id="opt-verboseLog" onchange="setOpt('verboseLog', this)">Detailed log</label>
-  <label class="tog"><input type="checkbox" id="opt-battleViewer" onchange="setOpt('battleViewer', this); state.battleViewer = this.checked; showViewBtn()">Battle view</label>
   <button class="lnk" onclick="openLogs()">Open logs</button>
   <div class="cap">Logo border</div>
   <select id="lgset" onchange="saveLogoFx()"><option value="">Outline</option><option value="rgb">RGB (gay)</option><option value="aurora">Aurora</option>
@@ -266,11 +274,12 @@
   const err = (id, t, good) => { $(id).textContent = t || ''; $(id).className = 'err' + (good ? ' good' : ''); };
   const say = (t, kind) => { $('msg').textContent = t || ''; $('msg').className = kind || ''; };
   function overlay(which) {
-    for (const o of ['signin', 'cert', 'game']) $('ov-' + o).classList.toggle('on', o === which);
+    for (const o of ['server', 'signin', 'cert', 'game']) $('ov-' + o).classList.toggle('on', o === which);
+    if (which === 'server') setTimeout(() => $('sv-addr').focus(), 50);
     if (which === 'signin') setTimeout(() => $(mode === 'register' ? 'username' : 'identifier').focus(), 50);
     updatePlay();
   }
-  const shown = () => ['signin', 'cert', 'game'].find(o => $('ov-' + o).classList.contains('on'));
+  const shown = () => ['server', 'signin', 'cert', 'game'].find(o => $('ov-' + o).classList.contains('on'));
   function drawer(on) { $('set').classList.toggle('on', on); }
   function updatePlay() { $('play').disabled = playing || !!shown() || !state.signedIn; }
 
@@ -312,6 +321,7 @@
 
   // ---- flow: certificate -> game -> sign-in -> home ----
   function next() {
+    if (state.servers && state.servers.unset) return overlay('server');
     if (state.cert && !state.certLater) return showCert();
     if (!(state.game && state.game.path)) return overlay('game');
     if (!state.signedIn) return overlay('signin');
@@ -391,13 +401,13 @@
   function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
   // ---- battle view ----
   // The server's map of your battle, from your side, with match chat
-  // (mmogbrain launcher_viewer.go). Offered when the server has it on and the
-  // Battle view option is on; the page runs in a frame and its requests go
-  // through dnViewerAPI (the frame cannot reach the server itself).
+  // (mmogbrain launcher_viewer.go). Offered when the server has it on; the
+  // page runs in a frame and its requests go through dnViewerAPI (the frame
+  // cannot reach the server itself).
   // A VIEW button on each live battle (above Server Status).
   let viewerOn = false, inBattle = false;
   function showViewBtn() {
-    const on = viewerOn && state.signedIn && state.battleViewer !== false;
+    const on = viewerOn && state.signedIn;
     for (const b of document.querySelectorAll('#battles .vbtn')) { b.hidden = !on; b.classList.toggle('live', inBattle); }
   }
   // The backdrop behind either page: a loading screen, by file name.
@@ -617,7 +627,7 @@
       const b = document.createElement('button');
       b.className = 'srv' + (s.selected ? ' sel' : '');
       const n = document.createElement('span'); n.textContent = s.name;
-      const a = document.createElement('small'); a.textContent = s.address || '';
+      const a = document.createElement('small'); a.textContent = s.address && s.address !== s.name ? s.address : '';
       b.append(n, a);
       if (s.kind === 'custom') {
         const x = document.createElement('span'); x.className = 'x'; x.textContent = '\u2715';
@@ -632,15 +642,16 @@
     }
     $('st-srv').textContent = $('si-srv').textContent = (info.current || 'Default').replace(/ server$/, '');
   }
-  function addServer() {
+  function addServer(input) {
     if (serverBusy) return;
     serverBusy = true;
-    err('srv-err', '…', true);
-    dnAddServer('', $('srv-addr').value);
+    err('srv-err', '…', true); err('sv-err', '…', true);
+    dnAddServer('', $(input || 'srv-addr').value);
   }
   function dnServerResult(r) {
     serverBusy = false;
-    if (!r.ok) return err('srv-err', r.error || 'Failed');
+    if (!r.ok) { err('sv-err', r.error || 'Failed'); return err('srv-err', r.error || 'Failed'); }
+    err('sv-err');
     const keep = { setupDone: state.setupDone };
     state = Object.assign(r, keep);
     $('srv-addr').value = '';
@@ -672,7 +683,6 @@
     showAccount();
     $('opt-logWindow').checked = !!state.logWindow;
     $('opt-verboseLog').checked = !!state.verboseLog;
-    $('opt-battleViewer').checked = state.battleViewer !== false;
     const cc = (state.logoCustom || '').split(',').filter(Boolean);
     LOGO_FX.custom = cc.length >= 2 ? cc : LOGO_FX.custom;
     LOGO_FX.custom.slice(0, 3).forEach((c, i) => $('lgc' + i).value = c);

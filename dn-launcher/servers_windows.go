@@ -101,8 +101,6 @@ func parseServerAddress(text string) (savedServer, error) {
 	return savedServer{Address: strings.ToLower(host), WebPort: port}, nil
 }
 
-const bunnyServerAddress = "your-server.example.org"
-
 // serverChoices is every entry the picker shows, default first.
 func serverChoices(settings launcherSettings) []savedServer {
 	def := baseConfig.Server
@@ -113,13 +111,8 @@ func serverChoices(settings launcherSettings) []savedServer {
 	if def != thisPCAddress && def != "localhost" {
 		out = append(out, savedServer{Name: "This PC", Address: thisPCAddress})
 	}
-	// The project's public server (Oracle relay, RESUME.md). Sign-ins are kept
-	// per server (account.go credentialServer), so switching needs no re-login.
-	if def != bunnyServerAddress {
-		out = append(out, savedServer{Name: "Cute Bunny", Address: bunnyServerAddress})
-	}
 	for _, s := range settings.Servers {
-		if s.Address != "" && s.id() != thisPCAddress && s.id() != bunnyServerAddress {
+		if s.Address != "" && s.id() != thisPCAddress {
 			out = append(out, s)
 		}
 	}
@@ -258,19 +251,31 @@ func (a *launcherAPI) serverInfo() map[string]any {
 	currentName := "Default server"
 	for _, s := range serverChoices(settings) {
 		kind, addr := "custom", s.id()
+		selected := s.key() == current
 		switch {
 		case s.Address == "":
+			if defaultUnset() {
+				continue // nothing built in: the player types a server instead
+			}
 			kind, addr = "default", def
 		case s.Address == thisPCAddress:
+			if !selected {
+				continue // listed once picked (typing localhost / 127.0.0.1)
+			}
 			kind = "local"
 		}
-		selected := s.key() == current
 		if selected {
 			currentName = s.Name
 		}
 		list = append(list, map[string]any{"id": s.id(), "name": s.Name, "address": addr, "kind": kind, "selected": selected})
 	}
-	return map[string]any{"list": list, "current": currentName}
+	return map[string]any{"list": list, "current": currentName, "unset": current == "" && defaultUnset()}
+}
+
+// defaultUnset: no server built in or in dn-launcher.json, only the old
+// built-in gateway address. The skins then ask for a server first.
+func defaultUnset() bool {
+	return baseConfig.Server == "" && baseConfig.GatewayIP == defaultConfig().GatewayIP
 }
 
 // UseServer switches to a listed server (id "" = the default).
