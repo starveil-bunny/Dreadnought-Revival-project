@@ -13,7 +13,7 @@ LD="-H windowsgui"
 [ -n "${WEB_PORT:-}" ] && LD+=" -X main.defaultWebPort=$WEB_PORT"
 [ -n "${CA:-}" ] && LD+=" -X main.defaultCA=$(base64 -w0 "$CA")" && cp "$CA" "$P/ca.crt"
 [ -n "${CONFIG:-}" ] && cp "$CONFIG" "$P/dn-launcher.json"
-(cd dn-launcher && GOOS=windows GOARCH=amd64 go build -ldflags "$LD" -o installer/payload/dn-launcher.exe .)
+(cd dn-launcher && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LD" -o installer/payload/dn-launcher.exe .)
 mkdir -p run
 cd dn-launcher/installer
 if command -v makensis >/dev/null; then
