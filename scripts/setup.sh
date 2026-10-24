@@ -112,6 +112,50 @@ else
   echo "[!] data/assets is missing -- item names and ids will not resolve." >&2
 fi
 
+# ------------------------------------------------------------------ admin art
+# The admin dashboard's and launcher's pictures, ship stats and texts are not
+# committed (client art); scripts/gen-admin-art.py extracts them from the game
+# install. Needs python3 + Pillow and the .NET SDK (tools/bpdump, which builds
+# against UAssetAPI cloned beside this repo). Point DN_PAKS
+# at DreadGame/DreadGame/Content/Paks if the game is not in the Steam default.
+PAKS="${DN_PAKS:-$HOME/.local/share/Steam/steamapps/common/Dreadnought/DreadGame/DreadGame/Content/Paks}"
+if [ -f "$PROJECT_DIR/data/admin-art/art.json" ]; then
+  echo "[OK] admin art present"
+elif [ -d "$PAKS" ] && command -v dotnet >/dev/null && python3 -c "import PIL" 2>/dev/null; then
+  echo "[*] extracting admin art from $PAKS (a few minutes)"
+  ART_TMP="$(mktemp -d)"
+  UASSET="$PROJECT_DIR/../UAssetAPI"   # tools/bpdump/bpdump.csproj references it there
+  [ -d "$UASSET" ] || { git clone -q https://github.com/atenfyr/UAssetAPI "$UASSET" &&
+                        git -C "$UASSET" checkout -q 33ef77e; }
+  if dotnet build -v q "$PROJECT_DIR/tools/bpdump/bpdump.csproj" >/dev/null &&
+     DN_PAKS="$PAKS" DN_ART_CONTENT="$ART_TMP/DreadGame/Content" \
+       python3 "$PROJECT_DIR/scripts/gen-admin-art.py" --extract >/dev/null; then
+    echo "[OK] admin art extracted"
+  else
+    echo "[!] admin art extraction failed -- the dashboard and launcher show no pictures" >&2
+  fi
+  rm -rf "$ART_TMP"
+else
+  echo "[!] no admin art: needs the game (DN_PAKS), dotnet and python3-pil; then re-run setup" >&2
+fi
+
+# --------------------------------------------------------------- market images
+# The store's ship and cosmetic pictures (data/market-images/) are client art
+# too, decoded from the paks. Needs python3 + Pillow.
+if ls "$PROJECT_DIR"/data/market-images/*.png >/dev/null 2>&1; then
+  echo "[OK] market images present"
+elif [ -d "$PAKS" ] && python3 -c "import PIL" 2>/dev/null; then
+  echo "[*] extracting market images from $PAKS"
+  if DN_PAKS="$PAKS" python3 "$PROJECT_DIR/scripts/gen-hero-market-data.py" >/dev/null &&
+     DN_PAKS="$PAKS" python3 "$PROJECT_DIR/scripts/gen-vanity-icons.py" >/dev/null; then
+    echo "[OK] market images extracted"
+  else
+    echo "[!] market image extraction failed -- store tiles show no pictures" >&2
+  fi
+else
+  echo "[!] no market images: needs the game (DN_PAKS) and python3-pil; then re-run setup" >&2
+fi
+
 echo
 echo "================================================"
 echo "  Setup complete"

@@ -31,9 +31,11 @@ game-tree is an already-extracted Content tree; when omitted the needed assets
 are extracted from the shipped paks with tools/pakx.py into a temp dir (the
 paks are the only copy on a player install).
 """
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,6 +94,7 @@ def main():
     if game is None:
         # pakx writes the mount-relative path, which starts at "DreadGame/".
         tmp = tempfile.mkdtemp(prefix="dn-pak-")
+        atexit.register(shutil.rmtree, tmp, True)
         # One pass: alternation of the object names we need. Per-icon calls
         # would rescan every pak (~60) once per asset.
         # Name plus its extension: the entry names are "UI_X.uasset", so a dot

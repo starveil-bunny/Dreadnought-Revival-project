@@ -79,5 +79,11 @@ tls-sha384-clients.json.tmp
 dn-launcher-friends.exe
 dn-launcher/linux/
 
-# scripts/gen-admin-art.py --models output (~100 MB of client meshes)
-data/admin-art/models/
+# scripts/gen-admin-art.py output (client art, extracted by scripts/setup.sh);
+# vendor/ is three.js, committed
+data/admin-art/*
+!data/admin-art/vendor/
+
+# scripts/gen-hero-market-data.py + gen-vanity-icons.py output (client art,
+# extracted by scripts/setup.sh)
+data/market-images/

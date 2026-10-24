@@ -1,20 +1,3 @@
-⠀⠀⣠⡶⢶⣦⠀⠀⠀⣠⡶⢶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⢰⡟⠀⠀⢹⣧⠀⣸⠏⠀⠀⢻⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⣿⠁⠀⠀⠀⢿⣴⡿⠀⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⣿⠀⠀⠀⠀⢸⣿⠇⠀⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⢿⡆⠀⠀⠀⠈⣿⠀⠀⠀⠀⣸⡇⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⠀⠀\
-⠀⢸⣷⠀⠀⠀⠀⠀⠀⠀⠀⢰⣟⠀⠀⠀⣀⣀⣀⣀⣀⣾⠋⠉⠹⣇⠀⠀⠀⠀\
-⠀⣰⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣧⣶⠞⠋⠉⠀⠈⠉⠃⠀⠀⢠⡟⠀⠀⠀⠀\
-⢠⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣦⡀⠀⠀\
-⣸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢘⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣄⠀\
-⢿⡇⠸⣿⠀⠀⠀⠀⠀⠀⣴⣆⠀⢸⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⡆\
-⠸⣧⡀⠀⠀⢀⣶⣶⡆⠀⠈⠁⣰⡟⠁⠀⠀⠀⠀⠀⠀⠀⢀⣀⠀⠀⠀⠀⣸⡇\
-⠀⠙⠻⣦⣄⣀⣀⣈⣁⣀⣤⠾⠋⠀⠀⠀⠀⠀⣀⣠⣴⡶⢿⡿⠿⠶⣶⠶⠟⠀\
-⠀⠀⢠⡟⠉⢙⣿⠛⠋⠉⠁⠀⠀⣀⣠⣴⠶⠟⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⠀⠘⢿⣤⣘⣿⡀⠀⠀⢀⣴⡿⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\
-⠀⠀⠀⠀⠈⠉⠙⠛⠻⠿⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-
-
 # Dreadnought Revival Project
 
 [![GitHub](https://img.shields.io/badge/GitHub-darkace1998/Dreadnought--Revival--project-blue?logo=github)](https://github.com/darkace1998/Dreadnought-Revival-project)
@@ -75,6 +58,7 @@ Two different things are called "gateway", which is worth knowing before reading
 ```bash
 sudo apt install golang openssl curl iproute2
 sudo apt install wine            # or wine-staging; only needed to host matches
+sudo apt install dotnet-sdk-10.0 python3-pil   # dashboard/launcher/market pictures, extracted from the game
 go version                       # needs 1.24+
 ```
 
@@ -95,7 +79,9 @@ bash scripts/setup.sh
 - generates a self-signed CA and server certificate into `certs/` if none exists;
 - builds all seven services into `run/`, plus `run/dn-launcher.exe` (cross-compiled for Windows);
 - writes `run/secrets.env` with a freshly generated `JWT_SECRET` and `ADMIN_KEY` (mode 600) if it does not exist;
-- verifies the extracted game data under `data/` is present.
+- verifies the extracted game data under `data/` is present;
+- extracts the dashboard and launcher pictures from the game install into `data/admin-art/` (set `DN_PAKS` to the game's `DreadGame/DreadGame/Content/Paks` if it is not in the Steam default).
+- extracts the market pictures (hero ships, cosmetics) into `data/market-images/` the same way.
 
 It never overwrites existing certificates or secrets.
 

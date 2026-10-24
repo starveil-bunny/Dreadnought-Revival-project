@@ -20,17 +20,46 @@ Writes data/assets/HeroMarketData.json and data/market-images/<icon>.png.
 Pure stdlib.
 
     python3 scripts/gen-hero-market-data.py [/path/to/DreadGame]
+
+With no argument and no ../DreadGame tree, the needed assets are extracted from
+the shipped paks ($DN_PAKS, else the Steam install) with tools/pakx.py into a
+temp dir; scripts/setup.sh runs it that way.
 """
 import json
 import os
+import re
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAME = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(REPO), "DreadGame")
-LOC = os.path.join(GAME, "Content", "Localization", "DreadGame")
 HEROES = os.path.join(REPO, "data", "loadouts", "HeroLoadouts_cooked.jsonl")
+PAKS = os.environ.get(
+    "DN_PAKS",
+    os.path.expanduser("~/.local/share/Steam/steamapps/common/Dreadnought/"
+                       "DreadGame/DreadGame/Content/Paks"))
+TMP = None
+if len(sys.argv) <= 1 and not os.path.isdir(GAME):
+    # Only what this script reads: the locres tables, the two captain
+    # templates and each hero's icon texture.
+    icons = set()
+    for line in open(HEROES):
+        ui = json.loads(line).get("m_itemUIData") or {}
+        icon = ui.get("m_highResIcon") or ui.get("m_icon")
+        if icon:
+            icons.add(os.path.basename(icon.split(".")[0]))
+    pattern = "|".join([r"Localization/DreadGame/[^/]+/DreadGame\.locres$",
+                        r"Captain_Template_(Male|Female)_01\.(uasset|uexp)$"]
+                       + [re.escape(n) + r"\.uasset$" for n in sorted(icons)])
+    TMP = tempfile.mkdtemp(prefix="dn-pak-")
+    subprocess.run([sys.executable, os.path.join(REPO, "tools", "pakx.py"), PAKS, pattern, TMP],
+                   check=True, stdout=subprocess.DEVNULL)
+    GAME = os.path.join(TMP, "DreadGame")
+LOC = os.path.join(GAME, "Content", "Localization", "DreadGame")
 OUT_JSON = os.path.join(REPO, "data", "assets", "HeroMarketData.json")
 OUT_IMG = os.path.join(REPO, "data", "market-images")
 VANITY = os.path.join(REPO, "data", "vanity", "VanityItems_cooked.jsonl")
@@ -254,4 +283,8 @@ def write_vanity(localized):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        if TMP:
+            shutil.rmtree(TMP, ignore_errors=True)

@@ -25,6 +25,8 @@ client's own files: data/admin-art/art.json plus PNGs under data/admin-art/.
   previews decal / shared pattern id -> previews/<id>.png, its own texture,
            where the market icon is only the slot's generic picture
   patterns hull pattern id -> hull line + colour-mask PNGs per material (models/)
+  maps     rotation map -> maps/<Map>[_Night].jpg (the loading screen, 640x360)
+  modes    rotation mode -> modes/<id>.png (the mode picker's icon)
   models   (--models) ship mesh glTF + diffuse/colour-mask textures under
            models/, per hull line's base mesh and per hero ship part (category
            20) and emblem (21, figureheads), exported by tools/meshx; models/ is not committed (~100 MB)
@@ -59,7 +61,8 @@ EXTRACT = (r"Generic/UI/(ships/Tiers|abilities|weapons|perks|Havoc)/|Generic/Abi
            r"Generic/Ships/.*/VH_[^/]*Pawn[^/]*_BP\.uasset$|SelectFleet/UI_SelectFleet_Icon|Generic/UI/tiers/|"
            r"ManufacturersScreen/UI_ManufacturersScreen_(Secondary)?[A-Za-z]+Logo|ShipIcons/UI_ShipClass_|"
            r"VanityItems/(_Shared/Decal/|Patterns/)|DevGroup/Meta/Factions/Texture/VAN_DCL_|"
-           r"DataTables/UI/DN_QuestMarker|Generic/UI/UI_HUD_ShortCommands_")
+           r"DataTables/UI/DN_QuestMarker|Generic/UI/UI_HUD_ShortCommands_|Generic/UI/LoadingScreens/DN_Loading_|"
+           r"SelectGameMode/UI_GameMode_Icon_|Generic/Ships/.*/VH_[^/]*_MC\.uasset$")
 MESHX = os.path.join(REPO, "tools", "meshx", "bin", "Debug", "net10.0", "meshx.dll")
 
 
@@ -562,6 +565,40 @@ def markers(loc):
     return out
 
 
+MAP_LOADING = {"Amirani": "Amirani", "Derelict": "Derelict", "Elysium": "Elysium", "Glacier": "Glacier",
+               "Gorge": "Gorge", "Highlands": "Highlands", "Skybridge": "Skybridge", "Space": "Space01",
+               "Space02": "Space02", "Thebe": "Thebe"}
+MODE_ICON = {"TDM": "TeamDeathMatch", "TurboTDM": "Turbo_TDM", "TE": "TeamElimination", "TER": "Conquest",
+             "Onslaught": "Onslaught", "BC": "ProvingGround", "PVE": "PVE", "Havoc": "Havoc",
+             "PodTDM": "SpecialEvent"}  # GUESS: PodTDM has no icon of its own
+
+
+def maps_modes():
+    """Rotation tab pictures (rotation_settings.go): loading screens and mode icons."""
+    from PIL import Image
+    n = 0
+    os.makedirs(os.path.join(OUT, "maps"), exist_ok=True)
+    os.makedirs(os.path.join(OUT, "modes"), exist_ok=True)
+    src = os.path.join(CONTENT, "Generic/UI/LoadingScreens/DN_Loading_")
+    for name, asset in MAP_LOADING.items():
+        for night in ("", "_Night"):
+            f = src + asset + night + ".uasset"
+            if night and asset == "Space02":
+                f = src + asset + "_night.uasset"  # the client's own spelling
+            if not os.path.exists(f):
+                continue
+            im = tex2png.decode(open(f, "rb").read()).convert("RGB").resize((640, 360), Image.LANCZOS)
+            im.save(os.path.join(OUT, "maps", name + night + ".jpg"), quality=85)
+            n += 1
+    src = os.path.join(CONTENT, "UserInterface/Textures/SelectGameMode/UI_GameMode_Icon_")
+    for mode, asset in MODE_ICON.items():
+        if os.path.exists(src + asset + ".uasset"):
+            tex2png.decode(open(src + asset + ".uasset", "rb").read()).convert("RGBA").save(
+                os.path.join(OUT, "modes", mode + ".png"))
+            n += 1
+    return n
+
+
 def main():
     if "--extract" in sys.argv:
         subprocess.run([sys.executable, os.path.join(REPO, "tools", "pakx.py"), PAKS, EXTRACT,
@@ -572,6 +609,7 @@ def main():
     if not loc:
         sys.exit(f"no English .locres under {CONTENT}; run with --extract")
     os.makedirs(OUT, exist_ok=True)
+    print(f"maps+modes {maps_modes()}")
     art = {"ships": ships()}
     print(f"ships {len(art['ships'])}")
     art["modules"] = modules(loc)
