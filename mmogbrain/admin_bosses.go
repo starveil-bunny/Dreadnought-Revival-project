@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,14 +59,18 @@ type bossDef struct {
 	Decal        int32      `json:"decal"`
 	Emblem       int32      `json:"emblem"`
 	Feats        []bossFeat `json:"feats"`
-	Parts        []int32    `json:"parts,omitempty"`    // hero ship parts Forecastle, Hull, Bridge, Stern; 0 = keep
+	Parts        []int32    `json:"parts,omitempty"`    // ship parts Forecastle, Hull, Bridge, Stern (any category-20 hull part); 0 = keep
 	Officers     []string   `json:"officers,omitempty"` // briefing feats (DN_Officers_OTS_DT rows), one per officer
+	AI           string     `json:"ai,omitempty"`       // bossCatalogAI.ID; "" = the base's own controller
 	Notes        string     `json:"notes,omitempty"`
 	// Marker: HUD marker over a boss. "" = HostileTarget (the old fixed
 	// marker), "None", "Spotted" (the pawn's replicated m_isSpotted, what a
 	// player's mark sets), or a DN_QuestMarker_DT row (EYUIQuestMarker name).
 	// Hunters carry none.
 	Marker string `json:"marker,omitempty"`
+	// Comet: this def is what /meteor spawns (at most one def has it; saving
+	// one clears the others). None = the stock Comet (Heavy Nuker).
+	Comet bool `json:"comet,omitempty"`
 }
 
 // bossMarkers: EYUIQuestMarker values by DN_QuestMarker_DT row name (enum
@@ -93,8 +98,8 @@ var efsCall = regexp.MustCompile(`EFS\((\w+)\)`)
 var perkTypePattern = regexp.MustCompile(`^PRK_(COM|ENG|NAV|WPN)_`)
 var bossOfficerPattern = regexp.MustCompile(`^[A-Z0-9]{2,30}$`)
 
-var heroPartName = regexp.MustCompile(`(?i)^V(?:AN|H)_H_(Assault|Dread|Scout|Sniper|Support)([HML])_`)
-var exportPrefix = regexp.MustCompile(`^VAN_(?:PN|PTN|DCL|H?EMB|H|FH)_(?:(?:Assault|Dread|Scout|Sniper|Support)[HML]_)?|_DA$`)
+var heroPartName = regexp.MustCompile(`(?i)^V(?:AN|H)_[HT]_(Assault|Dread|Scout|Sniper|Support)([HML])_`)
+var exportPrefix = regexp.MustCompile(`^VAN_(?:PN|PTN|DCL|H?EMB|H|T|FH)_(?:(?:Assault|Dread|Scout|Sniper|Support)[HML]_)?|_DA$`)
 var camelBreak = regexp.MustCompile(`([a-z])([A-Z0-9])`)
 
 // prettyExport: "VAN_PN_Red_Gold_DA" -> "Red Gold", "VAN_H_DreadH_Aegis_Bridge_DA" -> "Aegis Bridge".
@@ -111,7 +116,63 @@ var heroPartLine = map[string]string{"assault": "Assault", "dread": "Dreadnought
 
 var bossManufacturers = []string{"JupiterArms", "AkulaVektor", "Oberon"}
 
-const bossMaxModules = 8 // NpcAbilities rows hold 8 slots (npc_abilities.h)
+const bossMaxModules = 16 // the host's BOSS_MAX_ABIL; an AI's fire slots cap it lower (bossAISlots)
+
+// bossAISlots: fire slots (YNPCAIController::m_fireAbilities) per Havoc AI
+// controller, keyed by the class name between "Horde" and "_YAICtrl".
+// GUESS: the most common count the host logged for that controller; the
+// rest default to bossAIDefaultSlots. Modules past the count do not fire.
+var bossAISlots = map[string]int{
+	"DreadnoughtHeavy_Behavior_ArmoredNuker_Hard":  6,
+	"DreadnoughtMedium_Behavior_BunBunBoss_Hard":   5,
+	"DreadnoughtMedium_Behavior_ArmorBreaker_Hard": 9,
+	"ScoutMedium_Behavior_Fetch_Hard":              8,
+	"ScoutHeavy_Behavior_Ambusher_Hard":            11,
+	"ScoutLight_Behavior_Aggressive_Hard":          7,
+	"AssaultHeavy_Behavior_Goliath_Hard":           10,
+	"AssaultMedium_Behavior_WeaponBoost_Hard":      9,
+	"SniperHeavy_Behavior_FixedAssassin_Hard":      12,
+	"SniperLight_Behavior_Hunter_Hard":             6,
+	"SniperMedium_Behavior_Standard_Hard":          13,
+	"SupportHeavy_Behavior_Standard_Hard":          10,
+	"SupportLight_Behavior_Turret_Hard":            10,
+	"SupportMedium_Behavior_Turret_Easy":           10,
+}
+
+const bossAIDefaultSlots = 8
+
+var bossAIKeyPattern = regexp.MustCompile(`(?i)Horde([A-Za-z]+_behavior_[A-Za-z0-9]+_(?:Hard|Easy))_YAICtrl`)
+
+// bossAIKey: "/Game/.../VH_AiHordeScoutHeavy_Behavior_Ambusher_Hard_YAICtrl_BP.X_C" -> "ScoutHeavy_Behavior_Ambusher_Hard".
+func bossAIKey(path string) string {
+	if m := bossAIKeyPattern.FindStringSubmatch(path); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func bossAILabel(key string) string {
+	if strings.HasPrefix(key, "TitanCarrier") {
+		return "Superheavy Carrier"
+	}
+	f := strings.Split(key, "_")
+	if len(f) < 4 {
+		return key
+	}
+	return spaceCamel(f[0]) + " · " + spaceCamel(f[2]) + " (" + f[3] + ")"
+}
+
+func spaceCamel(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' && !(s[i-1] >= 'A' && s[i-1] <= 'Z') {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 const bossMaxFeats = 12
 
 var bossStore = struct {
@@ -256,8 +317,20 @@ func (d *bossDef) validate() error {
 	if d.Mult < 1 || d.Mult > 10 {
 		return fmt.Errorf("multiplier must be 1-10")
 	}
-	if len(d.Modules) > bossMaxModules {
-		return fmt.Errorf("at most %d modules", bossMaxModules)
+	slots := bossMaxModules
+	if ai, ok := bossAIFor(*d); ok {
+		slots = min(slots, ai.Slots)
+	} else if d.AI != "" {
+		return fmt.Errorf("unknown AI %q", d.AI)
+	}
+	if len(d.Modules) > slots {
+		// Only filled slots past the AI's count are an error; trailing blanks trim below.
+		for _, m := range d.Modules[slots:] {
+			if strings.TrimSpace(m) != "" {
+				return fmt.Errorf("at most %d modules for this AI", slots)
+			}
+		}
+		d.Modules = d.Modules[:slots]
 	}
 	// Positions are slots (the editor's columns), so empties inside stay; trailing ones go.
 	for i, m := range d.Modules {
@@ -359,6 +432,22 @@ type bossCatalogBase struct {
 	Weapons  []string `json:"weapons"`   // its primary/secondary weapon blueprints (WP_*_BP)
 	Hulls    []string `json:"hulls"`     // player hulls of that line and tier, for flavour
 	AIPawnT  bool     `json:"ai_pawn_t"` // a VH_<Cls><W>_AI_Pawn_T<n> exists for its tier
+	// Officers: the row's m_officer*Perk briefings as officer feat rows (the
+	// boss editor's officer key); Parts: its m_meshPart* items as
+	// [forecastle, hull, bridge, stern] ids, 0 = none. Both default the editor.
+	Officers []string `json:"officers"`
+	Parts    [4]int32 `json:"parts"`
+	AI       string   `json:"ai"` // its dataset controller (bossCatalogAI.ID)
+	perkIDs  []int32
+}
+
+// bossCatalogAI: a Havoc AI controller; Slots = its fire slots (bossAISlots).
+type bossCatalogAI struct {
+	ID    string   `json:"id"`
+	Label string   `json:"label"`
+	Path  string   `json:"path"`
+	Ships []string `json:"ships"`
+	Slots int      `json:"slots"`
 }
 
 type bossCatalog struct {
@@ -367,6 +456,7 @@ type bossCatalog struct {
 	Manufacturers []bossCatalogItem            `json:"manufacturers"`
 	HullLines     map[string]map[string]string `json:"hull_lines"` // class -> maker -> hull line
 	Bases         []bossCatalogBase            `json:"bases"`
+	AIs           []bossCatalogAI              `json:"ais"`
 	Modules       []bossCatalogItem            `json:"modules"`
 	Paints        []bossCatalogItem            `json:"paints"`
 	Patterns      []bossCatalogItem            `json:"patterns"`
@@ -505,6 +595,10 @@ func buildBossCatalog() bossCatalog {
 
 	// Havoc dataset rows: each base's stock modules.
 	rowModules, rowWeapons := map[string][]string{}, map[string][]string{}
+	rowPerks, rowParts := map[string][]int32{}, map[string][4]int32{}
+	rowAI, aiIndex := map[string]string{}, map[string]int{}
+	// "/Game/X/Y.Y_C" -> the register's id for /Game/X/Y.
+	regID := func(class string) int32 { return pathID[strings.SplitN(class, ".", 2)[0]] }
 	readJSONLines(filepath.Join(dir, "pve", "HVC_DeadHorde_EnemyShips_rows.jsonl"), func(line []byte) {
 		var doc struct {
 			Pawns []map[string]any `json:"m_PawnsData"`
@@ -527,8 +621,42 @@ func buildBossCatalog() bossCatalog {
 					wps = append(wps, path.Base(strings.SplitN(s, ".", 2)[0]))
 				}
 			}
+			var perks []int32
+			for _, k := range []string{"m_officerFirstPerk", "m_officerWeaponPerk", "m_officerNavigationPerk", "m_officerEngineerPerk"} {
+				if s, _ := p[k].(string); s != "" && s != "None" {
+					if v := regID(s); v != 0 {
+						perks = append(perks, v)
+					}
+				}
+			}
+			var parts [4]int32
+			for i, k := range []string{"m_meshPartForecastle", "m_meshPartHull", "m_meshPartBridge", "m_meshPartStern"} {
+				if s, _ := p[k].(string); s != "" && s != "None" {
+					parts[i] = regID(s)
+				}
+			}
+			if ctrl, _ := p["m_AIController"].(string); id != "" && ctrl != "" {
+				key := bossAIKey(ctrl)
+				if key == "" {
+					key = strings.TrimSuffix(path.Base(strings.SplitN(ctrl, ".", 2)[0]), "_YAICtrl_BP")
+				}
+				i, ok := aiIndex[key]
+				if !ok {
+					slots := bossAISlots[key]
+					if slots == 0 {
+						slots = bossAIDefaultSlots
+					}
+					i, aiIndex[key] = len(c.AIs), len(c.AIs)
+					c.AIs = append(c.AIs, bossCatalogAI{ID: key, Label: bossAILabel(key), Path: ctrl, Slots: slots})
+				}
+				if !slices.Contains(c.AIs[i].Ships, id) {
+					c.AIs[i].Ships = append(c.AIs[i].Ships, id)
+				}
+				rowAI[id] = key
+			}
 			if id != "" {
 				rowModules[id], rowWeapons[id] = mods, wps
+				rowPerks[id], rowParts[id] = perks, parts
 			}
 		}
 	})
@@ -546,7 +674,8 @@ func buildBossCatalog() bossCatalog {
 		if hull == "" {
 			continue // TitanCarrier: no class/size, no AI pawn outside Havoc
 		}
-		b := bossCatalogBase{ID: id, HullLine: hull, Tier: bossBaseTier(id), Modules: rowModules[id], Weapons: rowWeapons[id], Hulls: []string{}}
+		b := bossCatalogBase{ID: id, HullLine: hull, Tier: bossBaseTier(id), Modules: rowModules[id], Weapons: rowWeapons[id], Hulls: []string{},
+			Officers: []string{}, Parts: rowParts[id], AI: rowAI[id], perkIDs: rowPerks[id]}
 		if b.Weapons == nil {
 			b.Weapons = []string{}
 		}
@@ -625,7 +754,7 @@ func buildBossCatalog() bossCatalog {
 		}
 		switch (v.Sys.ID >> 24) & 0xff {
 		case 20:
-			// Hero ship parts: VAN_H_<Cls><W>_..._<Forecastle|Hull|Bridge|Quarterdeck|Stern>_..._DA
+			// Ship parts: VAN_H_ / VAN_T_<Cls><W>_..._<Forecastle|Hull|Bridge|Quarterdeck|Stern>_..._DA
 			// (figurehead variants are forecastles, VAN_FH_ ones are separate
 			// figurehead meshes the loadout parts do not name).
 			m := heroPartName.FindStringSubmatch(v.Export)
@@ -730,6 +859,27 @@ func buildBossCatalog() bossCatalog {
 		c.Officers = append(c.Officers, bossCatalogItem{ID: p.Sys.ID, Path: p.Feat, Name: name, Slot: slot, Note: p.Desc,
 			Effects: strings.TrimSpace(offFeats.Rows[p.Feat].Effects), Triggers: strings.TrimSpace(offFeats.Rows[p.Feat].Triggers)})
 	})
+	// Base defaults: briefings the officer list knows, parts the part list knows.
+	offByID, partOK := map[int32]string{}, map[int32]bool{}
+	for _, o := range c.Officers {
+		offByID[o.ID] = o.Path
+	}
+	for _, p := range c.Parts {
+		partOK[p.ID] = true
+	}
+	for i := range c.Bases {
+		b := &c.Bases[i]
+		for _, id := range b.perkIDs {
+			if f, ok := offByID[id]; ok {
+				b.Officers = append(b.Officers, f)
+			}
+		}
+		for j, id := range b.Parts {
+			if !partOK[id] {
+				b.Parts[j] = 0
+			}
+		}
+	}
 	c.SharedFeats = map[string]map[string]bossFeatRow{}
 	want := map[string]bool{}
 	for _, row := range offFeats.Rows {
@@ -829,6 +979,14 @@ func adminAPIBossPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev, had := bossStore.defs[from]
+	if d.Comet {
+		for k, o := range bossStore.defs {
+			if o.Comet && k != id {
+				o.Comet = false
+				bossStore.defs[k] = o
+			}
+		}
+	}
 	bossStore.defs[id] = d
 	if from != 0 && from != id && had {
 		delete(bossStore.defs, from)
@@ -892,7 +1050,8 @@ func adminAPIBossSpawn(w http.ResponseWriter, r *http.Request) {
 
 // ---- battle host --------------------------------------------------------
 
-// battleBossHandler: GET /battle/boss?id=<n>, loopback only. One key=value
+// battleBossHandler: GET /battle/boss?id=<n> (or ?role=comet: the def
+// flagged Comet), loopback only. One key=value
 // per line for the host's FieldValue: ship, name, paint, pattern, decal,
 // emblem (0 = keep), abilities ("|"-separated class paths, empty = the
 // ship's own), feats ("name*stacks|...").
@@ -904,6 +1063,13 @@ func battleBossHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.Atoi(r.URL.Query().Get("id"))
 	d, ok := bossByID(id)
+	if r.URL.Query().Get("role") == "comet" {
+		i := slices.IndexFunc(bossList(), func(b bossDef) bool { return b.Comet })
+		ok = i >= 0
+		if ok {
+			d = bossList()[i]
+		}
+	}
 	if !ok {
 		http.Error(w, "no such boss", http.StatusNotFound)
 		return
@@ -912,7 +1078,45 @@ func battleBossHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, bossHostText(d))
 }
 
+// bossAIFor: the def's chosen controller, else its base's.
+func bossAIFor(d bossDef) (bossCatalogAI, bool) {
+	c := bossCatalogData()
+	id := d.AI
+	if id == "" {
+		for _, b := range c.Bases {
+			if b.ID == d.Base {
+				id = b.AI
+			}
+		}
+	}
+	for _, a := range c.AIs {
+		if id != "" && a.ID == id {
+			return a, true
+		}
+	}
+	return bossCatalogAI{}, false
+}
+
 func bossHostText(d bossDef) string {
+	// Unset slots take the base's Havoc dataset row (what the editor shows as
+	// the default), not the AI pawn's built-in set.
+	for _, b := range bossCatalogData().Bases {
+		if b.ID != d.Base {
+			continue
+		}
+		if !slices.ContainsFunc(d.Modules, func(m string) bool { return m != "" }) {
+			d.Modules = b.Modules
+		}
+		if len(d.Officers) == 0 {
+			d.Officers = b.Officers
+		}
+		if !slices.ContainsFunc(d.Parts, func(p int32) bool { return p != 0 }) {
+			d.Parts = b.Parts[:]
+		}
+		if len(d.Weapons) == 0 {
+			d.Weapons = b.Weapons
+		}
+	}
 	feats := make([]string, 0, len(d.Feats))
 	for _, f := range d.Feats {
 		feats = append(feats, fmt.Sprintf("%s*%d", f.Name, f.Stacks))
@@ -932,7 +1136,11 @@ func bossHostText(d bossDef) string {
 		marker = strconv.Itoa(v)
 	}
 	// weapons: not applied by the host yet (it has no NPC weapon swap); carried so it can be.
-	return fmt.Sprintf("ok=1\nship=%s\nname=%s\npaint=%d\npattern=%d\ndecal=%d\nemblem=%d\nabilities=%s\nfeats=%s\nparts=%s\nofficers=%s\nweapons=%s\nmarker=%s\n",
+	ai := ""
+	if a, ok := bossAIFor(bossDef{AI: d.AI}); ok && d.AI != "" {
+		ai = a.Path
+	}
+	return fmt.Sprintf("ok=1\nship=%s\nname=%s\npaint=%d\npattern=%d\ndecal=%d\nemblem=%d\nabilities=%s\nfeats=%s\nparts=%s\nofficers=%s\nweapons=%s\nmarker=%s\nai=%s\n",
 		d.Base, d.Name, d.Paint, d.Pattern, d.Decal, d.Emblem, strings.Join(mods, "|"), strings.Join(feats, "|"),
-		strings.Join(parts, ","), strings.Join(d.Officers, "|"), strings.Join(d.Weapons, "|"), marker)
+		strings.Join(parts, ","), strings.Join(d.Officers, "|"), strings.Join(d.Weapons, "|"), marker, ai)
 }

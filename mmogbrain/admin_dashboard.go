@@ -119,9 +119,11 @@ func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKe
 	api.HandleFunc("/battles/{id}/terrain", adminAPIBattleTerrain).Methods(http.MethodGet)
 	registerAdminPlayerManagement(api)
 	registerAdminModeration(api)
-	registerAdminBosses(api)  // admin_bosses.go
-	registerAdminHunters(api) // admin_hunters.go
-	registerAdminWaves(api)   // admin_waves.go
+	registerAdminBosses(api)      // admin_bosses.go
+	registerAdminHunters(api)     // admin_hunters.go
+	registerAdminWaves(api)       // admin_waves.go
+	registerAdminCustomModes(api) // custom_modes.go
+	registerAdminRotation(api)    // rotation_settings.go
 }
 
 func writeAdminJSON(w http.ResponseWriter, v any) {

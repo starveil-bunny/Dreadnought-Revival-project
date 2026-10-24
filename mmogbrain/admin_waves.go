@@ -213,7 +213,7 @@ func adminAPIStutters(w http.ResponseWriter, r *http.Request) {
 // ---- game art (scripts/gen-admin-art.py) --------------------------------
 
 var adminArtName = regexp.MustCompile(`^(ships|ui|previews|icons/abilities|icons/weapons|icons/feats|icons/perks|icons/markers)/[A-Za-z0-9_-]+\.png$|` +
-	`^models/[A-Za-z0-9_-]+\.(glb|png|jpg)$|^vendor/[A-Za-z0-9_.-]+\.js$|^vanity/[A-Za-z0-9_-]+\.png$|^art\.json$`)
+	`^models/[A-Za-z0-9_-]+\.(glb|png|jpg)$|^maps/[A-Za-z0-9_-]+\.jpg$|^modes/[A-Za-z0-9_-]+\.png$|^vendor/[A-Za-z0-9_.-]+\.js$|^vanity/[A-Za-z0-9_-]+\.png$|^art\.json$`)
 
 // handleAdminArt serves data/admin-art (and the decoded cosmetic pictures in
 // data/market-images as vanity/<name>). Client art and stats, nothing

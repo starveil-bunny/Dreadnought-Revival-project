@@ -194,7 +194,7 @@ button.b.red { color: #ff8a8a; }
   $('lockf').onsubmit = (e) => { e.preventDefault(); key = $('key').value; store.set('adminKey', key); $('lock').classList.add('hidden'); poll(); };
 
   // --- state ------------------------------------------------------------------
-  const TEAM = { 1: '#4f9dff', 2: '#ff5a5a', 0: '#a0a8b4' };
+  const TEAM = { 1: '#4f9dff', 2: '#ff5a5a', 3: '#ca7ede', 0: '#a0a8b4' };
   const KINDS = ['ArtilleryCruiser', 'Corvette', 'Destroyer', 'Dreadnought', 'TacticalCruiser'];
   const icons = {};
   for (const k of KINDS) { const im = new Image(); im.src = PLAYER ? (PLAYER.icons || {})[k] || '' : '/admin/viewer/icons/' + k + '.png'; icons[k] = { im, tint: {} }; }
@@ -1340,10 +1340,13 @@ button.b.red { color: #ff8a8a; }
   // through each material's colour mask. Hulls without a mesh (Onslaught AI)
   // keep the outline. glTF axes: +x nose, +y up, z across (vertex plot of
   // VH_AssaultH/VH_DreadH: engines at -x).
-  const PS2 = { on: localStorage.getItem('dnPs2') === '1', art: null, models: {}, texs: {} };
+  // FIXED 2026-10-23: player mode removes the Controls pane (and this button);
+  // ps2Btn was null, the throw stopped the script before the first frame and
+  // the launcher's battle view stayed black. Player frames get no models.
+  const PS2 = { on: !PLAYER && localStorage.getItem('dnPs2') === '1', art: null, models: {}, texs: {} };
   const ps2Btn = $('ps2');
-  ps2Btn.classList.toggle('on', PS2.on);
-  ps2Btn.onclick = () => { PS2.on = !PS2.on; localStorage.setItem('dnPs2', PS2.on ? '1' : '0'); ps2Btn.classList.toggle('on', PS2.on); };
+  if (ps2Btn) ps2Btn.classList.toggle('on', PS2.on);
+  if (ps2Btn) ps2Btn.onclick = () => { PS2.on = !PS2.on; localStorage.setItem('dnPs2', PS2.on ? '1' : '0'); ps2Btn.classList.toggle('on', PS2.on); };
   const ps2Key = (s) => { const m = /VH_(Assault|Dread|Scout|Sniper|Support)(H|M|L)/.exec(s.class || ''); return m ? m[1] + m[2] : ''; };
   function ps2Tex(url) {
     if (!url) return null;

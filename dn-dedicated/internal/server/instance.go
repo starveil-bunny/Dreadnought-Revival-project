@@ -220,7 +220,7 @@ func BuildArgs(cfg LaunchConfig, matchID string) []string {
 
 	maxPlayers := cfg.MaxPlayers
 	if maxPlayers <= 0 {
-		maxPlayers = 10
+		maxPlayers = 16
 	}
 
 	args := []string{

@@ -90,6 +90,9 @@ write:
   StrCmp $0 "0" +2
   MessageBox MB_ICONEXCLAMATION "Certificate not installed (code $0). The launcher will offer it again on start."
 !endif
+  DetailPrint "Reading the launcher's art from the game files"
+  nsExec::ExecToLog '"$INSTDIR\DreadnoughtLauncher.exe" --extract-media'
+  Pop $0
 
   WriteUninstaller "$INSTDIR\dn-uninstall.exe"
   WriteRegStr HKCU "${UNINST}" "DisplayName" "Dreadnought Revival launcher"
@@ -107,6 +110,7 @@ Section "Uninstall"
   Delete "$INSTDIR\dn-launcher.json"
   Delete "$INSTDIR\ca.crt"
   Delete "$INSTDIR\dn-uninstall.exe"
+  RMDir /r "$LOCALAPPDATA\DreadnoughtPrivateServer\media"
   DeleteRegKey HKCU "${UNINST}"
   DetailPrint "Server certificate left in Trusted Root (certmgr.msc to remove)"
 SectionEnd

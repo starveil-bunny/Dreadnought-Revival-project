@@ -85,6 +85,11 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .wcards h3 { margin: 0; font-size: 16px; }
 .wcards .wr { display: grid; grid-template-columns: 1fr 150px; align-items: center; gap: 10px; font-size: 13px; }
 .wcards .wr .step { height: 34px; }
+.wcards.cm { margin-bottom: 18px; }
+.wcards .wh { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wcards .wv { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.wcards .wv select { width: 100%; }
+.wcards .wv .row { display: flex; gap: 6px; align-items: center; }
 .wacts { margin-top: 14px; } .wacts .btn { min-width: 110px; } .wacts .btn.ok { background: #2e7d32; border-color: #2e7d32; color: #fff; } .wacts .btn.bad { background: #b3261e; border-color: #b3261e; color: #fff; }
 .bgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .bgrid label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -139,6 +144,12 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px; cursor: pointer; text-align: center; font-size: 12px; background: var(--panel); display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .tile:hover { border-color: var(--accent); }
 .tile.on { outline: 2px solid var(--accent); }
+/* Tier borders: the hue of UI_Generic_TierIcon.SetTier's TierColor (linear 0.184 grey,
+   (0.005,0.136,0.034) green, (0.013,0.093,0.159) blue, (0.070,0.023,0.127) purple,
+   (0.084,0.025,0.003) gold), lightened -- the game's own values are its dark badge fill. */
+:is(.tile, .slotbtn, .wcard).t1 { border: 2px solid #9e9e9e; } :is(.tile, .slotbtn, .wcard).t2 { border: 2px solid #57e592; }
+:is(.tile, .slotbtn, .wcard).t3 { border: 2px solid #66b3d6; } :is(.tile, .slotbtn, .wcard).t4 { border: 2px solid #a477c6; }
+:is(.tile, .slotbtn, .wcard).t5 { border: 2px solid #ea9a52; }
 .tile .ico { width: 64px; height: 64px; }
 .tile .ico.ship { width: 116px; height: 72px; }
 .tile .swatch { width: 100%; height: 44px; }
@@ -185,6 +196,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .combat { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 18px; align-items: stretch; }
 .combat > .cell { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .combat > .cell > .wcard, .combat > .cell > .slotbtn, .combat > .cell > .oslot { flex: 1; }
+.combat > .stack { display: flex; flex-direction: column; gap: 10px; }
 .combat > .rowh { grid-column: 1 / 5; margin: 6px 0 -6px; font-size: 15px; font-weight: 650; }
 .combat > .boosts { grid-column: 5; grid-row: 1 / span 7; display: flex; flex-direction: column; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; overflow: hidden; align-self: start; max-height: 100%; }
 .boosts .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: color-mix(in srgb, var(--accent) 14%, transparent); border-bottom: 1px solid var(--line); font-weight: 650; font-size: 14px; }
@@ -223,6 +235,24 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 /* Fleet: the launcher's player page (DN_FLEET, launcher_fleet.go) -- the boss
    tree and editor over the launcher's backdrop, read-only, the player's ships. */
 /* color-scheme matches the launcher's (dark), else WebView2 paints the frame's canvas white. */
+/* Maps: game modes and maps as switch tiles (admin tab, launcher MAPS page via DN_ROT). */
+.rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--rw, 240px), 1fr)); gap: 10px; }
+.rtile { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); cursor: pointer; user-select: none; transition: opacity .15s, filter .15s; }
+.rtile:hover { border-color: var(--accent); }
+.rtile.off { opacity: .4; filter: grayscale(1); }
+.rtile.ro { cursor: default; } .rtile.ro:hover { border-color: var(--line); }
+.rtile .rpic { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #0b0e12; }
+.rtile .rcap { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-weight: 600; }
+.rtile .rcap .rmodes { margin-left: auto; display: flex; gap: 3px; }
+.rtile .rcap .rmodes img { width: 18px; height: 18px; filter: var(--icofilter, none); }
+.rtile .rsw { position: absolute; top: 8px; right: 8px; width: 34px; height: 18px; border-radius: 9px; background: rgba(0, 0, 0, .55); border: 1px solid rgba(255, 255, 255, .35); }
+.rtile .rsw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #bbb; transition: left .15s; }
+.rtile:not(.off) .rsw { background: var(--accent); } .rtile:not(.off) .rsw::after { left: 18px; background: #fff; }
+.rgrid.modes { --rw: 190px; }
+.rgrid.modes .rtile { display: flex; align-items: center; gap: 10px; padding: 10px 50px 10px 10px; }
+.rgrid.modes .rtile img { width: 40px; height: 40px; filter: var(--icofilter, none); }
+.rgrid.modes .rtile .rsw { top: 50%; transform: translateY(-50%); }
+html.rot #tab-fleet { display: none !important; } html.rot #tab-maps { display: block !important; }
 html.fleet { color-scheme: dark; }
 html.fleet, html.fleet body { background: transparent; }
 html.fleet header, html.fleet #login, html.fleet main > [id^="tab-"]:not(#tab-fleet) { display: none !important; }
@@ -286,7 +316,8 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     <button data-tab="moderation">Moderation</button>
     <button data-tab="bosses">Bosses</button>
     <button data-tab="hunters">Hunters</button>
-    <button data-tab="waves">Waves</button>
+    <button data-tab="waves">Custom modes</button>
+    <button data-tab="maps">Maps</button>
     <button data-tab="stutters">Stutters</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
@@ -345,7 +376,8 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     <div class="row"><span id="hListMsg" class="muted"></span></div>
   </div>
   <div id="tab-waves" class="hidden">
-    <div class="wcards" id="wFields"></div>
+    <div class="wcards cm" id="cmFields"></div>
+    <section><h2>Onslaught</h2><div class="wcards" id="wFields"></div></section>
     <div class="row wacts"><button class="btn on" id="wSave">Save</button><button class="btn" id="wReset">Defaults</button></div>
   </div>
   <div id="tab-stutters" class="hidden">
@@ -357,6 +389,7 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     <section><h2>Recent</h2>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Match</th><th>Gap ms</th><th>Suspect</th><th>Ours ms</th><th>Biggest job</th><th>Last command</th><th>Cmd age s</th><th>NPCs</th><th>Projectiles</th></tr></thead><tbody id="sRows"></tbody></table></div></section>
   </div>
+  <div id="tab-maps" class="hidden"><div id="rTree" class="btree"></div></div>
   <div id="tab-fleet" class="hidden"><div id="fTree" class="btree"></div></div>
   <div id="fEdit" class="bmodal hidden"><div class="bbox wide">
     <div class="bhead">
@@ -534,7 +567,9 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   // DN_FLEET). The player's own ships in the boss tree, their loadouts in the
   // editor, read-only, plus their saved-loadout library. The launcher frames
   // this page and carries its requests, like the battle view's.
-  const FLEET = window.DN_FLEET || null;
+  const FLEET = window.DN_FLEET || null, ROT = window.DN_ROT || null;
+  if (ROT) document.documentElement.classList.add('fleet', 'rot');
+  if (FLEET || ROT) document.documentElement.dataset.theme = 'dark';
   if (FLEET) { document.documentElement.classList.add('fleet'); document.documentElement.dataset.theme = 'dark'; }
   let tab = 'overview';
   let timer = null;
@@ -1154,7 +1189,7 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     for (const it of items) {
       if (q && it.key !== '' && it.key !== 0 && !(`${it.label} ${it.sub || ''} ${it.tip || ''} ${it.find || ''}`).toLowerCase().includes(q)) continue;
       if ((it.group || '') !== group) { group = it.group || ''; if (group) box.append(el('div', { class: 'gphead' }, group)); }
-      const t = el('div', { class: 'tile' + (String(it.key) === String(g.cur) ? ' on' : ''), title: it.tip || it.label, onclick: () => { $('gp').classList.add('hidden'); g.onPick(it.key); } },
+      const t = el('div', { class: 'tile' + (it.tier ? ' t' + it.tier : '') + (String(it.key) === String(g.cur) ? ' on' : ''), title: it.tip || it.label, onclick: () => { $('gp').classList.add('hidden'); g.onPick(it.key); } },
         it.swatch || (it.icoEl ? it.icoEl() : it.img !== undefined ? ico(it.img, it.imgCls || '') : null), el('div', {}, it.label), it.sub ? el('div', { class: 'sub' }, it.sub) : null,
         it.stats && it.stats.length ? el('div', { class: 'ts' }, ...it.stats.map((l) => el('div', {}, ...(Array.isArray(l) ? [el('b', {}, l[0]), ' ' + l[1]] : [l])))) : null);
       box.append(t); n++;
@@ -1207,10 +1242,10 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     const cell = (title, ...kids) => el('div', { class: 'cell' }, title ? el('h3', {}, title) : null, ...kids);
     $('bCombat').replaceChildren(
       cell('Ship stats', bStatsTable()), cell('Main gun', bWeaponCard(0)), cell('Secondary gun', bWeaponCard(1)),
-      bKind === 'boss' ? cell('Marker', bMarkerSlot()) : el('div', {}), bBoostsCell(),
+      el('div', { class: 'stack' }, bKind === 'boss' ? cell('Marker', bMarkerSlot()) : null, bKind === 'boss' ? cell('Role', bRoleSlot()) : null, FLEET ? null : cell('AI', bAISlot())), bBoostsCell(),
       el('div', { class: 'rowh' }, 'Modules'),
       ...MOD_SLOTS.map(([, label], k) => cell(label, bModSlot(k))),
-      ...MOD_SLOTS.map((_, k) => cell('', bModSlot(4 + k))),
+      ...Array.from({ length: bSlots() - 4 }, (_, k) => cell('', bModSlot(4 + k))),
       el('div', { class: 'rowh' }, 'Officer Briefings'),
       ...OFF_TYPES.map((t) => cell(t[1], bOfficerSlot(t))));
   }
@@ -1241,7 +1276,7 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
       (i || all || w.note === wl) && (all || w.tier === b.tier || w.tier === b.tier - 1)))
       .sort((x, y) => y.tier - x.tier || bWpName(x.path).localeCompare(bWpName(y.path)));
     const items = list.map((w) => { const a = bArt.weapons[w.path] || {};
-      return { key: w.path, label: bWpName(w.path), img: a.icon ? ART + a.icon : '', stats: bWpMini(a), tip: [a.desc, ...(a.tips || []).filter((t) => t[1]).map(([n, v]) => `${n}: ${v}`)].filter(Boolean).join('\n'), find: w.path }; });
+      return { key: w.path, tier: w.tier, label: bWpName(w.path), img: a.icon ? ART + a.icon : '', stats: bWpMini(a), tip: [a.desc, ...(a.tips || []).filter((t) => t[1]).map(([n, v]) => `${n}: ${v}`)].filter(Boolean).join('\n'), find: w.path }; });
     return i ? [{ key: '', label: 'None', img: '' }, ...items] : items;
   }
   function bWpMini(a) {
@@ -1267,7 +1302,8 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     if (!(a.tips || []).length) { add('Magazine', s.m_ammoMagazinSize); if (s.m_ammoMagazinReloadTime) add('Reload', s.m_ammoMagazinReloadTime + ' s'); }
     if (s.m_initialSpeed) add('Projectile speed', Math.round(s.m_initialSpeed / 100) + ' m/s');
     if (s.m_ignoreShields) add('Ignores shields', 'yes');
-    return el('div', { class: 'wcard' + (i ? '' : ' fixed'), title: a.desc || '', onclick: pick }, ico(a.icon ? ART + a.icon : ''), el('div', { style: 'min-width:0' }, el('b', {}, bWpName(w)), kvTable(rows)));
+    const wt = ((bCat.weapons || []).find((x) => x.path === w) || {}).tier;
+    return el('div', { class: 'wcard' + (wt ? ' t' + wt : '') + (i ? '' : ' fixed'), title: a.desc || '', onclick: pick }, ico(a.icon ? ART + a.icon : ''), el('div', { style: 'min-width:0' }, el('b', {}, bWpName(w)), kvTable(rows)));
   }
 
   // Modules: positional [Primary, Secondary, Perimeter, Internal, Extra 1-4]; '' = none.
@@ -1285,13 +1321,14 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
     const b = bBase(bCur.base), t = b ? b.tier : 5, slot = i < 4 ? MOD_SLOTS[i][0] : '', cur = bCur.modules[i] || '';
     const order = MOD_SLOTS.map((s) => s[0]);
     const mods = bCat.modules.filter((m) => m.path === cur || (all ? true : m.class === bCur.class && (!slot || m.slot === slot) && [t, t - 1].includes(bModTier(m))))
-      .sort((x, y) => order.indexOf(x.slot) - order.indexOf(y.slot) || bModLabel(x).localeCompare(bModLabel(y)));
+      .sort((x, y) => order.indexOf(x.slot) - order.indexOf(y.slot) || bModTier(y) - bModTier(x) || bModLabel(x).localeCompare(bModLabel(y)));
     return [{ key: '', label: 'None', img: '' }, ...mods.map((m) => {
       const a = bModArt(m.path);
       const st = (a.tips || []).filter((x) => x[1] !== '' && x[1] != null).slice(0, 3).map(([n, v]) => [n, String(v)]);
       if (a.cooldown && !st.some((x) => /cooldown/i.test(x[0]))) st.push(['Cooldown', a.cooldown + ' s']);
-      return { key: m.path, label: bModLabel(m), sub: all ? clsLabel(m.class) : '', find: m.name, img: a.icon ? ART + a.icon : '', tip: tipText(a), stats: st,
-        group: (MOD_SLOTS.find((s) => s[0] === m.slot) || [0, 'Other'])[1] };
+      const tr = bModTier(m);
+      return { key: m.path, tier: tr, label: bModLabel(m), sub: all ? clsLabel(m.class) : '', find: m.name, img: a.icon ? ART + a.icon : '', tip: tipText(a), stats: st,
+        group: (MOD_SLOTS.find((s) => s[0] === m.slot) || [0, 'Other'])[1] + (tr ? ' · Tier ' + tr : '') };
     })];
   }
   function bModStats(a) {
@@ -1304,10 +1341,10 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   }
   function bModSlot(i) {
     const p = bCur.modules[i] || '', a = bModArt(p);
-    const s = bSlot(i < 4 ? '' : 'Extra ' + MOD_SLOTS[i - 4][1], p ? bModName(p) : 'None', ico(a.icon ? ART + a.icon : ''),
+    const s = bSlot(i < 4 ? '' : i < 8 ? 'Extra ' + MOD_SLOTS[i - 4][1] : 'Extra', p ? bModName(p) : 'None', ico(a.icon ? ART + a.icon : ''),
       () => gpOpen(i < 4 ? MOD_SLOTS[i][1] : 'Extra', bModItems(i, false), p, (k) => { bCur.modules[i] = k; bRenderCombat(); }, () => bModItems(i, true)),
       p ? bModStats(a) : null);
-    if (p) s.title = a.desc || '';
+    if (p) { s.title = a.desc || ''; const m = bCat.modules.find((x) => x.path === p), tr = m && bModTier(m); if (tr) s.classList.add('t' + tr); }
     return s;
   }
 
@@ -1327,6 +1364,16 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   // Boss HUD marker: DN_QuestMarker_DT rows (fixed icon per row), Spotted (a player's mark) or None.
   const markName = (k) => { const m = bArt.markers[k]; return k === 'Spotted' ? 'Spotted' : k === 'None' ? 'None' : (m && m.text) || (k || 'HostileTarget').replace(/([a-z])([A-Z])/g, '$1 $2'); };
   const markImg = (k) => { const m = bArt.markers[k || 'HostileTarget']; return m && m.icon ? ART + m.icon : ''; };
+  // AI controller (bCat.ais); its fire slots set how many module slots show.
+  const bAI = () => { const id = bCur.ai || (bBase(bCur.base) || {}).ai; return (bCat.ais || []).find((a) => a.id === id); };
+  const bSlots = () => Math.max(4, Math.min(16, (bAI() || {}).slots || 8));
+  function bAISlot() {
+    const a = bAI(), def = (bBase(bCur.base) || {}).ai;
+    const items = (bCat.ais || []).map((x) => ({ key: x.id, label: x.label, find: x.id + ' ' + x.ships.join(' '), img: '', stats: [['Modules', String(x.slots)]] }))
+      .sort((x, y) => (y.key === def) - (x.key === def) || x.label.localeCompare(y.label));
+    return bSlot('', a ? a.label : 'None', ico(''), () => gpOpen('AI', items, a ? a.id : '', (k) => {
+      bCur.ai = k === def ? '' : k; bRenderCombat(); }));
+  }
   function bMarkerSlot() {
     const cur = bCur.marker || '';
     const items = [{ key: '', label: markName('HostileTarget'), img: markImg('') },
@@ -1334,6 +1381,12 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
       { key: 'Spotted', label: 'Spotted', img: '' }, { key: 'None', label: 'None', img: '' }];
     return bSlot('', markName(cur), ico(cur === 'Spotted' || cur === 'None' ? '' : markImg(cur)),
       () => gpOpen('Marker', items, cur, (k) => { bCur.marker = k || undefined; bRenderCombat(); }));
+  }
+  // Role: Comet = what /meteor spawns (one boss at most).
+  function bRoleSlot() {
+    const items = [{ key: '', label: 'Boss', img: '' }, { key: 'comet', label: 'Comet', img: '' }];
+    return bSlot('', bCur.comet ? 'Comet' : 'Boss', ico(''),
+      () => gpOpen('Role', items, bCur.comet ? 'comet' : '', (k) => { bCur.comet = k === 'comet' || undefined; bRenderCombat(); }));
   }
   function bBoostsCell() {
     const cats = { defensive: 'Defensive', offensive: 'Offensive', utility: 'Utility' };
@@ -1437,11 +1490,14 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
       mult: kind === 'boss' ? 3 : 1, weight: 1, modules: [], weapons: [], paint: 0, pattern: 0, decal: 0, emblem: 0, feats: [], parts: [0, 0, 0, 0], officers: [], notes: '', ...preset });
     if (preset) { o.base = bDeriveBase(o.tier, o.class, o.manufacturer, o.stier); delete o.stier; }
     const b = bBase(o.base) || bBase(bDeriveBase(o.tier, o.class, o.manufacturer));
-    // The default build is the base ship itself: its guns and modules, no parts.
+    // The default build is the base ship itself: its dataset row's guns, modules,
+    // officer briefings and parts.
     const mods = o.modules || [];
-    o.modules = mods.length > 4 || mods.includes('') ? Array.from({ length: 8 }, (_, i) => mods[i] || '') : bSlotMods(mods.length ? mods : (b ? b.modules : []));
+    o.modules = mods.length > 4 || mods.includes('') ? Array.from({ length: Math.max(8, mods.length) }, (_, i) => mods[i] || '') : bSlotMods(mods.length ? mods : (b ? b.modules : []));
     o.weapons = o.weapons && o.weapons.length ? [o.weapons[0] || '', o.weapons[1] || ''] : b ? [b.weapons[0] || '', b.weapons[1] || ''] : ['', ''];
-    o.feats = o.feats || []; o.officers = o.officers || []; o.parts = [0, 1, 2, 3].map((i) => (o.parts || [])[i] || 0);
+    o.feats = o.feats || [];
+    o.officers = o.officers && o.officers.length ? o.officers : b && !FLEET ? [...(b.officers || [])] : [];
+    o.parts = (o.parts || []).some(Boolean) || !b || FLEET ? [0, 1, 2, 3].map((i) => (o.parts || [])[i] || 0) : [0, 1, 2, 3].map((i) => (b.parts || [])[i] || 0);
     bOrig = o; bOrigId = d ? d.id : 0;
     bCur = clone(bDrafts[bKey] || o);
     $('bEdit').classList.remove('hidden');
@@ -1474,6 +1530,7 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   async function bSaveNow() {
     const d = clone(bCur);
     if (bKind !== 'hunter') delete d.weight;
+    d.modules = d.modules.slice(0, bSlots());
     const r = await bSend('PUT', bPath() + (bOrigId || 0), d);
     delete bDrafts[bKey];
     bOrigId = bCur.id = r.id; bKey = `${bKind}:${r.id}`; delete bDrafts[bKey]; saveDrafts();
@@ -1517,11 +1574,59 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
       ...fields.map(([k, label, lo, hi]) => el('div', { class: 'wr', title: `${lo}–${hi}, default ${wDefaults[k]}` }, label,
         step(el('div', { class: 'step' }), lo, hi, () => wCur[k], (n) => { wCur[k] = n; }))))));
   }
-  async function loadWaves() { const r = await api('/waves'); wDefaults = r.defaults; wFill(r.config); }
-  $('wReset').onclick = () => { if (wDefaults) { wFill(wDefaults); flash($('wReset'), true, 'Loaded, not saved'); } };
+  // Custom modes (custom_modes.go): one card each, the fields its rules use.
+  let cmCur = null, cmDefaults = null, cmBosses = [];
+  function cmFill(modes) {
+    cmCur = modes.map((m) => JSON.parse(JSON.stringify(m)));
+    const num = (label, lo, hi, get, set) => el('div', { class: 'wr' }, label, step(el('div', { class: 'step' }), lo, hi, get, set));
+    $('cmFields').replaceChildren(...cmCur.map((m) => {
+      const onBtn = el('button', { class: 'btn' + (m.on ? ' on' : ''), type: 'button' }, m.on ? 'In rotation' : 'Off');
+      onBtn.onclick = () => { m.on = !m.on; onBtn.className = 'btn' + (m.on ? ' on' : ''); onBtn.textContent = m.on ? 'In rotation' : 'Off'; };
+      const kids = [el('div', { class: 'wh' }, el('h3', {}, m.label), onBtn)];
+      if (m.ffa) {
+        const sc = el('button', { class: 'btn' + (m.scatter ? ' on' : ''), type: 'button' }, 'Random spawns');
+        sc.onclick = () => { m.scatter = !m.scatter; sc.className = 'btn' + (m.scatter ? ' on' : ''); };
+        kids.push(el('div', { class: 'wr' }, 'Spawns', sc));
+      }
+      if (m.ffa) kids.push(num('Kills to win', 0, 200, () => m.kill_limit, (n) => { m.kill_limit = n; }));
+      if (m.ships || m.teams) kids.push(num('Ships', 2, 32, () => m.ships, (n) => { m.ships = n; }));
+      if (m.drain) kids.push(num('Every (s), from', 1, 60, () => m.drain.min_sec, (n) => { m.drain.min_sec = n; }),
+        num('Every (s), to', 1, 60, () => m.drain.max_sec, (n) => { m.drain.max_sec = n; }),
+        num('Damage, from', 1, 100000, () => m.drain.min_dmg, (n) => { m.drain.min_dmg = n; }),
+        num('Damage, to', 1, 100000, () => m.drain.max_dmg, (n) => { m.drain.max_dmg = n; }));
+      if (m.shower) kids.push(num('Every (s)', 5, 600, () => m.shower.every_sec, (n) => { m.shower.every_sec = n; }),
+        num('Nukes', 1, 40, () => m.shower.nukes, (n) => { m.shower.nukes = n; }));
+      if (m.wave_sec || m.waves) {
+        m.waves = m.waves || [];
+        const box = el('div', {});
+        const draw = () => box.replaceChildren(...m.waves.map((w, i) => {
+          const rows = w.bosses.map((id, j) => {
+            const sel = el('select', {}, ...cmBosses.map((b) => { const o = el('option', { value: String(b.id) }, b.name); if (b.id === id) o.selected = true; return o; }));
+            sel.onchange = () => { w.bosses[j] = +sel.value; };
+            return el('div', { class: 'row' }, sel, el('button', { class: 'btn', type: 'button', onclick: () => { w.bosses.splice(j, 1); draw(); } }, '✕'));
+          });
+          return el('div', { class: 'wv' }, el('div', { class: 'wh' }, el('b', {}, 'Wave ' + (i + 1)),
+            el('button', { class: 'btn', type: 'button', onclick: () => { m.waves.splice(i, 1); draw(); } }, '✕')), ...rows,
+            cmBosses.length && w.bosses.length < 8 ? el('button', { class: 'btn', type: 'button', onclick: () => { w.bosses.push(cmBosses[0].id); draw(); } }, 'Add boss') : null,
+            num('Strength', 0, 10, () => w.mult, (n) => { w.mult = n; }));
+        }), cmBosses.length ? el('button', { class: 'btn', type: 'button', onclick: () => { m.waves.push({ bosses: [cmBosses[0].id], mult: 0 }); draw(); } }, 'Add wave') : el('div', { class: 'muted' }, 'No bosses yet'));
+        kids.push(num('Between waves (s)', 20, 900, () => m.wave_sec, (n) => { m.wave_sec = n; }), box);
+        draw();
+      }
+      return el('div', { class: 'wc' }, ...kids);
+    }));
+  }
+  async function loadWaves() {
+    const [r, c] = await Promise.all([api('/waves'), api('/custom-modes')]);
+    wDefaults = r.defaults; wFill(r.config);
+    cmDefaults = c.defaults; cmBosses = c.bosses || []; cmFill(c.modes);
+  }
+  $('wReset').onclick = () => { if (wDefaults) { wFill(wDefaults); cmFill(cmDefaults); flash($('wReset'), true, 'Loaded, not saved'); } };
   $('wSave').onclick = async () => {
-    try { const r = await bSend('PUT', '/waves', wCur); wFill(r.config); flash($('wSave'), true, 'Saved'); }
-    catch (e) { if (e.message !== 'forbidden') flash($('wSave'), false, e.message); }
+    try {
+      const c = await bSend('PUT', '/custom-modes', { modes: cmCur }); cmBosses = c.bosses || []; cmFill(c.modes);
+      const r = await bSend('PUT', '/waves', wCur); wFill(r.config); flash($('wSave'), true, 'Saved');
+    } catch (e) { if (e.message !== 'forbidden') flash($('wSave'), false, e.message); }
   };
 
   // --- stutters (admin_waves.go, from the mod log) ------------------------
@@ -1595,7 +1700,7 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   $('vOpen').onclick = () => window.open('/admin/viewer', '_blank');
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, bosses: loadBosses, hunters: loadHunters, waves: loadWaves, stutters: loadStutters, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, bosses: loadBosses, hunters: loadHunters, waves: loadWaves, maps: loadMaps, stutters: loadStutters, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {
@@ -1637,13 +1742,46 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   $('logFilter').onkeydown = (e) => { if (e.key === 'Enter') loadLog(); };
   $('logFollow').onchange = schedule;
 
+  // --- Maps: mode and map switches (rotation_settings.go) --------------------
+  // Admin: /admin/api/rotation; launcher (ROT): /rotation through the frame,
+  // switchable only for DN_ADMINS (r.admin).
+  let rCur = null;
+  const RART = ROT ? (window.DN_ART || '/admin/art/') : '/admin/art/';
+  const rGet = () => (ROT ? papi('/rotation') : api('/rotation'));
+  const rPut = (body) => (ROT ? papi('/rotation', { method: 'POST', body: JSON.stringify(body) }) : bSend('PUT', '/rotation', body));
+  async function loadMaps() { rCur = await rGet(); rRender(); }
+  function rRender() {
+    const r = rCur, rw = !ROT || r.admin, modeArt = Object.fromEntries(r.modes.map((m) => [m.id, m.art]));
+    const flip = (kind, name, on) => {
+      if (!rw) return;
+      const body = { maps: {}, modes: {} };
+      for (const m of r.maps) body.maps[m.name] = m.on;
+      for (const m of r.modes) body.modes[m.id] = m.on;
+      body[kind][name] = on;
+      rPut(body).then((x) => { rCur = { ...x, admin: r.admin }; rRender(); }).catch((e) => alert(e.message));
+    };
+    const sw = () => el('span', { class: 'rsw' });
+    const tile = (on, kids, fn) => el('div', { class: 'rtile' + (on ? '' : ' off') + (rw ? '' : ' ro'), onclick: fn }, ...kids, sw());
+    const box = (title, body) => el('div', { class: 'bt-box man' }, el('div', { class: 'bt-row' }, el('span', { class: 'bt-l' }, title)), el('div', { class: 'bt-body' }, body));
+    const head = [el('span', {}, 'Maps')];
+    if (ROT) head.push(el('button', { class: 'btn', onclick: () => window.parent.postMessage({ dnvClose: 1 }, '*') }, 'CLOSE'));
+    $('rTree').replaceChildren(el('div', { class: 'bt-h' }, ...head), el('div', { style: 'padding: 0 12px 12px' },
+      ...[['Game modes', false], ['Tutorials', true]].map(([title, tut]) => box(title, el('div', { class: 'rgrid modes' }, ...r.modes.filter((m) => !!m.tutorial === tut).map((m) => tile(m.on,
+        [m.art ? el('img', { src: RART + m.art, alt: '' }) : ico(''), el('b', {}, m.label)], () => flip('modes', m.id, !m.on)))))),
+      box('Maps', el('div', { class: 'rgrid' }, ...r.maps.map((m) => tile(m.on,
+        [m.art ? el('img', { class: 'rpic', src: RART + m.art, alt: '' }) : el('div', { class: 'rpic' }),
+          el('div', { class: 'rcap' }, el('span', {}, m.label), el('span', { class: 'rmodes' },
+            ...m.modes.filter((x) => modeArt[x]).map((x) => { const i = el('img', { src: RART + modeArt[x], alt: '' }); i.title = (r.modes.find((y) => y.id === x) || {}).label || ''; return i; })))],
+        () => flip('maps', m.name, !m.on)))))));
+  }
+
   // --- Fleet mode -------------------------------------------------------------
   // Requests go to the launcher frame (postMessage), which fetches them from
   // /launcher/<path> as the signed-in player. Pictures come after the page has
   // drawn, a batch at a time (GET /fleet/art); an image waits on its key in data-k.
   const pending = new Map();
   let reqSeq = 0;
-  if (FLEET) window.addEventListener('message', (e) => {
+  if (FLEET || ROT) window.addEventListener('message', (e) => {
     const m = e.data;
     if (!m || m.dnvReply === undefined) return;
     const p = pending.get(m.dnvReply); if (!p) return;
@@ -1875,12 +2013,14 @@ html.fleet #fEdit .bacts { justify-content: flex-end; } html.fleet #fEdit .bacts
   $('fApply').onclick = () => fAct({ op: 'set', ship: fCur.id, variant: fTab, fit: fDraft, look: fLookD }).then(() => { flash($('fApply'), true, 'Applied'); fSay('Applied to Loadout ' + 'AB'[fTab]); }, (e) => flash($('fApply'), false, e.message));
   $('fSave').onclick = () => (fEd ? fAct({ op: 'edit', id: fEd.id, name: $('fName').value, fit: fDraft }).then(() => flash($('fSave'), true, 'Saved'), (e) => flash($('fSave'), false, e.message))
     : fAct({ op: 'save', ship: fCur.id, variant: fTab, name: $('fName').value }).then(() => { flash($('fSave'), true, 'Saved'); $('fName').value = ''; }, (e) => flash($('fSave'), false, e.message)));
+  if (ROT) document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.parent.postMessage({ dnvClose: 1 }, '*'); });
   if (FLEET) document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !$('gp').classList.contains('hidden')) return;
     if (fCur) fBack(); else fClose();
   });
 
-  if (FLEET) fInit(); else if (key) unlock(); else lock('');
+  if (FLEET) fInit(); else if (ROT) { $('app').classList.remove('hidden'); loadMaps().catch((e) => $('rTree').replaceChildren(el('div', { class: 'bt-h' }, e.message))); }
+  else if (key) unlock(); else lock('');
 })();
 </script>
 <script type="importmap">{"imports":{"three":"/admin/art/vendor/three.module.js"}}</script>

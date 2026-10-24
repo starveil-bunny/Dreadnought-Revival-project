@@ -280,6 +280,15 @@ match history and metrics, crash reports and battle-server logs, and per
 player: balances (credits, GP, free XP), hero-ship grants, daily-contract
 reset, cosmetic removal, kick, ban/unban and password reset.
 
+**Custom modes** (the tab that was "Waves"): Free For All, Free For All vs
+AI, Three Fleets, Four Fleets, Realistic, Lifedrain, Meteor Shower and Boss
+Rush, each with its own settings and an "In rotation" switch. A mode in
+rotation replaces its stock mode (TDM or Onslaught) in some matches, picked
+evenly among the stock mode and its switched-on custom modes. Admins can
+also start one from chat with `/match <id>` (`/help match` lists the ids).
+Saved in `data/custom_modes.json`. The Onslaught wave numbers are on the same
+tab.
+
 **Battle viewer**: each battle host posts its live ships to mmogbrain every
 2 s (loopback only; `DN_HOST_NO_VIEWER=1` on the host turns it off). The tab
 draws them in a wireframe 3D view (drag to orbit, scroll to zoom; team colour,
@@ -381,7 +390,7 @@ Set in `run/secrets.env` unless noted.
 | `WINE_EXE` | game-manager | `wine` | Wine executable; `none` on Windows |
 | `PLAYERS_PER_MATCH` | mmogbrain | `1` | Only with `DN_MATCH_AUTOSCALE=0`: a fixed number of queued players needed to form a match. **1 gives every player a private match** — two people queueing together get two servers and never meet. Use 2+ for PvP. |
 | `DN_MATCH_AUTOSCALE` | mmogbrain | on | Size matches by who is around: a match waits for every player who is **online and not in a battle**, up to `DN_MATCH_MAX_PLAYERS`, or `DN_MATCH_MAX_WAIT` after its first player queued. A lone player starts at once; two players online land in one match. `0` = the fixed `PLAYERS_PER_MATCH` |
-| `DN_MATCH_MAX_PLAYERS` | mmogbrain | `10` | Largest auto-scaled match (the host's `-maxplayers`) |
+| `DN_MATCH_MAX_PLAYERS` | mmogbrain | `16` | Largest auto-scaled match (the host's `-maxplayers`) |
 | `DN_MATCH_MAX_WAIT` | mmogbrain | `60s` | How long an auto-scaled match waits for idle online players who have not queued |
 | `DN_MAX_INSTANCES` | dn-dedicated | from memory | Concurrent battle servers. Default `(RAM - 2 GB) / 1.6 GB` (8 on 16 GB): each Wine host is ~1.45 GB and nine of them got a live match OOM-killed. At the cap, new matches get 503 and their players stay queued until a server frees. `0` = no cap |
 | `MASTER_URL` | game-manager | `http://127.0.0.1:8084` | Master server URL |

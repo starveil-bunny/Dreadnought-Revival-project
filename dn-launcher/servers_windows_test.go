@@ -9,7 +9,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -82,13 +84,13 @@ func serveCA(t *testing.T, signer *x509.Certificate, signerKey *ecdsa.PrivateKey
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "server"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, DNSNames: []string{gatewayName}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer, &key.PublicKey, signerKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/dn/ca.crt" {
+		if r.URL.Path != "/dn/ca.crt" || offered == nil {
 			http.NotFound(w, r)
 			return
 		}
@@ -117,6 +119,36 @@ func TestFetchServerCA(t *testing.T) {
 	ip, port = serveCA(t, ca, caKey, otherDER)
 	if _, err := fetchServerCA(ip, port); err == nil {
 		t.Fatal("accepted a CA that did not sign the connection")
+	}
+}
+
+// A gateway that keeps its CA to itself asks the player for it; what they
+// supply counts only if it signed the server's certificate.
+func TestServerNeedsCA(t *testing.T) {
+	ca, caKey, caDER := testCA(t)
+	ip, port := serveCA(t, ca, caKey, nil)
+	var need *needsCAError
+	if _, err := fetchServerCA(ip, port); !errors.As(err, &need) {
+		t.Fatalf("want needsCAError, got %v", err)
+	}
+	leaf, err := presentedLeaf(ip, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
+	for _, text := range []string{pemText, base64.StdEncoding.EncodeToString(caDER), base64.StdEncoding.EncodeToString([]byte(pemText))} {
+		der, err := readCAText(text)
+		if err != nil || string(der) != string(caDER) {
+			t.Fatalf("readCAText: %v", err)
+		}
+	}
+	_, _, otherDER := testCA(t)
+	other, _ := x509.ParseCertificate(otherDER)
+	if leaf.CheckSignatureFrom(ca) != nil || leaf.CheckSignatureFrom(other) == nil {
+		t.Fatal("signature check")
+	}
+	if _, err := readCAText("hello"); err == nil {
+		t.Fatal("accepted junk")
 	}
 }
 

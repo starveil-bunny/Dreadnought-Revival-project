@@ -532,6 +532,18 @@ func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
+	// The installer's step: the page's art out of the game files, into the
+	// launcher's cache (gamemedia.go). Lazily done on first use otherwise.
+	if flagRequested("extract-media") {
+		n, err := (&launcherAPI{exeDir: exeDir, cfg: loadConfig(exeDir)}).media().ExtractAll()
+		fmt.Printf("[+] %d/%d launcher art files from the game\n", n, len(mediaManifest))
+		if err != nil {
+			fmt.Printf("[!] %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	cfg, err := applySavedServer(exeDir, loadConfig(exeDir))
 	if err != nil {
 		fatalf("[!] Setting up this PC for the server failed: %v", err)

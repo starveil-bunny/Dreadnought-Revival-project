@@ -1108,6 +1108,27 @@ Where each works:
   winner byte (gs+0x4E8, which only knows 1/2/draw) is that player's
   matchmaker side -- GUESS: that whole side sees victory. Verified headless
   (ffa2, one human); not yet with two or more.
+- Custom modes (2026-10-24; mmogbrain/custom_modes.go sends the lines as
+  sticky host commands when a match forms; the admin "Custom modes" tab edits
+  them; `/match <id>` plays one). Host lines, all reset for a new game mode:
+  `ships N` (bot fill to N ships in all; with `ffa on` the bots get FFA teams
+  too), `teams 3|4|off` (each new controller joins the smallest of N fleets;
+  bots are keyed by bot list entry so they keep their fleet across lives;
+  the stock kill limit is lifted and kills are counted per fleet; a fleet 3+
+  winner or a tie writes winner byte 3 -- GUESS: the stock victory screen
+  shows that as a draw), `secret on|off` ("Realistic": every ship a team of
+  its own, scored by its matchmaker side; bots' m_NPCName and players'
+  PlayerName blanked so no nameplate shows -- the blank tag was first seen on
+  unnamed hunters), `drain A-B C-D|off` (every A-B s each ship takes C-D
+  damage via ApplyDamage; HVC_healthFullKill_healthRegenNone_3 turns its regen
+  off), `shower S N|off` (`/skymeteor N` whenever the last volley is gone, at
+  least S s apart; STM_WeaponModifier on the heralds -- GUESS: cuts the nukes'
+  damage), `scatter on|off` (each new ship teleported once to a random player
+  start, up to 3 km off it), `creeps off` (Onslaught without AI creeps; Boss
+  Rush sends `bossdef` waves from mmogbrain instead), `custom off`. Log lines
+  start `custom:`. Verified headless: teams3 (three fleets scoring), secret
+  (unique teams, friendly kills unscored). Not verified: victory screen for
+  fleets 3/4, nameplates in a real client, scatter, drain, shower, Boss Rush.
 - Havoc and PvE Horde: `/wave`, `/enemy`. PvE gamestates: `/difficulty`.
   PvE Escort (S1E4) runs its own director (`escort:` log lines) and has no
   waves.

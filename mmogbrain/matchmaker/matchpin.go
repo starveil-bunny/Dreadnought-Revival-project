@@ -22,12 +22,18 @@ type matchPin struct {
 	Map    string `json:"map"`
 	Path   string `json:"path"`
 	Launch string `json:"launch"`
-	FFA    bool   `json:"ffa"` // every player on their own team (OnPinnedFFA)
+	FFA    bool   `json:"ffa"`    // every player on their own team (OnPinnedFFA)
+	Custom string `json:"custom"` // a custom mode id (OnMatchFormed)
 }
 
 // OnPinnedFFA, when set, is told the battle match id of a match formed from an
 // "ffa" pin, so the host can be switched to free-for-all (mmogbrain sets it).
 var OnPinnedFFA func(battleMatchID string)
+
+// OnMatchFormed, when set, is told every match formed: its host mode, the
+// custom mode it was pinned to ("" none) and whether it was pinned at all
+// (mmogbrain custom_modes.go).
+var OnMatchFormed func(battleMatchID, launchMode, custom string, pinned bool)
 
 func takeMatchPin() (matchPin, bool) {
 	var p matchPin

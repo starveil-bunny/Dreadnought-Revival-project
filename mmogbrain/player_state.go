@@ -39,6 +39,8 @@ func setMmogPlayerStateDB(database *sql.DB) {
 	mmogPlayerStateMu.Lock()
 	defer mmogPlayerStateMu.Unlock()
 	mmogPlayerStateDB = database
+	// "already granted" belongs to the old database (tests swap in fresh ones)
+	eventGrantsDone.Range(func(k, _ any) bool { eventGrantsDone.Delete(k); return true })
 }
 
 func currentMmogPlayerStateDB() *sql.DB {

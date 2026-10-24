@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 // Season 1's four events take turns, one per period, in table order; the
 // running one is what the matchmaker launches.
 func TestPvESeasonSchedule(t *testing.T) {
+	noPvESeasonPin(t)
 	t.Setenv("DN_PVE_SEASON", "")
 	t.Setenv("DN_PVE_EVENT_DAYS", "7")
 	week := 7 * 24 * time.Hour
@@ -37,6 +39,7 @@ func TestPvESeasonSchedule(t *testing.T) {
 // YA_GetSeasonData names the season and event, with the client's own texts;
 // the mode list carries PVE; YA_Connect names the event of a PvE match.
 func TestPvESeasonReachesTheClient(t *testing.T) {
+	noPvESeasonPin(t)
 	t.Setenv("DN_PVE_SEASON", "")
 	ev, ok := activePvEEvent()
 	if !ok || ev.HostMode == "" || ev.MapPath == "" {
@@ -73,6 +76,7 @@ func TestPvESeasonReachesTheClient(t *testing.T) {
 }
 
 func TestPvESeasonRotation(t *testing.T) {
+	noPvESeasonPin(t)
 	t.Setenv("DN_PVE_SEASON", "rotate")
 	t.Setenv("DN_PVE_EVENT_DAYS", "7")
 	week := 7 * 24 * time.Hour
@@ -93,5 +97,47 @@ func TestPvESeasonRotation(t *testing.T) {
 		if ev := events[active]; ev.id != pveSeasonEvents(want)[slot] || !ev.start.Equal(pveScheduleAnchor.Add(time.Duration(i)*week)) {
 			t.Fatalf("week %d: active event %s starts %v", i, ev.id, ev.start)
 		}
+	}
+}
+
+// noPvESeasonPin hides a /season pin (data/pve_season.json) from a test,
+// and keeps the test's own pins out of data/.
+func noPvESeasonPin(t *testing.T) {
+	pveSeasonStore.Lock()
+	saved, savedLoaded, savedFile := pveSeasonStore.st, pveSeasonStore.loaded, pveSeasonStateFile
+	pveSeasonStore.st, pveSeasonStore.loaded = nil, true
+	dir := t.TempDir()
+	pveSeasonStateFile = func() string { return filepath.Join(dir, "pve_season.json") }
+	pveSeasonStore.Unlock()
+	t.Cleanup(func() {
+		pveSeasonStore.Lock()
+		pveSeasonStore.st, pveSeasonStore.loaded, pveSeasonStateFile = saved, savedLoaded, savedFile
+		pveSeasonStore.Unlock()
+	})
+}
+
+// A /season pin holds its episode with no timer; next walks the season, then
+// on to the next season.
+func TestPvESeasonPin(t *testing.T) {
+	noPvESeasonPin(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	st := pveSeasonState{Season: "PVE_Season1", Episode: 2, Since: now.Add(-30 * 24 * time.Hour)}
+	pveSeasonStore.st = &st
+	season, events, active := pveSchedule(now)
+	if season != "PVE_Season1" || active != 2 || events[2].id != "PVE_S1E3" {
+		t.Fatalf("pinned %s %d %v", season, active, events)
+	}
+	if !events[2].end.After(now) || !events[2].start.Before(now) {
+		t.Errorf("pinned episode window %v-%v does not hold %v", events[2].start, events[2].end, now)
+	}
+	if s, e := pveNextEpisode("PVE_Season1", 2); s != "PVE_Season1" || e != 3 {
+		t.Errorf("next after S1E3: %s %d", s, e)
+	}
+	if s, e := pveNextEpisode("PVE_Season1", 3); s != "PVE_Season3" || e != 0 {
+		t.Errorf("next after S1E4: %s %d", s, e)
+	}
+	pveSeasonStore.st = &pveSeasonState{}
+	if _, ok := activePvEEvent(); ok {
+		t.Error("an event runs with the season pinned off")
 	}
 }

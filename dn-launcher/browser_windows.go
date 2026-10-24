@@ -55,6 +55,7 @@ const browserBridgeJS = `<script>
   window.dnRemoveServer = (id) => dnCall('removeServer', [id]);
   window.dnUseServer = (id) => { dnCall('useServer', [id]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
   window.dnAddServer = (n, a) => { dnCall('addServer', [n, a]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
+  window.dnSetServerCA = (id, t) => { dnCall('setServerCA', [id, t]).then(dnServerResult, e => dnServerResult({ ok: false, needs_ca: true, id, error: String(e) })); };
   window.dnSubmit = (m, u, i, p) => { dnCall('submit', [m, u, i, p]).then(dnAuthResult, e => dnAuthResult({ ok: false, error: String(e) })); };
   window.dnNews = () => { dnCall('news').then(dnNewsResult, e => dnNewsResult({ online: false, error: String(e) })); };
   window.dnMedia = (n) => dnCall('media', [n]);
@@ -198,6 +199,8 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 			out = api.UseServer(str(0))
 		case "addServer":
 			out = api.AddServer(str(0), str(1))
+		case "setServerCA":
+			out = api.SetServerCA(str(0), str(1))
 		case "media":
 			out = api.Media(str(0))
 		case "backgrounds":

@@ -1919,8 +1919,134 @@ static void ZoneBegin(const char *name, const char *arg = nullptr) {
 }
 #define ZONE(name, call) (ZoneBegin(name), (call), ZoneEnd())
 
+// Net RPC capture (on unless DN_HOST_NO_NET_TRACE=1 / dn_host_no_net_trace.txt).
+// Operator 2026-10-24: "capture what the clients send/receive". Every RPC goes
+// through ProcessEvent on the server: a received one is dispatched by the net
+// driver as ProcessEvent(Server* fn), a sent one enters ProcessEvent with a
+// Client*/Multicast fn and is diverted to the net driver from there. Logged
+// with decoded parameters: the first DN_HOST_NET_TRACE_N (default 30) calls of
+// each function, then every 500th, plus a per-function count every 30 s
+// ("net counts:"). Property replication (m_isSpotted etc.) is NOT an RPC and
+// is not seen here.
+// UFunction FunctionFlags at +0x88 (reflect dump, 0C0040C0 = reliable
+// multicast). UE 4.13 flags: FUNC_Net 0x40, FUNC_NetReliable 0x80,
+// FUNC_NetMulticast 0x4000, FUNC_NetServer 0x200000, FUNC_NetClient 0x1000000.
+static int g_netTrace = -1; // -1 not decided yet
+static int g_netTraceN = 30;
+struct NetFnStat { void *fn; unsigned n, nWin; };
+static NetFnStat g_netStat[1024];
+static double g_netWinStart = 0;
+
+static void NetParmText(void *function, void *params, char *out, size_t cap) {
+  size_t o = 0;
+  out[0] = 0;
+  UObjectMin *pp = IsReadable((uint8_t *)function + 0x38, 8) ? *(UObjectMin **)((uint8_t *)function + 0x38) : nullptr;
+  for (int j = 0; pp && j < 12 && o + 8 < cap && IsReadable(pp, 0x58); ++j, pp = *(UObjectMin **)((uint8_t *)pp + 0x28)) {
+    const char *pn = NameText(pp->Name), *pc = ClassNameOf(pp);
+    uint32_t off = *(uint32_t *)((uint8_t *)pp + 0x50), sz = *(uint32_t *)((uint8_t *)pp + 0x34);
+    uint8_t *v = params ? (uint8_t *)params + off : nullptr;
+    o += snprintf(out + o, cap - o, "%s%s=", j ? " " : "", pn ? pn : "?");
+    if (o >= cap || !v || !IsReadable(v, sz ? sz : 1)) {
+      o += o < cap ? snprintf(out + o, cap - o, "?") : 0;
+      continue;
+    }
+    if (!strcmp(pc, "FloatProperty"))
+      o += snprintf(out + o, cap - o, "%.3g", *(float *)v);
+    else if (!strcmp(pc, "IntProperty"))
+      o += snprintf(out + o, cap - o, "%d", *(int32_t *)v);
+    else if (!strcmp(pc, "ByteProperty") || !strcmp(pc, "BoolProperty"))
+      o += snprintf(out + o, cap - o, "%u", *v);
+    else if (!strcmp(pc, "NameProperty")) {
+      const char *t = NameText(*(FNameMin *)v);
+      o += snprintf(out + o, cap - o, "%s", t ? t : "?");
+    } else if (!strcmp(pc, "ObjectProperty") || !strcmp(pc, "ClassProperty")) {
+      UObjectMin *ob = *(UObjectMin **)v;
+      if (!ob)
+        o += snprintf(out + o, cap - o, "null");
+      else if (IsReadable(ob, sizeof(UObjectMin)) && IsReadable(ob->Class, sizeof(UObjectMin)))
+        o += snprintf(out + o, cap - o, "%s:%s", ClassNameOf(ob), NameText(ob->Name) ? NameText(ob->Name) : "?");
+      else
+        o += snprintf(out + o, cap - o, "%p", ob);
+    } else if (!strcmp(pc, "StrProperty")) {
+      const wchar_t *w = *(const wchar_t **)v;
+      int n = *(int32_t *)(v + 8);
+      o += snprintf(out + o, cap - o, "\"");
+      for (int k = 0; w && k < n - 1 && k < 60 && o + 2 < cap && IsReadable(w + k, 2); ++k)
+        out[o++] = w[k] >= 32 && w[k] < 127 ? (char)w[k] : '?';
+      o += o < cap ? snprintf(out + o, cap - o, "\"") : 0;
+    } else {
+      // structs/arrays/vectors: class, then the raw bytes (floats when 4-aligned
+      // and small, e.g. FVector), at most 24 bytes.
+      if (!strcmp(pc, "StructProperty") && sz % 4 == 0 && sz <= 16) {
+        for (uint32_t k = 0; k < sz && o < cap; k += 4)
+          o += snprintf(out + o, cap - o, "%s%.4g", k ? "," : "(", *(float *)(v + k));
+        o += o < cap ? snprintf(out + o, cap - o, ")") : 0;
+      } else {
+        o += snprintf(out + o, cap - o, "%s[%u]", pc, sz);
+        for (uint32_t k = 0; k < sz && k < 24 && o + 3 < cap; ++k)
+          o += snprintf(out + o, cap - o, "%02x", v[k]);
+      }
+    }
+    if (o >= cap)
+      o = cap - 1;
+  }
+}
+
+static void NetTrace(void *object, void *function, void *params) {
+  uint32_t fl = *(uint32_t *)((uint8_t *)function + 0x88);
+  if (!(fl & 0x40))
+    return;
+  NetFnStat *st = nullptr;
+  for (unsigned h = (unsigned)(((uintptr_t)function >> 4) * 2654435761u) & 1023, k = 0; k < 1024; ++k, h = (h + 1) & 1023)
+    if (g_netStat[h].fn == function || !g_netStat[h].fn) {
+      st = &g_netStat[h];
+      st->fn = function;
+      break;
+    }
+  unsigned n = st ? ++st->n : 1;
+  if (st)
+    ++st->nWin;
+  double now = NowMs();
+  if (!g_netWinStart)
+    g_netWinStart = now;
+  if (now - g_netWinStart >= 30000.0) {
+    char line[900];
+    size_t o = 0;
+    for (auto &e : g_netStat)
+      if (e.fn && e.nWin) {
+        const char *t = NameText(((UObjectMin *)e.fn)->Name);
+        char one[128];
+        int w = snprintf(one, sizeof one, "%s=%u", t ? t : "?", e.nWin);
+        e.nWin = 0;
+        if (o && o + w + 2 >= sizeof line)
+          Logf("net counts (30 s): %s", line), o = 0;
+        o += snprintf(line + o, sizeof line - o, "%s%s", o ? ", " : "", one);
+      }
+    if (o)
+      Logf("net counts (30 s): %s", line);
+    g_netWinStart = now;
+  }
+  if (n > (unsigned)g_netTraceN && n % 500)
+    return;
+  const char *dir = (fl & 0x200000) ? "C->S" : (fl & 0x1000000) ? "S->C" : (fl & 0x4000) ? "S->all" : "net";
+  const char *fn = NameText(((UObjectMin *)function)->Name);
+  const char *on = IsReadable(object, sizeof(UObjectMin)) ? NameText(((UObjectMin *)object)->Name) : nullptr;
+  char parms[700];
+  NetParmText(function, params, parms, sizeof parms);
+  Logf("net %s%s #%u %s.%s on %s: %s", dir, (fl & 0x80) ? " rel" : "", n, ClassNameOf(object), fn ? fn : "?",
+       on ? on : "?", parms);
+}
+
 static void *__fastcall HookProcessEvent(void *object, void *function,
                                          void *params) {
+  if (g_netTrace < 0) {
+    g_netTrace = !SwitchOn("DN_HOST_NO_NET_TRACE", "dn_host_no_net_trace.txt");
+    if (const char *e = getenv("DN_HOST_NET_TRACE_N"))
+      g_netTraceN = atoi(e) > 0 ? atoi(e) : g_netTraceN;
+    Logf("net trace: %s (first %d calls of each RPC, then every 500th)", g_netTrace ? "on" : "off", g_netTraceN);
+  }
+  if (g_netTrace && function)
+    NetTrace(object, function, params);
   if (g_peTraceArmed && object && (object == g_peTraceObj[0] || object == g_peTraceObj[1]))
     TraceProcessEvent(object, function, params, __builtin_return_address(0));
   // A __try that catches a fault inside a nested ProcessEvent unwinds past
@@ -2213,6 +2339,11 @@ extern void *g_ffaGm; // /match ffa (FfaTick)
 static int FfaKillLimit(uint8_t *gm);                                  // after FfaTick
 static void FfaCountKill(uint8_t *gm, void *killer, void *victimCtrl); // after FfaTick
 static bool FfaLeader(void *gm, uint8_t *gs);                          // after FfaTick
+static void CustomTick(uint8_t *gm);                                        // custom modes, after CommandKill
+static int CustomKillLimit(uint8_t *gm);                                    // custom modes
+static void CustomCountKill(uint8_t *gm, void *killer, void *victimCtrl);   // custom modes
+static bool CustomLeader(void *gm, uint8_t *gs);                            // custom modes
+static int CustomShips(void *gm);                                           // custom modes: "ships N", 0 = stock fill
 
 static void FlushPendingEomStats();
 
@@ -2257,6 +2388,10 @@ static void NpcAiStartTick(uint8_t *gm);
 static bool ClassChainContains(UObjectMin *obj, const char *needle);
 static bool ClassChainIs(UObjectMin *obj, const char *name);
 
+#define READY_UP_SECS 20
+static int PropOffset(UObjectMin *obj, const char *name);
+static UObjectMin *FindPropObj(UObjectMin *obj, const char *name);
+static const char *PropNameAt(UObjectMin *obj, uint32_t off);
 static void __fastcall HookGameModeTimer(void *gameMode) {
   uint8_t *gm = (uint8_t *)gameMode;
   if (g_bcAIArmed && IsReadable(gm + OFF_GM_ENABLE_SPAWN_AI, 1) &&
@@ -2382,11 +2517,77 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
             DumpReflection(*(UObjectMin **)(gm + OFF_GM_GAMESTATE));
         }
       }
-      if (g_ffaGm == gameMode && gm[OFF_GM_ENABLE_SPAWN_AI]) {
+      // Ready-up time 20 s for every match (operator 2026-10-24): the orbit
+      // (ship select) phase via YGameMode_Multiplayer::m_orbitDurationOverride
+      // (GUESS: > 0 replaces the mode's orbit duration), and Havoc's
+      // between-wave upgrade selection (m_upgradeSelectionDuration, 60 s).
+      static void *s_readyFor = nullptr;
+      if (s_readyFor != gameMode) {
+        s_readyFor = gameMode;
+        int oo = PropOffset((UObjectMin *)gameMode, "m_orbitDurationOverride");
+        int uo = PropOffset((UObjectMin *)gameMode, "m_upgradeSelectionDuration");
+        if (oo > 0 && IsReadable(gm + oo, 4)) {
+          float was = *(float *)(gm + oo);
+          *(float *)(gm + oo) = (float)READY_UP_SECS;
+          Logf("ready time: %s m_orbitDurationOverride %.0f -> %d s", ClassNameOf((UObjectMin *)gameMode), was, READY_UP_SECS);
+        }
+        if (uo > 0 && IsReadable(gm + uo, 4)) {
+          int was = *(int32_t *)(gm + uo);
+          *(int32_t *)(gm + uo) = READY_UP_SECS;
+          Logf("ready time: m_upgradeSelectionDuration %d -> %d s", was, READY_UP_SECS);
+        }
+        // The override alone left the client's "battle begins in" at ~90 s
+        // (operator screenshot 2026-10-24). GUESS: m_orbitDuration or
+        // m_countdownDuration on the mode or its game state is that countdown;
+        // set only when it reads like one (60-180 s).
+        UObjectMin *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(UObjectMin **)(gm + OFF_GM_GAMESTATE) : nullptr;
+        UObjectMin *objs[2] = {(UObjectMin *)gameMode, gs};
+        static const char *const kCountdownNames[] = {"m_orbitDuration", "m_countdownDuration"};
+        for (UObjectMin *o : objs)
+          for (const char *nm : kCountdownNames) {
+            UObjectMin *f = o ? FindPropObj(o, nm) : nullptr;
+            if (!f)
+              continue;
+            const char *fc = ClassNameOf(f);
+            uint8_t *at = (uint8_t *)o + *(uint32_t *)((uint8_t *)f + 0x50);
+            bool isF = !strcmp(fc, "FloatProperty"), isI = !strcmp(fc, "IntProperty");
+            float was = isF ? *(float *)at : isI ? (float)*(int32_t *)at : -1.f;
+            bool set = (isF || isI) && was >= 60 && was <= 180;
+            if (set && isF)
+              *(float *)at = (float)READY_UP_SECS;
+            else if (set)
+              *(int32_t *)at = READY_UP_SECS;
+            Logf("ready time: %s.%s (%s) = %.1f%s", ClassNameOf(o), nm, fc, was, set ? " -> 20" : " (left)");
+          }
+        DescribeProps("ready time", (UObjectMin *)gameMode, "rbit");
+        DescribeProps("ready time", gs, "rbit");
+        DescribeProps("ready time", gs, "ountdown");
+      }
+      // The client's "battle begins in" is YGameState::m_remainingTime, which
+      // read 90 before the match (headless nettrace 2026-10-24); the mode's own
+      // timer counts it down and starts the match at 0 (the bot fill fires at
+      // <= 50, so it still runs). Clamp it to the ready-up time pre-match.
+      {
+        UObjectMin *rgs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(UObjectMin **)(gm + OFF_GM_GAMESTATE) : nullptr;
+        static int s_remOff = -1, s_startedOff = -1;
+        if (rgs && s_remOff < 0) {
+          s_remOff = PropOffset(rgs, "m_remainingTime");
+          s_startedOff = PropOffset(rgs, "m_isMatchStarted");
+        }
+        uint8_t *g = (uint8_t *)rgs;
+        if (rgs && s_remOff > 0 && s_startedOff > 0 && IsReadable(g + s_remOff, 4) && !g[s_startedOff]) {
+          int32_t rem = *(int32_t *)(g + s_remOff);
+          if (rem > READY_UP_SECS && rem <= 180) {
+            *(int32_t *)(g + s_remOff) = READY_UP_SECS;
+            Logf("ready time: m_remainingTime %d -> %d s (pre-match)", rem, READY_UP_SECS);
+          }
+        }
+      }
+      if (g_ffaGm == gameMode && gm[OFF_GM_ENABLE_SPAWN_AI] && !CustomShips(gameMode)) {
         gm[OFF_GM_ENABLE_SPAWN_AI] = 0;
         Logf("bots: FFA match %p -- m_enableSpawnAI -> 0, no bots", gameMode);
       }
-      if (g_ffaGm != gameMode && gm[OFF_GM_ENABLE_SPAWN_AI] == 0 && s_teStopped != gameMode && !s_pve &&
+      if ((g_ffaGm != gameMode || CustomShips(gameMode)) && gm[OFF_GM_ENABLE_SPAWN_AI] == 0 && s_teStopped != gameMode && !s_pve &&
           (type == YGMT_BOOTCAMP || !g_botsBCOnly)) {
         gm[OFF_GM_ENABLE_SPAWN_AI] = 1;
         Logf("bots: game mode %p (type %d) m_enableSpawnAI 0 -> 1. The game fills "
@@ -2395,6 +2596,11 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
              type == YGMT_TEAM_ELIMINATION ? " (Team Elimination: switched off again once filled)" : "");
       }
     }
+  }
+  __try {
+    CustomTick(gm);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("custom: EXCEPTION in the tick");
   }
   g_origGameModeTimer(gameMode);
   // Our ticks run at most every TICK_MIN_MS of wall time. This timer loops
@@ -2495,6 +2701,7 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
 typedef void(__fastcall *tTdmKilled)(void *gm, void *killer, void *victimCtrl,
                                      void *victimPawn, void *damageType);
 static tTdmKilled g_origTdmKilled = nullptr;
+static void BossKillShake(uint8_t *gm, void *pawn); // after CommandShake
 typedef void(__fastcall *tDetermineLeader)(void *gm);
 static tDetermineLeader g_origDetermineLeader = nullptr;
 
@@ -2566,6 +2773,12 @@ static int ShipTeam(void *pawn) {
     return 0;
   int t = ((uint8_t *)pawn)[OFF_SHIP_TEAM];
   return (t == 1 || t == 2) ? t : 0;
+}
+
+// The viewer also shows team 3 (bosses, /swarm, /squad: purple in game).
+static int ViewerTeam(void *pawn) {
+  int t = ShipTeam(pawn);
+  return t || !IsReadable((uint8_t *)pawn + OFF_SHIP_TEAM, 1) || ((uint8_t *)pawn)[OFF_SHIP_TEAM] != 3 ? t : 3;
 }
 
 // GameState +0x4E8 to the team with more points; false when a team has no
@@ -2825,6 +3038,7 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
   // (0x39E470), so it would end the match after m_killsForWinning kills IN
   // TOTAL. Lifted for the call; FfaCountKill keeps a tally per player.
   int ffaLimit = g_ffaGm == gameMode ? FfaKillLimit(gm) : 0;
+  int customLimit = CustomKillLimit(gm); // teams N / secret: the same, by side
 
   int32_t kills1 = 0, kills2 = 0;
   if (gs) {
@@ -2871,6 +3085,7 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
     tdmGS = nullptr;
   }
   ViewerRecordKill(killer, victimCtrl, victimPawn);
+  BossKillShake(gm, victimPawn);
   g_origTdmKilled(gameMode, killer, victimCtrl, victimPawn, damageType);
   if (tdmGS && limit > 0 && limit < ONS_KILL_LIMIT_OFF) {
     __try {
@@ -2881,6 +3096,13 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
       else if (before2 < limit && after2 >= limit)
         AwardManOfTheDay(killer, 2, "kill limit");
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+  }
+  if (customLimit > 0) {
+    __try {
+      CustomCountKill(gm, killer, victimCtrl);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      Logf("custom: EXCEPTION while counting a kill");
     }
   }
   if (ffaLimit > 0) {
@@ -2954,6 +3176,9 @@ static void __fastcall HookDetermineLeader(void *gameMode) {
   __try {
     if (g_ffaGm == gameMode && IsReadable((uint8_t *)gameMode + OFF_GM_GAMESTATE, 8) &&
         FfaLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE)))
+      return;
+    if (IsReadable((uint8_t *)gameMode + OFF_GM_GAMESTATE, 8) &&
+        CustomLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE)))
       return;
     uint8_t *gs = InvasionGameState((uint8_t *)gameMode);
     if (!gs || g_ons.gm != gameMode)
@@ -3037,7 +3262,10 @@ static void *g_onsBigNav = nullptr; // the map's ONS_AITargetH_Navigation node, 
 
 static bool SwitchOn(const char *envName, const char *markerFile);
 
+static bool CustomNoCreeps(); // "creeps off" (custom modes)
 static bool OnslaughtCreepsEnabled() {
+  if (CustomNoCreeps())
+    return false;
   return !SwitchOn("DN_HOST_NO_ONSLAUGHT_CREEPS", "dn_host_no_onslaught_creeps.txt");
 }
 
@@ -3398,6 +3626,8 @@ typedef int(__fastcall *tPawnInt)(void *pawn);
 typedef void *(__fastcall *tPawnPtr)(void *pawn);
 typedef void(__fastcall *tAssignPtr)(void *dst, void *src);
 typedef uint8_t *(__fastcall *tPawnOutByte)(void *pawn, void *tmp);
+static bool NpcInfoSetName(void *infov, const char *name);
+static bool NpcInfoName(void *infov, char *out, int cap);
 static void *GiveNpcPlayerState(void *world, void *pawn, void *ctrl, const wchar_t *name) {
   __try {
     void *psCls = ((tStaticClassPkg)(g_base + RVA_NPC_PLAYERSTATE_CLASS))(L"/Script/DreadGame");
@@ -3418,8 +3648,19 @@ static void *GiveNpcPlayerState(void *world, void *pawn, void *ctrl, const wchar
     alignas(16) uint8_t tmp[16] = {};
     ps[0x4C0] = *((tPawnOutByte)(g_base + 0x57BAE0))(pawn, tmp);
     *(void **)((uint8_t *)pawn + OFF_PAWN_NPC_PLAYERSTATE) = ps;
+    // The shown name is m_NPCName; vt+0x5E0 sets nothing on this class (blank
+    // hunter tags, operator 2026-10-24).
+    char an[64];
+    int k = 0;
+    for (; name[k] && k < 63; ++k)
+      an[k] = name[k] < 128 ? (char)name[k] : '?';
+    an[k] = 0;
+    bool named = NpcInfoSetName(ps, an);
+    char now[64] = "-";
+    NpcInfoName(ps, now, sizeof now);
     const char *cn = NameText(((UObjectMin *)psCls)->Name);
-    Logf("onslaught creeps: %p named \"%ls\" (PlayerState %p %s)", pawn, name, ps, cn ? cn : "?");
+    Logf("onslaught creeps: %p named \"%ls\" (PlayerState %p %s), m_NPCName %s (%s)", pawn, name, ps, cn ? cn : "?",
+         now, named ? "set" : "not set");
     return ps;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("onslaught creeps: NPC PlayerState for %p faulted", pawn);
@@ -3441,6 +3682,7 @@ static bool HavocIsEliminated(void *pc);
 #define OFF_PAWN_ABILITY_MANAGER 0x888 // AYPawn::m_abilityManager
 static const char *g_onsNextShip = nullptr;     // Havoc ShipId whose dataset abilities to install (/spawn)
 static bool g_spawnNoGameBot = false; // heralds, hunters: an AI pawn at a player start, never a TDM game bot
+static bool g_spawnHerald = false;    // heralds: never the /boss team-3 + wave-spot treatment (a Comet def would get it)
 static bool g_spawnAtStart = false;             // /spawn outside Onslaught: `at` is a player start, no route
 static void InstallNpcAbilities(void *pawn, const char *ship);
 static void *SpawnOnslaughtAIShip(uint8_t *gm, void *cls, void *at, int team, bool bigShip) {
@@ -4349,8 +4591,19 @@ static bool AddFeatStackable(void *featsComp, const FNameMin &name, const wchar_
 }
 static void RecordFeatsComp(void *pawn, void *comp);
 
-static const wchar_t *const kTurboTdmFeats[] = {L"ModifierSpeed", L"ModifierDamage",
-                                                L"ModifierFireRate"};
+// Halved (operator 2026-10-24: "halve the current ones"). The client has no
+// half-strength rows, so stacked Havoc boosts (DN_Feats_Havoc_Boosts_Shared_OTS_DT,
+// on every player ship's feat table list) stand in for the stock three:
+//   speed  fwd +600 -> +290 (SpdInc_Large +20 x7, SpdIncFwd_Large +30 x5),
+//          reverse/vertical +600/+300 -> +140, steer +300 -> +150 (SpdIncStr_Large +30 x5)
+//   damage +50 -> +25.5 (DmgInc_Large +10 x2, DmgInc_Medium +5.5)
+//   fire rate: weapon cooldown -50 -> none (no such boost row); reload -50 -> -20
+//          (RldTDec_Medium -10 x2)
+// GUESS: that stacks add (+20% x7 = +140%), not multiply.
+struct TurboFeat { const wchar_t *name; int stacks; };
+static const TurboFeat kTurboTdmFeats[] = {
+    {L"HVC_Boost_Util_SpdInc_Large", 7},  {L"HVC_Boost_Util_SpdIncFwd_Large", 5}, {L"HVC_Boost_Util_SpdIncStr_Large", 5},
+    {L"HVC_Boost_Off_DmgInc_Large", 2},   {L"HVC_Boost_Off_DmgInc_Medium", 1},    {L"HVC_Boost_Off_RldTDec_Medium", 2}};
 
 static volatile bool g_turboOn = false; // /turbo (CommandsTick)
 static bool g_turboTdmMods = false;    // Turbo TDM host with modifiers on
@@ -4371,12 +4624,14 @@ static void __fastcall HookFeatsBegin(void *featsComp) {
     return;
   static volatile LONG s_logged = 0;
   bool logIt = InterlockedIncrement(&s_logged) <= 16;
-  for (const wchar_t *feat : kTurboTdmFeats) {
+  for (const TurboFeat &tf : kTurboTdmFeats) {
+    const wchar_t *feat = tf.name;
     FNameMin name{};
     ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&name, feat, 1 /* FNAME_Add */);
-    bool ok = false;
+    bool ok = true;
     __try {
-      ok = ((tAddFeat)(g_base + RVA_FEATS_ADD_FEAT))(featsComp, *(uint64_t *)&name);
+      for (int k = 0; k < tf.stacks; ++k)
+        ok &= AddFeatStackable(featsComp, name, feat);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       Logf("turbo modifiers: AddFeat(%ls) faulted on %p", feat, featsComp);
       return;
@@ -5609,6 +5864,7 @@ static PlayerSeen *SeenFor(void *pc) {
 // NOT verified live: that clients re-render the lineup/end-of-match captain
 // from the OnRep alone.
 static int PropOffset(UObjectMin *obj, const char *name);
+static UObjectMin *FindPropObj(UObjectMin *obj, const char *name);
 static void SetCaptainDisplayInfo(uint8_t *pc, const char *body) {
   if (SwitchOn("DN_HOST_NO_CAPTAIN", "dn_host_no_captain.txt")) // upstream d5b5cff switch
     return;
@@ -5708,6 +5964,7 @@ static int TeamOverrideFor(uint8_t *pc) {
 void *g_ffaGm = nullptr;
 static struct { void *pc; uint8_t team; int kills; } g_ffaSlot[64];
 static int g_ffaN = 0;
+static int g_ffaSeq = 0; // teams handed out, so a dropped slot's team is not reused
 // FFA score (2026-10-20): the kill handler 0x375F30 passes the killer SHIP's
 // team (0x57C100, pawn +0x8C0) to 0x39E470, which adds 1 to gs+0x1DF0 for
 // team 1 and to gs+0x1DF4 for any other -- teams 3+ all score as team 2 --
@@ -5783,7 +6040,7 @@ static void FfaTick(uint8_t *pc) {
     if (g_ffaN >= 64)
       return;
     g_ffaSlot[g_ffaN].pc = pc;
-    g_ffaSlot[g_ffaN].team = (uint8_t)(3 + g_ffaN);
+    g_ffaSlot[g_ffaN].team = (uint8_t)(3 + g_ffaSeq++ % 250);
     ++g_ffaN;
   }
   uint8_t want = g_ffaSlot[i].team;
@@ -5896,11 +6153,15 @@ static void PlayersTick(uint8_t *gm) {
         int target = *(int32_t *)(gm + OFF_GM_AI_TARGET_T1 + (team - 1) * 4); // +0x980, +0x984
         int extra = mine ? g_extraBots[team] : 0;
         int want = only ? extra : std::max(0, size - humansOnTeam[team]) + extra;
+        if (int ships = only ? 0 : CustomShips(gm)) { // "ships N": N in all, the bots split over the two sides
+          int bots = std::max(0, ships - humansOnTeam[1] - humansOnTeam[2]);
+          want = (team == 1 ? (bots + 1) / 2 : bots / 2) + extra;
+        }
         // target > 0: the bots have been set up (0x3678F0 ran); before that a
         // call would fill early. That was once wanted for only /spawn'd bots,
         // but an info added before the fill never gets a ship (see
         // SpawnGameBot), so they wait for the fill too.
-        if (only ? target > 0 && target != want : size > 0 && target > 0 && (humansOnTeam[team] > 0 || extra > 0) && target != want) {
+        if (only ? target > 0 && target != want : size > 0 && target > 0 && (humansOnTeam[team] > 0 || extra > 0 || CustomShips(gm)) && target != want) {
           ((tSetTeamSizeAI)(g_base + RVA_SET_TEAM_SIZE_AI))(gm, team, want);
           Logf("bot balance: %d human(s) on team %d, %d /spawn'd; team size %d -> team %d bots %d -> %d",
                humansOnTeam[team], team, extra, size, team, target, want);
@@ -6010,8 +6271,7 @@ static PendingEomTransition g_pendingEom[32];
 // (+0x858), "Damage with Modules" (DamageCausedByAbilities, +0x90C). Weapon
 // damage is one total on the PRI while the game splits it per target class, so
 // it is left out rather than split by guesswork. Labels are the English names
-// in DN_PlayerMatchStatistics_DT. Comparison PureStat: the value alone (no
-// average to compare against). The label FText is made by the engine's own
+// in DN_PlayerMatchStatistics_DT. Comparison: see StatComparison. The label FText is made by the engine's own
 // Conv_StringToText body (thunk 0x1E63460 -> 0x19D21F0, FText* (FText* out,
 // const FString* in)), so it is a real, ref-counted FText. The rows are
 // engine-allocated and never freed (a few hundred bytes per match); the local
@@ -6020,7 +6280,54 @@ static PendingEomTransition g_pendingEom[32];
 typedef void *(__fastcall *tTextFromString)(void *outText, FStringMin *in);
 #define STAT_COMPARISON_PURE 5
 
+// The row's caption by m_comparison (0x469280): 1 "BEST OF MATCH", 2 "BEST OF
+// TEAM", 3 "+{0} ABOVE MATCH AVERAGE" ({0} = m_statDiffToAvg, %.1f), 4 the same
+// for the career average, 5 "MATCH STATISTIC". The host ranks the value against
+// every PRI in the GameState's PlayerArray (bots included, as on the
+// scoreboard). Career averages are data the host does not have, so 4 is unused.
+// m_medal is not read by the row; it is set to None (enum Gold 0, None 1).
+#define STAT_COMPARISON_TOP_MATCH 1
+#define STAT_COMPARISON_TOP_TEAM 2
+#define STAT_COMPARISON_ABOVE_MATCH_AVG 3
+#define STAT_MEDAL_NONE 1
+static int StatComparison(uint8_t *pri, int off, bool isFloat, float v, float *diff) {
+  uint8_t *gs = GameStateForPRI(pri);
+  if (!gs || !IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16))
+    return STAT_COMPARISON_PURE;
+  uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
+  int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8), n = 0;
+  if (count <= 1 || count > 256 || !IsReadable(arr, (size_t)count * 8))
+    return STAT_COMPARISON_PURE;
+  int team = pri[OFF_PRI_TEAM];
+  float sum = 0.f, bestMatch = 0.f, bestTeam = 0.f;
+  for (int i = 0; i < count; ++i) {
+    uint8_t *p = arr[i];
+    if (off == OFF_PRI_KILLS && IsReadable(p, OFF_PRI_TEAM + 1))
+      Logf("eom stats: PlayerArray[%d] %s team %d kills %d assists %d", i, ClassNameOf((UObjectMin *)p),
+           p[OFF_PRI_TEAM], *(int32_t *)(p + OFF_PRI_KILLS), *(int32_t *)(p + OFF_PRI_ASSISTS));
+    if (!IsReadable(p, OFF_PRI_TEAM + 1) || !ClassChainContains((UObjectMin *)p, "YPlayerReplicationInfo"))
+      continue;
+    float x = isFloat ? *(float *)(p + off) : (float)*(int32_t *)(p + off);
+    sum += x, ++n;
+    bestMatch = std::max(bestMatch, x);
+    if (p[OFF_PRI_TEAM] == team)
+      bestTeam = std::max(bestTeam, x);
+  }
+  float avg = n ? sum / n : 0.f;
+  int c = n <= 1 || v <= 0.f ? STAT_COMPARISON_PURE
+          : v >= bestMatch   ? STAT_COMPARISON_TOP_MATCH
+          : v >= bestTeam    ? STAT_COMPARISON_TOP_TEAM
+          : v > avg          ? STAT_COMPARISON_ABOVE_MATCH_AVG
+                             : STAT_COMPARISON_PURE;
+  if (c == STAT_COMPARISON_ABOVE_MATCH_AVG)
+    *diff = v - avg;
+  Logf("eom stats: +0x%x = %.0f, best in match %.0f, in team %d %.0f, average %.1f of %d -> comparison %d", off, v,
+       bestMatch, team, bestTeam, avg, n, c);
+  return c;
+}
+
 static int BuildPlayerMatchStats(uint8_t *pri, TArrayIntMin *out) {
+  const int offs[3] = {OFF_PRI_KILLS, OFF_PRI_ASSISTS, OFF_PRI_DAMAGE_ABILITIES};
   struct Row {
     uint8_t id;
     const wchar_t *label;
@@ -6030,7 +6337,7 @@ static int BuildPlayerMatchStats(uint8_t *pri, TArrayIntMin *out) {
   __try {
     rows[n++] = {2, L"Kills", (float)*(int32_t *)(pri + OFF_PRI_KILLS)};
     rows[n++] = {1, L"Assists", (float)*(int32_t *)(pri + OFF_PRI_ASSISTS)};
-    rows[n++] = {9, L"Damage with Modules", *(float *)(pri + OFF_PRI_DAMAGE_ABILITIES)};
+    rows[n++] = {9, L"Damage with Modules", roundf(*(float *)(pri + OFF_PRI_DAMAGE_ABILITIES))};
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return 0;
   }
@@ -6050,8 +6357,9 @@ static int BuildPlayerMatchStats(uint8_t *pri, TArrayIntMin *out) {
     memcpy(buf, rows[i].label, (size_t)len * sizeof(wchar_t));
     FStringMin str = {buf, len, len};
     mkText(e + 0x18, &str);
-    e[0x38] = STAT_COMPARISON_PURE;
+    e[0x38] = (uint8_t)StatComparison(pri, offs[i], i == 2, rows[i].value, (float *)(e + 0x40));
     *(float *)(e + 0x3C) = rows[i].value;
+    e[0x44] = STAT_MEDAL_NONE;
   }
   out->data = (int32_t *)arr;
   out->num = n;
@@ -8644,6 +8952,8 @@ static int HavocCountAliveEnemies(uint8_t *gm, uint8_t *gs) {
           // a null pawn would drop it at the origin.
           *(int32_t *)(gs + OFF_HVC_GS_KILLED) += 1;
           HavocOnEnemyKilled(gm);
+          if (pawn)
+            BossKillShake(gm, pawn);
           if (pawn) {
             struct { void *pawn; int32_t npcId; int32_t pad; } parms = {pawn, id, 0};
             // GUESS: KilledNPCID is the combat-scene spawn index (the id the
@@ -10303,8 +10613,9 @@ static void CommandTurbo(bool on) {
       continue;
     if (on && PawnIsNpc(e.pawn))
       EnsureFeatTables(e.comp);
-    for (const wchar_t *feat : kTurboTdmFeats)
-      failed += !FeatOp(e.comp, feat, on);
+    for (const TurboFeat &tf : kTurboTdmFeats)
+      for (int k = 0; k < tf.stacks; ++k)
+        failed += !FeatOp(e.comp, tf.name, on);
     ++ships;
   }
   Logf("commands: turbo %s on %d ships (%d feat ops failed)", on ? "on" : "off", ships, failed);
@@ -10425,7 +10736,7 @@ static int CollectHumanPCs(uint8_t *gm, uint8_t **out, int max) {
 // client plays it locally from the replicated class reference.
 // GUESS: Scale multiplies the BP's oscillation amplitude (engine default);
 // how strong N=10 feels is not measured.
-static void CommandShake(uint8_t *gm, float scale) {
+static UObjectMin *ShakeClass() {
   static UObjectMin *s_cls = nullptr;
   if (!s_cls) {
     UObjectMin *uclassClass = ResolveUClassClass();
@@ -10439,8 +10750,29 @@ static void CommandShake(uint8_t *gm, float scale) {
       s_cls = nullptr;
     }
     if (!s_cls)
-      return (void)Logf("commands: shake class did not load");
+      Logf("commands: shake class did not load");
+    else
+      PinToRootSet(s_cls);
   }
+  return s_cls;
+}
+// /endmatch 1|2: that team wins now, through the same EndMatch the modes' own
+// limits call (Onslaught points, TDM kills).
+static void CommandEndMatch(uint8_t *gm, int team) {
+  uint8_t *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+  if (!gs || !IsReadable(gs + OFF_GS_WINNING_TEAM, 1))
+    return (void)Logf("commands: endmatch -- no game state");
+  g_ons.ended = true;
+  gs[OFF_GS_WINNING_TEAM] = (uint8_t)team;
+  Logf("commands: endmatch -- team %d wins, ending the match", team);
+  void **vt = *(void ***)gm;
+  ((void(__fastcall *)(void *))vt[VT_GM_END_MATCH / 8])(gm);
+}
+
+static void CommandShake(uint8_t *gm, float scale) {
+  UObjectMin *s_cls = ShakeClass();
+  if (!s_cls)
+    return;
   uint8_t *pcs[64];
   int n = CollectHumanPCs(gm, pcs, 64), sent = 0;
   __try {
@@ -10461,6 +10793,31 @@ static void CommandShake(uint8_t *gm, float scale) {
     Logf("commands: shake faulted after %d players", sent);
   }
   Logf("commands: shake x%.0f sent to %d players", scale, sent);
+}
+
+// Boss kill (operator 2026-10-24: "killing a boss should shake the screen a
+// little"): every elite that got the arrival shake is remembered here; its
+// death (TDM-family Killed hook, Havoc enemy list) shakes every human at half
+// the arrival's strength. Pointers are only compared, never read.
+static void *g_bossPawns[16];
+static void BossKillNote(void *pawn) {
+  for (void *&p : g_bossPawns)
+    if (!p || p == pawn) {
+      p = pawn;
+      return;
+    }
+  g_bossPawns[0] = pawn;
+}
+static void BossKillShake(uint8_t *gm, void *pawn) {
+  if (!pawn)
+    return;
+  for (void *&p : g_bossPawns)
+    if (p == pawn) {
+      p = nullptr;
+      Logf("commands: boss %p killed -- shake", pawn);
+      CommandShake(gm, 3.f);
+      return;
+    }
 }
 
 // /flash <colour>: APlayerController::ClientSetCameraFade(bEnableFading,
@@ -11689,6 +12046,17 @@ static bool KillPawn(void *pawn, void *instigator = nullptr, void *causer = null
 }
 
 static void CommandKill(uint8_t *gm, const char *who) {
+  // /kill boss: the remembered elites (BossKillShake list) -- a test hook for
+  // the kill shake. GUESS: a stale entry is caught by the readable/class check.
+  if (!_stricmp(who, "boss")) {
+    int hit = 0;
+    for (void *p : g_bossPawns)
+      if (p && IsReadable(p, sizeof(UObjectMin)) && IsReadable(((UObjectMin *)p)->Class, sizeof(UObjectMin)) &&
+          strstr(ClassNameOf(p), "Pawn") && KillPawn(p))
+        ++hit;
+    Logf("commands: kill boss -> %d elites", hit);
+    return;
+  }
   uint8_t *pcs[64];
   int n = CollectHumanPCs(gm, pcs, 64), hit = 0;
   for (int i = 0; i < n; ++i) {
@@ -11701,6 +12069,376 @@ static void CommandKill(uint8_t *gm, const char *who) {
       ++hit;
   }
   Logf("commands: kill %s -> %d players", who, hit);
+}
+
+// ---------------------------------------------------------------------------
+// Custom modes (mmogbrain custom_modes.go queues these for the match host)
+//
+//   teams N          N sides (3 or 4): every ship, human or bot, joins the
+//                    smallest side when first seen. Only the ship (pawn) team
+//                    is set, as in FFA, so spawns and the scoreboard stay the
+//                    stock two sides. Kills are tallied per side here; the
+//                    first side to the mode's kill limit ends the match.
+//   secret on        every ship on a side of its own (all show hostile, and
+//                    friendly fire hurts), while the score still counts by
+//                    the side the ship started on -- know your team.
+//   drain A-B C-D    every ship takes C-D damage every A-B seconds and its
+//                    health does not regenerate (healers matter).
+//   shower S N       a herald volley of about N nukes every S seconds, the
+//                    heralds' damage cut by 75%.
+//   creeps off       no Onslaught creeps (fake Havoc: the waves are bosses).
+//   ships N          bots fill the match to N ships in all (with ffa: FFA
+//                    against bots, each bot on its own side too).
+//   custom off       all of it off.
+//
+// GUESS: the victory screen knows sides 1 and 2 only (gs+0x4E8: 1, 2, 3 =
+// draw), so a side 3/4 win shows as a draw. GUESS: AI controllers last
+// across respawns, so a bot keeps its side.
+struct CmSlot { void *ctrl; int entry; uint8_t side, team; }; // entry: game bot list index, -1 a player
+struct CmDrain { void *pawn; double next; };
+static struct {
+  void *gm;
+  int teams, ships;
+  bool secret, noCreeps;
+  int drainMinMs, drainMaxMs, drainMin, drainMax;
+  int showerMs, showerN;
+  double nextShower;
+  void *showerCut[2];
+  CmSlot slot[128];
+  int n;
+  int sideKills[8];
+  int limit, limitSaved;
+  void *limitGm;
+  bool ended;
+  CmDrain drain[192];
+  bool scatter;
+  void *placed[256]; // ships already moved to a random start
+  int placedAt;
+  void *starts[64];
+  int nStarts;
+} g_cm;
+static int FindPlayerStarts(void **out, int max);
+static bool TeleportActor(void *actor, const float loc[3], float yawDeg);
+
+static int CustomShips(void *gm) { return g_cm.gm == gm ? g_cm.ships : 0; }
+static bool CustomNoCreeps() { return g_cm.noCreeps; }
+
+static int CmRand(int lo, int hi) { return hi > lo ? lo + rand() % (hi - lo + 1) : lo; }
+
+static bool DamagePawn(void *pawn, float damage) {
+  static UObjectMin *s_statics = nullptr;
+  if (!s_statics)
+    s_statics = FindObjectNamed("Default__GameplayStatics");
+  if (!s_statics)
+    return false;
+  DamageFill d = {pawn, damage, 0, 0, nullptr, nullptr};
+  __try {
+    return CallFilled(s_statics, L"ApplyDamage", FillApplyDamage, &d);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+static CmSlot *CmSlotOf(void *ctrl) {
+  for (int i = 0; i < g_cm.n; ++i)
+    if (g_cm.slot[i].ctrl == ctrl)
+      return &g_cm.slot[i];
+  return nullptr;
+}
+
+// The side and team for a controller seen for the first time (its ship still
+// carries the stock team, the side it started on).
+static CmSlot *CmSlotNew(void *ctrl, uint8_t side) {
+  if (g_cm.n >= 128) { // drop the controllers that are gone
+    int k = 0;
+    for (int i = 0; i < g_cm.n; ++i)
+      if (g_cm.slot[i].entry >= 0 || ObjectLive(g_cm.slot[i].ctrl))
+        g_cm.slot[k++] = g_cm.slot[i];
+    g_cm.n = k;
+    if (g_cm.n >= 128)
+      return nullptr;
+  }
+  CmSlot &s = g_cm.slot[g_cm.n++];
+  s.ctrl = ctrl, s.entry = -1, s.side = side, s.team = side;
+  if (g_cm.secret) {
+    s.team = (uint8_t)(10 + (g_cm.n % 240));
+  } else if (g_cm.teams >= 3) {
+    int count[8] = {};
+    for (int i = 0; i < g_cm.n - 1; ++i)
+      if (g_cm.slot[i].team >= 1 && g_cm.slot[i].team <= g_cm.teams &&
+          (g_cm.slot[i].entry >= 0 || ObjectLive(g_cm.slot[i].ctrl)))
+        ++count[g_cm.slot[i].team];
+    int best = 1;
+    for (int t = 2; t <= g_cm.teams; ++t)
+      if (count[t] < count[best])
+        best = t;
+    s.team = (uint8_t)best;
+  }
+  return &s;
+}
+
+// Scatter: every new ship (each respawn is a new pawn) is moved once to a
+// random player start, up to 3 km off it so they don't stack.
+// GUESS: a ship teleported on its first tick stays there (nothing re-places it).
+static void CmScatter(uint8_t *pawn) {
+  for (void *p : g_cm.placed)
+    if (p == pawn)
+      return;
+  g_cm.placed[g_cm.placedAt++ % 256] = pawn;
+  if (!g_cm.nStarts)
+    g_cm.nStarts = FindPlayerStarts(g_cm.starts, 64);
+  float loc[3];
+  if (!g_cm.nStarts || !ActorLocation(g_cm.starts[rand() % g_cm.nStarts], loc))
+    return (void)Logf("custom: scatter -- no player start (%d)", g_cm.nStarts);
+  loc[0] += (float)CmRand(-3000, 3000), loc[1] += (float)CmRand(-3000, 3000);
+  bool ok = TeleportActor(pawn, loc, (float)CmRand(0, 359));
+  Logf("custom: scatter %s to %.0f %.0f %.0f %s", ClassNameOf((UObjectMin *)pawn), loc[0], loc[1], loc[2], ok ? "ok" : "FAILED");
+}
+
+// Realistic: no name over the players either. PlayerName (CPF_Net) is set to
+// an empty engine-allocated string; the client gets it by replication. The
+// old buffer is left alone (a few bytes per player). Kill feed and the admin
+// viewer show "-" for them meanwhile.
+// GUESS: the client's nameplate reads PlayerName and an empty one shows blank,
+// as the hunters' empty m_NPCName did.
+static void CmBlankPlayerName(void *psv) {
+  __try {
+    UObjectMin *ps = (UObjectMin *)psv;
+    if (!ps || !ObjectLive(ps))
+      return;
+    int off = PropOffset(ps, "PlayerName");
+    if (off < 0)
+      return;
+    FStringMin *fs = (FStringMin *)((uint8_t *)ps + off);
+    if (!fs->data || fs->num <= 1)
+      return;
+    wchar_t *buf = (wchar_t *)((tOperatorNew)(g_base + RVA_OPERATOR_NEW))(sizeof(wchar_t));
+    if (!buf)
+      return;
+    buf[0] = 0;
+    char had[64] = "-";
+    PlayerStateName(ps, had, sizeof had);
+    fs->data = buf, fs->num = 1, fs->max = 1;
+    Logf("custom: secret -- player %s name blanked", had);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("custom: secret -- player name blank faulted");
+  }
+}
+
+// A game bot's bot list entry (gm+0x968 list, weak infos gm+0x9A0): its
+// controller and info are new every life (teams3 headless 2026-10-24: the
+// same bots re-dealt to other fleets on respawn); the entry is not.
+static int CmBotEntry(uint8_t *gm, uint8_t *pawn) {
+  __try {
+    void *ps = IsReadable(pawn + OFF_PAWN_NPC_PLAYERSTATE, 8) ? *(void **)(pawn + OFF_PAWN_NPC_PLAYERSTATE) : nullptr;
+    uint8_t *infos = ps && IsReadable(gm + 0x9A0, 16) ? *(uint8_t **)(gm + 0x9A0) : nullptr;
+    int ninfo = infos ? *(int32_t *)(gm + 0x9A8) : 0;
+    for (int i = 0; i < ninfo && i < 256 && IsReadable(infos + (size_t)i * 8, 8); ++i)
+      if (((tWeakGet)(g_base + RVA_WEAK_PTR_GET))(infos + (size_t)i * 8) == ps)
+        return i;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return -1;
+}
+
+static void CustomTick(uint8_t *gm) {
+  if (g_cm.gm != gm)
+    return;
+  double now = NowMs();
+  if (g_ffaGm == gm && g_cm.ships && g_ffaN >= 60) { // FFA bots: drop the controllers that are gone
+    int k = 0;
+    for (int i = 0; i < g_ffaN; ++i)
+      if (ObjectLive(g_ffaSlot[i].pc))
+        g_ffaSlot[k++] = g_ffaSlot[i];
+    g_ffaN = k, g_ffaLead = -1;
+    for (int i = 0; i < g_ffaN; ++i)
+      if (g_ffaLead < 0 || g_ffaSlot[i].kills > g_ffaSlot[g_ffaLead].kills)
+        g_ffaLead = i;
+  }
+  // Ships: sides (teams / secret), FFA bots, the drain.
+  for (FeatsByPawn &e : g_featsByPawn) {
+    if (!e.pawn || !ObjectLive(e.pawn) || FeatsCompOf(e.pawn) != e.comp)
+      continue;
+    uint8_t *pawn = (uint8_t *)e.pawn;
+    void *ctrl = IsReadable(pawn + OFF_PAWN_CONTROLLER, 8) ? *(void **)(pawn + OFF_PAWN_CONTROLLER) : nullptr;
+    if (!ctrl || !IsReadable(pawn + OFF_SHIP_TEAM, 1))
+      continue;
+    bool npc = PawnIsNpc(pawn);
+    if (g_cm.scatter)
+      CmScatter(pawn);
+    if (g_cm.secret && npc && IsReadable(pawn + OFF_PAWN_NPC_PLAYERSTATE, 8)) {
+      // No name over the bots: a blank m_NPCName shows a blank tag (seen on
+      // the unnamed hunters, 2026-10-24). Re-blanked if the game names it again.
+      void *ps = *(void **)(pawn + OFF_PAWN_NPC_PLAYERSTATE);
+      char had[64];
+      if (ps && ObjectLive(ps) && NpcInfoName(ps, had, sizeof had)) {
+        bool ok = NpcInfoSetName(ps, "");
+        Logf("custom: secret -- %s name %s blanked %s", ClassNameOf((UObjectMin *)pawn), had, ok ? "ok" : "FAILED");
+      }
+    }
+    if (g_cm.secret && !npc && IsReadable((uint8_t *)ctrl + OFF_PC_PLAYER_STATE, 8))
+      CmBlankPlayerName(*(void **)((uint8_t *)ctrl + OFF_PC_PLAYER_STATE));
+    if (g_ffaGm == gm && g_cm.ships && npc)
+      FfaTick((uint8_t *)ctrl); // humans are done by PlayersTick
+    else if (g_cm.secret || g_cm.teams >= 3) {
+      CmSlot *s = CmSlotOf(ctrl);
+      int entry = !s && npc ? CmBotEntry(gm, pawn) : -1;
+      for (int i = 0; !s && entry >= 0 && i < g_cm.n; ++i)
+        if (g_cm.slot[i].entry == entry)
+          s = &g_cm.slot[i], s->ctrl = ctrl; // the same bot, a new life
+      if (!s && pawn[OFF_SHIP_TEAM] >= 1 && pawn[OFF_SHIP_TEAM] <= 2 && (s = CmSlotNew(ctrl, pawn[OFF_SHIP_TEAM])))
+        s->entry = entry;
+      if (s && pawn[OFF_SHIP_TEAM] != s->team) {
+        uint8_t t = s->team;
+        __try {
+          ((tPawnSetTeam)(g_base + RVA_PAWN_SET_TEAM))(pawn, &t);
+          Logf("custom: %s %s entry %d side %d -> team %d", npc ? "bot" : "player", ClassNameOf((UObjectMin *)pawn), s->entry,
+               s->side, t);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+          Logf("custom: ship team set faulted");
+        }
+      }
+    }
+    if (g_cm.drainMax > 0) {
+      CmDrain *d = nullptr, *freeAt = nullptr;
+      for (CmDrain &x : g_cm.drain) {
+        if (x.pawn == pawn) {
+          d = &x;
+          break;
+        }
+        if (!freeAt && (!x.pawn || !ObjectLive(x.pawn)))
+          freeAt = &x;
+      }
+      if (!d && freeAt) {
+        d = freeAt;
+        d->pawn = pawn;
+        d->next = now + CmRand(g_cm.drainMinMs, g_cm.drainMaxMs);
+        bool bad = false;
+        bool ok = FeatOp(e.comp, L"HVC_healthFullKill_healthRegenNone_3", true, &bad); // regen -100%
+        Logf("custom: drain on %s, regen off %s", ClassNameOf((UObjectMin *)pawn), ok ? "ok" : "FAILED");
+      } else if (d && now >= d->next) {
+        int dmg = CmRand(g_cm.drainMin, g_cm.drainMax);
+        DamagePawn(pawn, (float)dmg);
+        d->next = now + CmRand(g_cm.drainMinMs, g_cm.drainMaxMs);
+      }
+    }
+  }
+  // The shower: a new volley set once the last has gone.
+  if (g_cm.showerMs > 0 && now >= g_cm.nextShower && g_sky.volleys <= 0) {
+    g_cm.nextShower = now + g_cm.showerMs;
+    CommandSkyMeteor(gm, g_cm.showerN, 0);
+  }
+  for (int t = 0; t < 2; ++t) {
+    void *h = g_sky.pawn[t];
+    if (g_cm.showerMs > 0 && h && h != g_cm.showerCut[t] && ObjectLive(h)) {
+      g_cm.showerCut[t] = h;
+      void *comp = FeatsCompOf(h);
+      bool ok = comp && FeatOp(comp, L"STM_WeaponModifier", true); // GUESS: -75% reaches the nukes
+      Logf("custom: shower herald %p damage cut %s", h, ok ? "ok" : "FAILED");
+    }
+  }
+}
+
+static int CustomKillLimit(uint8_t *gm) {
+  if (g_cm.gm != gm || !(g_cm.secret || g_cm.teams >= 3) || !IsReadable(gm + OFF_GM_KILLS_FOR_WINNING, 4))
+    return 0;
+  int32_t *lim = (int32_t *)(gm + OFF_GM_KILLS_FOR_WINNING);
+  if (g_cm.limitGm != gm) {
+    g_cm.limitGm = gm;
+    g_cm.limit = g_cm.limitSaved = *lim > 0 && *lim < ONS_KILL_LIMIT_OFF ? *lim : 0;
+    Logf("custom: kill limit %d per side (stock limit lifted)", g_cm.limit);
+  }
+  *lim = ONS_KILL_LIMIT_OFF;
+  return g_cm.limit > 0 ? g_cm.limit : 0;
+}
+
+static void CustomCountKill(uint8_t *gm, void *killer, void *victimCtrl) {
+  if (!killer || killer == victimCtrl || g_cm.ended)
+    return;
+  CmSlot *k = CmSlotOf(killer), *v = CmSlotOf(victimCtrl);
+  if (!k || !v)
+    return;
+  int side = g_cm.secret ? k->side : k->team;
+  bool friendly = side == (g_cm.secret ? v->side : v->team) || side < 1 || side > 7;
+  int n = friendly ? 0 : ++g_cm.sideKills[side];
+  uint8_t *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+  if (g_cm.secret && gs && IsReadable(gs + OFF_GS_KILLS_T2, 4)) { // the scoreboard by side, not by ship team
+    *(int32_t *)(gs + OFF_GS_KILLS_T1) = g_cm.sideKills[1];
+    *(int32_t *)(gs + OFF_GS_KILLS_T2) = g_cm.sideKills[2];
+  }
+  if (friendly)
+    return Logf("custom: friendly kill by side %d, no score", side);
+  Logf("custom: side %d has %d kill(s), limit %d", side, n, g_cm.limit);
+  if (g_cm.limit <= 0 || n < g_cm.limit || !gs || !CustomLeader(gm, gs))
+    return;
+  g_cm.ended = true;
+  Logf("custom: side %d reached %d kills -- ending the match, winner byte %d", side, n, gs[OFF_GS_WINNING_TEAM]);
+  AwardManOfTheDay(killer, gs[OFF_GS_WINNING_TEAM], "custom kill limit");
+  void **vt = *(void ***)gm;
+  ((void(__fastcall *)(void *))vt[VT_GM_END_MATCH / 8])(gm);
+}
+
+static bool CustomLeader(void *gm, uint8_t *gs) {
+  if (g_cm.gm != gm || !(g_cm.secret || g_cm.teams >= 3) || !gs || !IsReadable(gs + OFF_GS_WINNING_TEAM, 1))
+    return false;
+  int best = 1, tie = 0;
+  for (int t = 2; t < 8; ++t)
+    if (g_cm.sideKills[t] > g_cm.sideKills[best])
+      best = t;
+  for (int t = 1; t < 8; ++t)
+    tie += g_cm.sideKills[t] == g_cm.sideKills[best];
+  gs[OFF_GS_WINNING_TEAM] = tie > 1 || best > 2 ? 3 : (uint8_t)best;
+  return true;
+}
+
+static void CmRange(const char *a, int *lo, int *hi) {
+  *lo = atoi(a);
+  const char *dash = strchr(a, '-');
+  *hi = dash ? atoi(dash + 1) : *lo;
+  if (*hi < *lo)
+    std::swap(*lo, *hi);
+}
+
+static void CommandCustom(uint8_t *gm, const char *cmd, const char *arg, const char *arg2) {
+  if (g_cm.gm != gm) {
+    if (g_cm.gm && g_cm.limitGm == g_cm.gm && g_cm.limitSaved > 0 && ObjectLive(g_cm.gm))
+      *(int32_t *)((uint8_t *)g_cm.gm + OFF_GM_KILLS_FOR_WINNING) = g_cm.limitSaved;
+    memset(&g_cm, 0, sizeof(g_cm));
+    g_cm.gm = gm;
+  }
+  bool off = !strcmp(arg, "off") || !strcmp(arg, "0");
+  if (!strcmp(cmd, "teams"))
+    g_cm.teams = off ? 0 : std::min(4, std::max(3, atoi(arg)));
+  else if (!strcmp(cmd, "secret"))
+    g_cm.secret = !off;
+  else if (!strcmp(cmd, "creeps"))
+    g_cm.noCreeps = off;
+  else if (!strcmp(cmd, "scatter"))
+    g_cm.scatter = !off;
+  else if (!strcmp(cmd, "ships"))
+    g_cm.ships = off ? 0 : std::min(32, std::max(2, atoi(arg)));
+  else if (!strcmp(cmd, "drain")) {
+    if (off)
+      g_cm.drainMax = 0;
+    else {
+      int a, b;
+      CmRange(arg, &a, &b);
+      g_cm.drainMinMs = std::max(250, a * 1000), g_cm.drainMaxMs = std::max(g_cm.drainMinMs, b * 1000);
+      CmRange(arg2, &g_cm.drainMin, &g_cm.drainMax);
+      g_cm.drainMin = std::max(1, g_cm.drainMin), g_cm.drainMax = std::max(g_cm.drainMin, g_cm.drainMax);
+    }
+  } else if (!strcmp(cmd, "shower")) {
+    g_cm.showerMs = off ? 0 : std::max(5, atoi(arg)) * 1000;
+    g_cm.showerN = arg2[0] ? std::min(40, std::max(1, atoi(arg2))) : 12;
+    g_cm.nextShower = NowMs() + 20000; // GUESS: after the ships are in
+  } else if (!strcmp(cmd, "custom") && off) {
+    if (g_cm.limitGm == gm && g_cm.limitSaved > 0)
+      *(int32_t *)(gm + OFF_GM_KILLS_FOR_WINNING) = g_cm.limitSaved;
+    memset(&g_cm, 0, sizeof(g_cm));
+  }
+  Logf("custom: %s %s %s -- teams %d secret %d ships %d drain %d-%d ms %d-%d dmg shower %d ms x%d scatter %d", cmd, arg, arg2,
+       g_cm.teams, g_cm.secret, g_cm.ships, g_cm.drainMinMs, g_cm.drainMaxMs, g_cm.drainMin, g_cm.drainMax,
+       g_cm.showerMs, g_cm.showerN, g_cm.scatter);
 }
 
 static UObjectMin *FindPropObj(UObjectMin *obj, const char *name);
@@ -12132,13 +12870,17 @@ static void PaintPawn(void *pawn, int32_t paint, int32_t emblem = 0, int32_t pat
 // A custom boss (/boss <id>, mmogbrain admin_bosses.go), fetched from
 // GET /battle/boss?id=N by CommandBossDef. A ring: a queued elite keeps
 // pointing at its definition for its 120 s spawn window.
+// Up to 16 modules: a boss's AI type (BossDef::ai) may have more fire slots
+// than the 8 the editor used to offer (admin_bosses.go bossAISlots).
+enum { BOSS_MAX_ABIL = 16 };
 struct BossDef {
   int id;
   char ship[48];
   wchar_t name[32];
   int32_t paint, pattern, decal, emblem;
   int nAbil, nFeat;
-  wchar_t abil[8][192];
+  wchar_t abil[BOSS_MAX_ABIL][192];
+  wchar_t ai[192]; // admin "AI": a Havoc dataset row's m_AIController class path, empty = the base's own
   wchar_t feat[12][64];
   int stacks[12];
   int32_t parts[4];          // hero ship parts, Forecastle/Hull/Bridge/Stern, 0 = keep
@@ -12261,6 +13003,16 @@ static void BossMarker(uint8_t *gm, void *pawn, int want) {
   __try {
     if (want == MARKER_NONE)
       return;
+    // PvP modes: MulticastShowHUDMarkerOnActor is on YGameState_PVE only, and
+    // SetGenericMissionMarker "called" showed nothing (operator 2026-10-24:
+    // boss still not marked). The default there is the spotted mark.
+    if (want == MARKER_DEFAULT) {
+      if (!g_marker.done)
+        MarkerFind();
+      void *gs0 = gm && IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(void **)(gm + OFF_GM_GAMESTATE) : nullptr;
+      if (!gs0 || !FindFunctionSafe(gs0, *(uint64_t *)&g_marker.fn[0]))
+        want = MARKER_SPOTTED;
+    }
     if (want == MARKER_SPOTTED) {
       // Player marking: the client's ServerSetPawnToSpotted(pawn, bool) RPC
       // (exec thunk 0x773460 -> _Implementation at vt+0xDF8) ends in the
@@ -12272,6 +13024,49 @@ static void BossMarker(uint8_t *gm, void *pawn, int want) {
       Logf("boss marker: spotted %s on %s (m_isSpotted %s, owner %s +%d)", ok ? "set" : "NOT SET", ClassNameOf(pawn),
            bp ? ClassNameOf(bp) : "missing", bp && bp->Outer ? NameText(bp->Outer->Name) : "-",
            PropOffset((UObjectMin *)pawn, "m_isSpotted"));
+      if (ok)
+        return;
+      // AI ships have no m_isSpotted on their class chain (headless nettrace
+      // 2026-10-24: "m_isSpotted missing"). ServerSetPawnToSpotted's object
+      // parameter is "replicationInfo" -- the ship's PlayerState, NOT the pawn:
+      // passing the pawn crashed a live host 0.3 s later (2026-10-24 11:25,
+      // AV inside the boss controller's ability sequence). GUESS: m_isSpotted
+      // lives on the replication info; set it there, else run the spot with it.
+      UObjectMin *ps = IsReadable((uint8_t *)pawn + OFF_PAWN_NPC_PLAYERSTATE, 8)
+                           ? *(UObjectMin **)((uint8_t *)pawn + OFF_PAWN_NPC_PLAYERSTATE)
+                           : nullptr;
+      if (!ps || !IsReadable(ps, sizeof(UObjectMin)) || !ClassChainContains(ps, "ReplicationInfo"))
+        return Logf("boss marker: %s has no replication info -- not marked", ClassNameOf(pawn));
+      if (SetBoolProp(ps, "m_isSpotted", true))
+        return Logf("boss marker: m_isSpotted set on %s", ClassNameOf(ps));
+      uint8_t *pcs[8];
+      int npc = CollectHumanPCs(gm, pcs, 8);
+      UObjectMin *fn = npc ? FindFnOnChain(pcs[0], "ServerSetPawnToSpotted") : nullptr;
+      if (!fn)
+        return Logf("boss marker: ServerSetPawnToSpotted %s", npc ? "not found" : "-- no human controller");
+      alignas(16) uint8_t parms[64] = {};
+      bool objSet = false;
+      for (UObjectMin *pp = *(UObjectMin **)((uint8_t *)fn + 0x38); pp && IsReadable(pp, 0x58);
+           pp = *(UObjectMin **)((uint8_t *)pp + 0x28)) {
+        uint32_t off = *(uint32_t *)((uint8_t *)pp + 0x50);
+        const char *pc = ClassNameOf(pp);
+        if (off >= 56)
+          continue;
+        if (!objSet && !strcmp(pc, "ObjectProperty"))
+          *(void **)(parms + off) = ps, objSet = true;
+        else if (!strcmp(pc, "BoolProperty"))
+          parms[off] = 1;
+        Logf("boss marker:   ServerSetPawnToSpotted parm %s %s +0x%x", NameText(pp->Name), pc, off);
+      }
+      if (!objSet)
+        return Logf("boss marker: ServerSetPawnToSpotted has no object parameter");
+      __try {
+        void **vt = *(void ***)pcs[0];
+        ((tProcessEventVirt)vt[VT_PROCESS_EVENT / 8])(pcs[0], fn, parms);
+        Logf("boss marker: ServerSetPawnToSpotted(%s of %s) called via %p", ClassNameOf(ps), ClassNameOf(pawn), pcs[0]);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Logf("boss marker: ServerSetPawnToSpotted faulted");
+      }
       return;
     }
     if (!g_marker.done)
@@ -12332,9 +13127,22 @@ static void InstallAbilityClasses(void *pawn, const char *tag, const wchar_t *co
 // table to the component's list (+0xF8, see EnsureFeatTables).
 // GUESS: an element is {UDataTable*, 0}; and the table is only in memory once
 // something loaded a briefing (a human ship flying one) -- false otherwise.
+// The lookup walks every object (~385 ms per elite, stutter1 2026-10-24):
+// cached, and retried at most every 30 s while it is not loaded.
+static UObjectMin *OfficerTable() {
+  static UObjectMin *s_tbl;
+  static DWORD s_triedAt;
+  if (s_tbl && ObjectLive(s_tbl))
+    return s_tbl;
+  s_tbl = nullptr;
+  if (s_triedAt && GetTickCount() - s_triedAt < 30000)
+    return nullptr;
+  s_triedAt = GetTickCount();
+  return s_tbl = FindObjectNamedOfClass("DN_Officers_OTS_DT", "DataTable");
+}
 static bool EnsureOfficerTable(void *comp) {
   uint8_t *c = (uint8_t *)comp;
-  UObjectMin *tbl = FindObjectNamedOfClass("DN_Officers_OTS_DT", "DataTable");
+  UObjectMin *tbl = OfficerTable();
   if (!tbl || !IsReadable(c + 0xF8, 16))
     return false;
   int n = *(int32_t *)(c + 0x100);
@@ -12357,9 +13165,79 @@ static bool EnsureOfficerTable(void *comp) {
   return true;
 }
 
+// A custom boss's AI type (admin "AI", operator 2026-10-24: fire slots differ
+// per controller -- the Nuker's 6 left jets 7-8 idle, a Titan carrier or a
+// Sniper controller has more). The pawn keeps the controller its spawn route
+// gave it until here; then a controller of the chosen class is spawned and
+// takes over the old one's scene NPC index/type and spawn actor (the scene
+// entry itself holds only the pawn, RegisterOnslaughtNPC), and possesses the
+// pawn (Possess un-possesses the old one). The old controller is left
+// standing with its behaviour tree off, not destroyed: GUESS that destroying
+// an NPC controller runs scene/wave bookkeeping for a lost NPC.
+// GUESS: a controller built for another hull flies this one (untested).
+static void SwapNpcController(uint8_t *gm, void *pawn, const wchar_t *path, const wchar_t *name) {
+  void *old = IsReadable((uint8_t *)pawn + OFF_PAWN_CONTROLLER, 8) ? *(void **)((uint8_t *)pawn + OFF_PAWN_CONTROLLER) : nullptr;
+  UObjectMin *uc = ResolveUClassClass(), *k = nullptr;
+  __try {
+    k = uc ? (UObjectMin *)((tStaticLoadClass)(g_base + RVA_STATIC_LOAD_CLASS))(uc, nullptr, path, nullptr, 0, nullptr, false)
+           : nullptr;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    k = nullptr;
+  }
+  if (!IsReadable(k, sizeof(UObjectMin)))
+    return (void)Logf("commands: boss AI -- %ls did not load, keeping the base's", path);
+  PinToRootSet(k);
+  if (old && IsReadable(old, sizeof(UObjectMin)) && ((UObjectMin *)old)->Class == (void *)k)
+    return (void)Logf("commands: boss AI -- %p already runs %s", pawn, ClassNameOf(old));
+  void *world = ((tGetWorld)(*(void ***)gm)[VT_ACTOR_GET_WORLD / 8])(gm);
+  float loc[3] = {}, rot[3] = {};
+  ActorLocation(pawn, loc);
+  void *ctrl = nullptr;
+  if (world) {
+    alignas(16) uint8_t cparams[0x80] = {};
+    ((tSpawnParamsCtor)(g_base + RVA_SPAWN_PARAMS_CTOR))(cparams);
+    __try {
+      ctrl = ((tSpawnActor)(g_base + RVA_WORLD_SPAWN_ACTOR))(world, k, loc, rot, cparams);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ctrl = nullptr;
+    }
+  }
+  if (!ctrl)
+    return (void)Logf("commands: boss AI -- spawning %s failed, keeping the base's", ClassNameOf(k));
+  uint8_t *c = (uint8_t *)ctrl, *o = (uint8_t *)old;
+  bool npc = ClassIsA(((UObjectMin *)ctrl)->Class, *(void **)(g_base + OFF_CLASSPTR_NPC_AI_CONTROLLER));
+  bool oldNpc = old && ClassIsA(((UObjectMin *)old)->Class, *(void **)(g_base + OFF_CLASSPTR_NPC_AI_CONTROLLER));
+  if (npc) {
+    if (oldNpc) {
+      memcpy(c + OFF_NPC_SPAWN_ACTOR, o + OFF_NPC_SPAWN_ACTOR, 8); // TWeakObjectPtr {index, serial}
+      *(int32_t *)(c + OFF_NPC_SCENE_INDEX) = *(int32_t *)(o + OFF_NPC_SCENE_INDEX);
+      *(int32_t *)(c + OFF_NPC_SCENE_TYPE) = *(int32_t *)(o + OFF_NPC_SCENE_TYPE);
+    }
+    c[OFF_NPC_BEHAVIOUR_STATE] = YCSB_NONE;
+    c[OFF_NPC_RUN_BEHAVIOUR_TREE] = 1;
+  }
+  if (oldNpc)
+    o[OFF_NPC_RUN_BEHAVIOUR_TREE] = 0;
+  void **cvt = *(void ***)ctrl;
+  __try {
+    ((tPossess)cvt[VT_CONTROLLER_POSSESS / 8])(ctrl, pawn);
+    ((tPossess)cvt[VT_CONTROLLER_POSSESS2 / 8])(ctrl, pawn);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return (void)Logf("commands: boss AI -- possess by %s faulted", ClassNameOf(k));
+  }
+  if (!SwitchOn("DN_HOST_NO_NPC_NAMES", "dn_host_no_npc_names.txt") && name && name[0])
+    GiveNpcPlayerState(world, pawn, ctrl, name);
+  NoteNpcFireAbilities(ctrl, pawn);
+  Logf("commands: boss AI -- %p: %s -> %s (scene NPC %d)", pawn, old ? ClassNameOf(old) : "-", ClassNameOf(k),
+       npc ? *(int32_t *)(c + OFF_NPC_SCENE_INDEX) : -1);
+}
+
 static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char *tag, const BossDef *def = nullptr) {
+  // Step times (stutter-zone EliteTick took 1269 ms, 2026-10-23): which part.
+  double et[7] = {NowMs()};
   float hp0 = CallFloatGetter(pawn, "GetMaxHealth");
   EnsureFeatTables(comp);
+  et[1] = NowMs();
   // Placeholder tiers until the operator's designs: x5 and up red-gold
   // (VAN_PN_Red_Gold_DA), below that gold (VAN_PN_Dev_Gold_DA).
   bool boss = def && !def->hunter;
@@ -12375,12 +13253,16 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
   // Custom modules replace the ship's own. GUESS: the controller fires them --
   // FixNpcFireAbilities maps its fire slots by class stem, and a slot whose
   // class is not among them falls back to the pawn ability at its index.
+  et[2] = NowMs();
+  if (def && def->ai[0])
+    SwapNpcController(gm, pawn, def->ai, def->name);
   if (def && def->nAbil) {
-    const wchar_t *paths[8];
+    const wchar_t *paths[BOSS_MAX_ABIL];
     for (int i = 0; i < def->nAbil; ++i)
       paths[i] = def->abil[i];
     InstallAbilityClasses(pawn, def->ship, paths, def->nAbil);
   }
+  et[3] = NowMs();
   // Stacks compound: 40 HpInc stacks took a boss's GetMaxHealth from
   // 236000 to 10681192 (= 1.1^40, headless 2026-10-16). So n = log(x)/log(1.1):
   // health xN, damage x(1 + (N-1)/4) (x2 at N=5, x3.25 at N=10).
@@ -12405,6 +13287,7 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
     Logf("commands: elite officers: %d/%d briefing feats added (officer table %s)", got, def->nOfficer,
          tbl ? "listed" : "not loaded");
   }
+  et[4] = NowMs();
   Logf("commands: elite x%d: %s pawn %p %s%s%ls -- %d/%d feat stacks added, GetMaxHealth %.0f -> %.0f", mult, tag, pawn,
        ClassNameOf(pawn), boss ? " boss " : def ? " hunter " : "", def ? def->name : L"", ok, want, hp0, CallFloatGetter(pawn, "GetMaxHealth"));
   // Boss arrival (any elite, /boss is x2 and up): every human gets a shake
@@ -12416,8 +13299,16 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
     CommandShake(gm, 4.f);
     CommandFlash(gm, "red");
   }
+  et[5] = NowMs();
+  if (mult >= 2 || boss)
+    BossKillNote(pawn);
   if (mult >= 2 || boss)
     BossMarker(gm, pawn, def ? def->marker : MARKER_DEFAULT);
+  et[6] = NowMs();
+  if (et[6] - et[0] > 30)
+    Logf("commands: elite timing %.0f ms: feat tables %.0f, paint %.0f, controller+modules %.0f, %d feat stacks+officers %.0f, "
+         "arrival %.0f, marker %.0f", et[6] - et[0], et[1] - et[0], et[2] - et[1], et[3] - et[2], want, et[4] - et[3],
+         et[5] - et[4], et[6] - et[5]);
 }
 static void EliteTick(uint8_t *gm) {
   uint8_t *scene = nullptr;
@@ -12443,6 +13334,7 @@ static void EliteTick(uint8_t *gm) {
     snprintf(tag, sizeof tag, "scene entry %d", el.nid);
     ApplyElite(gm, pawn, comp, el.mult, tag, el.def);
     el.mult = 0;
+    return; // one per tick: two hunters in one tick took 898 ms (stutter1 2026-10-24)
   }
 }
 
@@ -12794,10 +13686,10 @@ static void InstallAbilityClasses(void *pawn, const char *ship, const wchar_t *c
                   : nullptr;
   if (!mgr)
     return (void)Logf("commands: spawn %s -- no ability manager", ship);
-  void *cls[8] = {};
+  void *cls[16] = {};
   int n = 0;
   UObjectMin *uc = ResolveUClassClass();
-  for (int pi = 0; pi < npaths && n < 8; ++pi) {
+  for (int pi = 0; pi < npaths && n < 16; ++pi) {
     const wchar_t *path = paths[pi];
     if (!path || !path[0] || !uc)
       continue;
@@ -12862,6 +13754,7 @@ static void *ShipIdPawnClass(const char *ship, bool havocBoss = true) {
   UObjectMin *uc = ResolveUClassClass();
   for (int i = 0; uc && i < np; ++i) {
     UObjectMin *k = nullptr;
+    double t0 = NowMs();
     __try {
       k = (UObjectMin *)((tStaticLoadClass)(g_base + RVA_STATIC_LOAD_CLASS))(uc, nullptr, paths[i], nullptr, 0, nullptr, false);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -12869,7 +13762,7 @@ static void *ShipIdPawnClass(const char *ship, bool havocBoss = true) {
     }
     if (IsReadable(k, sizeof(UObjectMin))) {
       PinToRootSet(k);
-      Logf("commands: spawn %s -> %ls", ship, paths[i]);
+      Logf("commands: spawn %s -> %ls (%.0f ms)", ship, paths[i], NowMs() - t0);
       return k;
     }
   }
@@ -12895,6 +13788,131 @@ static void *ShipIdPawnClass(const char *ship, bool havocBoss = true) {
 // Pawn by dataset: ShipId=AssaultHeavyT4, no base pawn in dataAsset", retried
 // every frame, onsfun1 23:27). Other modes have no NPC spawner to use.
 static struct { void *pawn; DWORD at; } g_lastBoss = {}; // /swarm and /squad gather here within 20 s (/wave)
+// One spot for everything spawned within 20 s (operator 2026-10-23: a /wave's
+// boss, squads and hunters came in at different places, and right next to
+// the players): 5-10 km from a random human ship. GUESS: ~5000 uu per km, from
+// the herald's "~9 km (~45000 uu)" read off the HUD.
+static const float WAVE_KM_UU = 5000.f;
+static struct { uint8_t *gm; DWORD at; float p[3]; void *anchor; } g_waveSpot = {};
+static bool InsideWarningBox(const float p[3]); // terrain boundary boxes, defined with them
+// Out of bounds is where a ship OVERLAPS a boundary volume: the warp volume's
+// overlap handler (0x587C00, YLevelBoundariesWarpVolume.cpp) logs "AI pawn
+// overlapping boundaries" for an AI ship there, and a boss 42000 uu out on
+// Gorge got it and the client's "Return to mission" (2026-10-24 12:30) while
+// the spot sat well inside the volumes' bounding boxes (+-164000): the brushes
+// are not boxes, so GetActorBounds says nothing about the play area. Tested
+// with KismetSystemLibrary::SphereOverlapActors per boundary class.
+// GUESS: object types 0-5 cover the volumes' collision object type.
+struct OverlapFn {
+  void *cdo, *fn, *cls[2];
+  int world, pos, radius, objTypes, filter, out, ret;
+  bool ok, tried;
+};
+static OverlapFn g_ovl;
+static bool OverlapResolve() {
+  if (g_ovl.tried)
+    return g_ovl.ok;
+  g_ovl.tried = true;
+  OverlapFn &t = g_ovl;
+  t.world = t.pos = t.radius = t.objTypes = t.filter = t.out = t.ret = -1;
+  t.cdo = FindObjectNamedOfClass("Default__KismetSystemLibrary", "KismetSystemLibrary");
+  t.cls[0] = FindObjectNamedOfClass("YLevelBoundariesWarpVolume", "Class");
+  t.cls[1] = FindObjectNamedOfClass("YLevelBoundariesWarningVolume", "Class");
+  const wchar_t *names[2] = {L"SphereOverlapActors_NEW", L"SphereOverlapActors"};
+  for (int i = 0; t.cdo && !t.fn && i < 2; ++i) {
+    FNameMin n = {};
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&n, names[i], 1);
+    t.fn = FindFunctionSafe(t.cdo, *(uint64_t *)&n);
+  }
+  if (t.fn && IsReadable((uint8_t *)t.fn + 0x40, 8)) {
+    UObjectMin *pp = *(UObjectMin **)((uint8_t *)t.fn + 0x38);
+    for (int j = 0; pp && j < 16 && IsReadable(pp, 0x58); ++j, pp = *(UObjectMin **)((uint8_t *)pp + 0x28)) {
+      int off = (int)*(uint32_t *)((uint8_t *)pp + 0x50);
+      const char *pn = NameText(pp->Name);
+      if (!pn)
+        continue;
+      int *slot = !strcmp(pn, "WorldContextObject") ? &t.world : !strcmp(pn, "SpherePos") ? &t.pos
+                : !strcmp(pn, "SphereRadius") ? &t.radius : !strcmp(pn, "ObjectTypes") ? &t.objTypes
+                : !strcmp(pn, "ActorClassFilter") ? &t.filter : !strcmp(pn, "OutActors") ? &t.out
+                : !strcmp(pn, "ReturnValue") ? &t.ret : nullptr;
+      if (slot)
+        *slot = off;
+    }
+  }
+  t.ok = t.fn && t.world >= 0 && t.pos >= 0 && t.radius >= 0 && t.objTypes >= 0 && t.filter >= 0 && t.out >= 0 &&
+         t.ret >= 0 && t.out < 240 && (t.cls[0] || t.cls[1]);
+  Logf("bounds: SphereOverlapActors %s -- world %d pos %d radius %d objTypes %d filter %d out %d ret %d, warp class "
+       "%p, warning class %p",
+       t.ok ? "resolved" : "NOT usable", t.world, t.pos, t.radius, t.objTypes, t.filter, t.out, t.ret, t.cls[0],
+       t.cls[1]);
+  return t.ok;
+}
+// 1 overlapping a boundary volume (out of bounds), 0 clear, -1 untestable.
+static int OutOfBounds(void *world, const float p[3], float radius) {
+  if (!world || !OverlapResolve())
+    return -1;
+  static uint8_t types[6] = {0, 1, 2, 3, 4, 5};
+  for (int c = 0; c < 2; ++c) {
+    if (!g_ovl.cls[c])
+      continue;
+    struct { void *data; int32_t num, max; } arr = {types, 6, 6};
+    alignas(16) uint8_t parms[256];
+    memset(parms, 0, sizeof parms);
+    *(void **)(parms + g_ovl.world) = world;
+    memcpy(parms + g_ovl.pos, p, 12);
+    *(float *)(parms + g_ovl.radius) = radius;
+    memcpy(parms + g_ovl.objTypes, &arr, sizeof arr);
+    *(void **)(parms + g_ovl.filter) = g_ovl.cls[c];
+    __try {
+      void **vt = *(void ***)g_ovl.cdo;
+      ((tProcessEventVirt)vt[VT_PROCESS_EVENT / 8])(g_ovl.cdo, g_ovl.fn, parms);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      return -1;
+    }
+    if (*(int32_t *)(parms + g_ovl.out + 8) > 0) // OutActors.Num (its buffer is left to the engine heap)
+      return 1;
+  }
+  return 0;
+}
+static bool WaveSpot(uint8_t *gm, float out[3], void **nearPawn = nullptr) {
+  if (g_waveSpot.gm != gm || GetTickCount() - g_waveSpot.at > 20000 || !ObjectLive(g_waveSpot.anchor)) {
+    uint8_t *pcs[64];
+    void *hp[64];
+    float hl[64][3];
+    int np = CollectHumanPCs(gm, pcs, 64), nh = 0;
+    for (int i = 0; i < np; ++i) {
+      void *p = IsReadable(pcs[i] + OFF_CONTROLLER_PAWN, 8) ? *(void **)(pcs[i] + OFF_CONTROLLER_PAWN) : nullptr;
+      if (p && ActorLocation(p, hl[nh]))
+        hp[nh++] = p;
+    }
+    if (!nh)
+      return false;
+    int h = rand() % nh, tries = 0, oob = -1;
+    void *world = ((tGetWorld)(*(void ***)gm)[VT_ACTOR_GET_WORLD / 8])(gm);
+    float c[3];
+    // A spot clear of the boundary volumes; past 12 bearings the range
+    // shrinks toward the player (an in-bounds player gives an in-bounds spot
+    // close enough).
+    do {
+      float a = (float)(rand() % 6283) / 1000.f, d = WAVE_KM_UU * (5.f + (float)(rand() % 5001) / 1000.f);
+      if (tries >= 12)
+        d *= 1.f - 0.08f * (float)(tries - 11);
+      c[0] = hl[h][0] + cosf(a) * d, c[1] = hl[h][1] + sinf(a) * d, c[2] = hl[h][2] + (float)(rand() % 2001 - 1000);
+      oob = OutOfBounds(world, c, 3000.f);
+    } while ((oob > 0 || (oob < 0 && !InsideWarningBox(c))) && ++tries < 22);
+    g_waveSpot = {gm, GetTickCount(), {c[0], c[1], c[2]}, hp[h]};
+    Logf("commands: wave spot %.0f %.0f %.0f, %.0f uu from player %d of %d, try %d, %s (player's own spot: %d)", c[0],
+         c[1], c[2], sqrtf((c[0] - hl[h][0]) * (c[0] - hl[h][0]) + (c[1] - hl[h][1]) * (c[1] - hl[h][1])), h + 1,
+         nh, tries + 1, oob > 0 ? "OUT of bounds" : oob == 0 ? "in bounds" : "bounds untestable (warning box)",
+         OutOfBounds(world, hl[h], 100.f));
+  }
+  memcpy(out, g_waveSpot.p, sizeof g_waveSpot.p);
+  if (nearPawn)
+    *nearPawn = g_waveSpot.anchor;
+  return true;
+}
+static bool TeleportActor(void *actor, const float loc[3], float yawDeg);
+static bool SquadEngage(void *pawn, void *target, int variant);
 static void *g_lastSpawnPawn = nullptr;               // Onslaught /spawn's last AI ship (the herald reads it)
 static const wchar_t *g_spawnLabel = nullptr;         // overrides the /spawn name tag
 // TDM, Pod TDM, Conquest and TE have no Onslaught spawn points; /spawn uses a
@@ -13257,7 +14275,7 @@ static void CommandSpawn(uint8_t *gm, const char *ship, int n, int mult) {
         // Was mult >= 4 only: the custom boss Gorgon (x3) and a bare /boss
         // (x2) came in on the enemy team (operator 2026-10-21).
         size_t sl = strlen(ship);
-        if (mult >= 4 || (g_spawnDef && !g_spawnDef->hunter) || (sl > 6 && !strcmp(ship + sl - 6, "Boss01"))) {
+        if (!g_spawnHerald && (mult >= 4 || (g_spawnDef && !g_spawnDef->hunter) || (sl > 6 && !strcmp(ship + sl - 6, "Boss01")))) {
           uint8_t t0 = 3;
           __try {
             ((tPawnSetTeam)(g_base + RVA_PAWN_SET_TEAM))(pawn, &t0);
@@ -13265,6 +14283,13 @@ static void CommandSpawn(uint8_t *gm, const char *ship, int n, int mult) {
             Logf("commands: spawn %s -- team 3 faulted", ship);
           }
           g_lastBoss = {pawn, GetTickCount()};
+          float w[3];
+          void *anchor = nullptr;
+          if (WaveSpot(gm, w, &anchor)) {
+            bool tp = TeleportActor(pawn, w, (float)(rand() % 360));
+            Logf("commands: spawn %s -- boss to the wave spot: teleport %s, %s", ship, tp ? "ok" : "FAILED",
+                 SquadEngage(pawn, anchor, 3) ? "sent in" : "not sent in");
+          }
         }
       } else if (!SpawnOnslaughtCreep(gm, gs, 3 - humanTeam, 1, false))
         break;
@@ -13333,7 +14358,7 @@ static void SplitWide(const char *src, char sep, wchar_t *out, int stride, int m
 // ParseBossDef fills the next ring slot from one key=value block (the
 // /battle/boss body, or one "--" block of /battle/hunters).
 static BossDef &ParseBossDef(const char *body, int id) {
-  char v[2048];
+  static char v[4096];
   BossDef &d = g_bossDefs[g_bossDefNext++ % 32];
   memset(&d, 0, sizeof d);
   d.id = id;
@@ -13346,7 +14371,9 @@ static BossDef &ParseBossDef(const char *body, int id) {
   d.decal = atoi(FieldValue(body, "decal", v, sizeof v) ? v : "0");
   d.emblem = atoi(FieldValue(body, "emblem", v, sizeof v) ? v : "0");
   if (FieldValue(body, "abilities", v, sizeof v))
-    SplitWide(v, '|', &d.abil[0][0], 192, 8, &d.nAbil);
+    SplitWide(v, '|', &d.abil[0][0], 192, BOSS_MAX_ABIL, &d.nAbil);
+  if (FieldValue(body, "ai", v, sizeof v) && v[0])
+    MultiByteToWideChar(CP_UTF8, 0, v, -1, d.ai, 192), d.ai[191] = 0;
   wchar_t feats[12][96];
   int nf = 0;
   if (FieldValue(body, "feats", v, sizeof v))
@@ -13366,7 +14393,7 @@ static BossDef &ParseBossDef(const char *body, int id) {
   return d;
 }
 static void CommandBossDef(uint8_t *gm, int id, int mult) {
-  static char body[8192];
+  static char body[16384];
   char q[64], v[64];
   snprintf(q, sizeof q, "/battle/boss?id=%d", id);
   if (!HttpGetLoopback(q, body, sizeof body) || !FieldValue(body, "ok", v, sizeof v))
@@ -13416,7 +14443,8 @@ struct HeraldState {
   float angle; // bearing offset (rad) so heralds on one target come from different sides
   int salvos, salvosWant; // /meteor N: N salvos from one herald, then it leaves
   ULONGLONG doneAt;       // when salvos reached salvosWant
-  bool abilMissTold;
+  bool abilMissTold, favorTold;
+  int favorPins;
   void *seen[64];         // missiles already counted
   int nSeen;
   ULONGLONG lastMissileAt;
@@ -13424,12 +14452,17 @@ struct HeraldState {
 };
 // Operator 2026-10-21, after the old rain/droplets could not be made visible: warp
 // abilities are drawn at their target, so every herald now carries one
-// module, installed as its only ability: /meteor the Warp Missile nuke,
+// module, installed as its only ability: /meteor the Starling salvo (was the Warp Missile nuke),
 // /fighters one dreadnought jet module each (Fighters, Bombers, Interceptor).
 struct HeraldModule { const char *stem; const wchar_t *path; const wchar_t *label; };
 static const HeraldModule kHeraldNuke = {
     "_WarpM_Dmg_", L"/Game/Generic/Abilities/Dreadnought/Pri_WarpM_Dmg/T5/AB_DN_Pri_WarpM_Dmg_Ability_T5_BP.AB_DN_Pri_WarpM_Dmg_Ability_T5_BP_C",
     L"Comet"};
+// /meteor since 2026-10-23: the Starling Missile Salvo (WarpM_Swarm).
+static const HeraldModule kHeraldSalvo = {
+    "_WarpM_Swarm_",
+    L"/Game/Generic/Abilities/Dreadnought/Pri_WarpM_Swarm/T5/AB_DN_Pri_WarpM_Swarm_Ability_T5_BP.AB_DN_Pri_WarpM_Swarm_Ability_T5_BP_C",
+    L"Starling"};
 static const HeraldModule kHeraldJets[3] = {
     {"_Jet_Fighter_", L"/Game/Generic/Abilities/Dreadnought/Pri_Jet_Fighter/T5/AB_DN_Pri_Jet_Fighter_Ability_T5_BP.AB_DN_Pri_Jet_Fighter_Ability_T5_BP_C",
      L"Fighters"},
@@ -13440,6 +14473,30 @@ static const HeraldModule kHeraldJets[3] = {
      L"Interceptors"},
 };
 static const HeraldModule *g_heraldModNext = nullptr; // CommandHeraldMeteorOne: the next herald's module
+// The boss editor's Comet (role "comet"), fetched per /meteor; null = the
+// stock Comet (DreadnoughtHeavyNukerT5, its WarpM_Swarm salvo). Copied out of
+// ParseBossDef's ring so later /boss fetches don't overwrite it.
+static BossDef g_cometDefBuf;
+static const BossDef *g_cometDef = nullptr;
+static char g_cometStem[128]; // the def's first module's class name: what the herald fires
+static void CometDefFetch() {
+  static char body[16384];
+  char v[64];
+  g_cometDef = nullptr;
+  if (!HttpGetLoopback("/battle/boss?role=comet", body, sizeof body) || !FieldValue(body, "ok", v, sizeof v))
+    return;
+  g_cometDefBuf = ParseBossDef(body, 0);
+  if (!g_cometDefBuf.ship[0])
+    return (void)Logf("commands: meteor -- Comet definition has no ship, stock Comet");
+  g_cometDef = &g_cometDefBuf;
+  g_cometStem[0] = 0;
+  if (g_cometDefBuf.nAbil > 0) {
+    const wchar_t *dot = wcsrchr(g_cometDefBuf.abil[0], L'.');
+    WideCharToMultiByte(CP_UTF8, 0, dot ? dot + 1 : g_cometDefBuf.abil[0], -1, g_cometStem, sizeof g_cometStem, nullptr, nullptr);
+  }
+  Logf("commands: meteor -- Comet definition \"%ls\" = %s, %d modules, fires %s", g_cometDefBuf.name, g_cometDefBuf.ship,
+       g_cometDefBuf.nAbil, g_cometStem[0] ? g_cometStem : "WarpM_Swarm");
+}
 #define HERALD_MAX 8
 static HeraldState g_heralds[HERALD_MAX];
 static HeraldState *g_heraldP = &g_heralds[0];
@@ -13505,10 +14562,53 @@ static int FireSlotFieldOffset(UObjectMin *ctrl, const char *name) {
 // Both are raised to the herald range x1.5 on every pass (ability objects
 // can be rebuilt by the slot re-apply). GUESS: the controller value is the
 // engage gate.
+// Per class, the fields HeraldRangeSweep acts on, so the 5 s re-sweep does not
+// re-read every property's names (150-195 ms per herald, stutter1 2026-10-24).
+// Kinds: 1 m_maxFireDistance, 2 m_maxDistance on an AB_ class, 3 object,
+// 4 array of objects.
+struct SweepPlan { UObjectMin *cls; int n; struct { uint32_t off; uint8_t kind; } f[128]; };
+static const SweepPlan *SweepPlanOf(UObjectMin *cls) {
+  static SweepPlan s_plans[64];
+  static int s_n;
+  for (int i = 0; i < s_n; ++i)
+    if (s_plans[i].cls == cls)
+      return &s_plans[i];
+  if (s_n >= 64 || !IsReadable(cls, sizeof(UObjectMin)))
+    return nullptr;
+  SweepPlan &p = s_plans[s_n++];
+  p.cls = cls, p.n = 0;
+  const char *cn = NameText(cls->Name);
+  bool ab = cn && !strncmp(cn, "AB_", 3);
+  for (UObjectMin *c = cls; c && IsReadable(c, 0x40); c = *(UObjectMin **)((uint8_t *)c + OFF_USTRUCT_SUPER))
+    for (UObjectMin *f = *(UObjectMin **)((uint8_t *)c + 0x38); f && IsReadable(f, 0x88) && p.n < 128; f = *(UObjectMin **)((uint8_t *)f + 0x28)) {
+      const char *fc = ClassNameOf(f), *nm = NameText(f->Name);
+      uint8_t kind = 0;
+      if (!strcmp(fc, "FloatProperty"))
+        kind = nm && !strcmp(nm, "m_maxFireDistance") ? 1 : nm && ab && !strcmp(nm, "m_maxDistance") ? 2 : 0;
+      else if (!strcmp(fc, "ObjectProperty"))
+        kind = 3;
+      else if (!strcmp(fc, "ArrayProperty")) {
+        UObjectMin *inner = nullptr;
+        for (int k = 0x70; k <= 0x80 && !inner; k += 8) {
+          UObjectMin *ic = *(UObjectMin **)((uint8_t *)f + k);
+          if (IsReadable(ic, sizeof(UObjectMin)) && IsReadable(ic->Class, sizeof(UObjectMin)) && strstr(ClassNameOf(ic), "Property"))
+            inner = ic;
+        }
+        kind = inner && !strcmp(ClassNameOf(inner), "ObjectProperty") ? 4 : 0;
+      }
+      if (kind)
+        p.f[p.n].off = *(uint32_t *)((uint8_t *)f + 0x50), p.f[p.n++].kind = kind;
+    }
+  return &p;
+}
 static void HeraldRangeSweep() {
-  static bool s_logged; // once per process: 200 lines per herald was a flood
+  // The logged walk (200 lines, once per process) only with the switch on;
+  // no dynamic static init here: its guard does not link (mingw, no pthread).
+  static int s_logged = -1;
+  if (s_logged < 0)
+    s_logged = !SwitchOn("DN_HOST_HERALD_SWEEP_LOG", "dn_host_herald_sweep_log.txt");
   bool log = !s_logged;
-  s_logged = true;
+  s_logged = 1;
   float want = g_heraldRange * 1.5f;
   UObjectMin *objs[256];
   int depth[256], no = 0, told = 0;
@@ -13522,6 +14622,40 @@ static void HeraldRangeSweep() {
   };
   add((UObjectMin *)g_herald.ctrl, 0);
   add((UObjectMin *)g_herald.pawn, 0);
+  if (!log) {
+    for (int i = 0; i < no; ++i) {
+      UObjectMin *o = objs[i];
+      const SweepPlan *pl = SweepPlanOf(o->Class);
+      for (int k = 0; pl && k < pl->n; ++k) {
+        uint8_t *at = (uint8_t *)o + pl->f[k].off;
+        if (!IsReadable(at, 16))
+          continue;
+        switch (pl->f[k].kind) {
+        case 1:
+          if (depth[i] == 0 && o == (UObjectMin *)g_herald.ctrl && *(float *)at < want)
+            *(float *)at = want;
+          break;
+        case 2:
+          if (*(float *)at < want)
+            *(float *)at = want;
+          break;
+        case 3:
+          if (depth[i] < 2)
+            add(*(UObjectMin **)at, depth[i] + 1);
+          break;
+        case 4:
+          if (depth[i] < 2) {
+            UObjectMin **data = *(UObjectMin ***)at;
+            int n = *(int32_t *)(at + 8);
+            for (int e = 0; e < n && e < 32 && IsReadable(data + e, 8); ++e)
+              add(data[e], depth[i] + 1);
+          }
+          break;
+        }
+      }
+    }
+    return;
+  }
   for (int i = 0; i < no; ++i) {
     UObjectMin *o = objs[i];
     for (UObjectMin *cls = o->Class; cls && IsReadable(cls, 0x40); cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER))
@@ -13573,16 +14707,19 @@ static void HeraldRangeSweep() {
 // / minimap) are only logged.
 static struct { int idx; void *obj; uint32_t off; } g_perceptHits[32];
 static int g_nPerceptHits;
-static void PerceptSearch(float want) {
-  static bool s_done;
+// The declaring-class pass runs from PreloadTick during orbit; the instance
+// pass stays at the first herald (its own objects exist only then).
+static const char *const kPerceptNames[] = {"m_maxPerceptDistance", "m_maxVisibleDistance", "m_VisibilityDistanceOverride"};
+static struct { UObjectMin *cls; int which; uint32_t off; } g_perceptOwners[24];
+static int g_nPerceptOwners = -1;
+static void PerceptOwners() {
   FUObjectArrayMin *arr = GObjects();
-  if (!arr || !arr->Objects)
+  if (g_nPerceptOwners >= 0 || !arr || !arr->Objects)
     return;
-  if (!s_done) {
-    s_done = true;
-    static const char *names[] = {"m_maxPerceptDistance", "m_maxVisibleDistance", "m_VisibilityDistanceOverride"};
-    struct { UObjectMin *cls; int which; uint32_t off; } owners[24];
-    int nown = 0;
+  const char *const *names = kPerceptNames;
+  auto &owners = g_perceptOwners;
+  int nown = 0;
+  {
     for (int i = 0; i < arr->NumElements && nown < 24; ++i) {
       UObjectMin *o = arr->Objects[i].Object;
       if (!o || !IsReadable(o, 0x40) || !IsReadable(o->Class, sizeof(UObjectMin)))
@@ -13600,16 +14737,28 @@ static void PerceptSearch(float want) {
           }
       }
     }
-    int told = 0;
-    for (int i = 0; i < arr->NumElements; ++i) {
+  }
+  g_nPerceptOwners = nown;
+}
+static void PerceptSearch(float want) {
+  static bool s_done;
+  FUObjectArrayMin *arr = GObjects();
+  if (!arr || !arr->Objects)
+    return;
+  if (!s_done) {
+    s_done = true;
+    PerceptOwners();
+    const char *const *names = kPerceptNames;
+    auto &owners = g_perceptOwners;
+    int nown = g_nPerceptOwners, told = 0;
+    for (int i = 0; i < arr->NumElements && nown > 0; ++i) {
       UObjectMin *o = arr->Objects[i].Object;
       if (!o || (arr->Objects[i].Flags & OBJ_PENDING_KILL) || !IsReadable(o, 0x40))
         continue;
+      // One walk up the class chain per object, every owner checked on it.
+      for (UObjectMin *c = o->Class; c && IsReadable(c, 0x40); c = *(UObjectMin **)((uint8_t *)c + OFF_USTRUCT_SUPER))
       for (int k = 0; k < nown; ++k) {
-        bool is = false;
-        for (UObjectMin *c = o->Class; c && IsReadable(c, 0x40) && !is; c = *(UObjectMin **)((uint8_t *)c + OFF_USTRUCT_SUPER))
-          is = c == owners[k].cls;
-        if (!is || !IsReadable((uint8_t *)o + owners[k].off, 4))
+        if (c != owners[k].cls || !IsReadable((uint8_t *)o + owners[k].off, 4))
           continue;
         float v = *(float *)((uint8_t *)o + owners[k].off);
         if (told < 40)
@@ -13629,53 +14778,71 @@ static void PerceptSearch(float want) {
       *p = want;
   }
 }
+static void HtMark();
 static void HeraldStretchRange() {
   HeraldRangeSweep();
+  HtMark();
   __try {
     PerceptSearch(g_heraldRange * 1.5f);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("percept search: faulted");
   }
+  HtMark();
   static const char *names[] = {"m_maxPerceptDistance", "m_engageInDistance", "m_engageOutDistance"};
   UObjectMin *roots[2] = {(UObjectMin *)g_herald.ctrl, (UObjectMin *)g_herald.pawn};
   float want = g_heraldRange * 1.5f;
-  for (const char *nm : names) {
-    bool found = false;
-    for (UObjectMin *root : roots) {
-      if (!root || !ObjectLive(root))
-        continue;
-      UObjectMin *objs[48];
-      int no = 0;
-      objs[no++] = root;
-      for (UObjectMin *cls = root->Class; cls && IsReadable(cls, 0x40) && no < 48; cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER))
-        for (UObjectMin *f = *(UObjectMin **)((uint8_t *)cls + 0x38); f && IsReadable(f, 0x58) && no < 48; f = *(UObjectMin **)((uint8_t *)f + 0x28))
-          if (!strcmp(ClassNameOf(f), "ObjectProperty")) {
-            uint8_t *at = (uint8_t *)root + *(uint32_t *)((uint8_t *)f + 0x50);
-            UObjectMin *v = IsReadable(at, 8) ? *(UObjectMin **)at : nullptr;
-            if (IsReadable(v, sizeof(UObjectMin)) && IsReadable(v->Class, sizeof(UObjectMin)))
-              objs[no++] = v;
-          }
-      for (int i = 0; i < no; ++i) {
-        UObjectMin *f = FindPropObj(objs[i], nm);
-        if (!f || strcmp(ClassNameOf(f), "FloatProperty"))
-          continue;
-        float *p = (float *)((uint8_t *)objs[i] + *(uint32_t *)((uint8_t *)f + 0x50));
-        if (!IsReadable(p, 4))
-          continue;
-        found = true;
-        static int s_told = 0;
-        if (s_told < 12)
-          ++s_told, Logf("commands: meteor -- %s on %s = %.0f%s", nm, ClassNameOf(objs[i]), *p, *p < want ? " (raised)" : "");
-        if (*p < want)
-          *p = want;
-      }
-    }
-    if (!found) {
+  // One walk per object for all three names (three FindPropObj walks were
+  // ~40 ms each, stutter6 2026-10-24); names missing on these root classes
+  // are not looked for again.
+  static void *s_missCls[3][2];
+  void *rcls[2] = {roots[0] && ObjectLive(roots[0]) ? roots[0]->Class : nullptr,
+                   roots[1] && ObjectLive(roots[1]) ? roots[1]->Class : nullptr};
+  bool skip[3], found[3] = {false, false, false}, any = false;
+  for (int ni = 0; ni < 3; ++ni)
+    any |= !(skip[ni] = s_missCls[ni][0] == rcls[0] && s_missCls[ni][1] == rcls[1] && (rcls[0] || rcls[1]));
+  if (!any)
+    return;
+  for (UObjectMin *root : roots) {
+    if (!root || !ObjectLive(root))
+      continue;
+    UObjectMin *objs[48];
+    int no = 0;
+    objs[no++] = root;
+    for (UObjectMin *cls = root->Class; cls && IsReadable(cls, 0x40) && no < 48; cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER))
+      for (UObjectMin *f = *(UObjectMin **)((uint8_t *)cls + 0x38); f && IsReadable(f, 0x58) && no < 48; f = *(UObjectMin **)((uint8_t *)f + 0x28))
+        if (!strcmp(ClassNameOf(f), "ObjectProperty")) {
+          uint8_t *at = (uint8_t *)root + *(uint32_t *)((uint8_t *)f + 0x50);
+          UObjectMin *v = IsReadable(at, 8) ? *(UObjectMin **)at : nullptr;
+          if (IsReadable(v, sizeof(UObjectMin)) && IsReadable(v->Class, sizeof(UObjectMin)))
+            objs[no++] = v;
+        }
+    for (int i = 0; i < no; ++i)
+      for (UObjectMin *cls = objs[i]->Class; cls && IsReadable(cls, 0x40); cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER))
+        for (UObjectMin *f = *(UObjectMin **)((uint8_t *)cls + 0x38); f && IsReadable(f, 0x78); f = *(UObjectMin **)((uint8_t *)f + 0x28)) {
+          const char *fn = NameText(f->Name);
+          int ni = 0;
+          while (fn && ni < 3 && (skip[ni] || strcmp(fn, names[ni])))
+            ++ni;
+          if (!fn || ni == 3 || strcmp(ClassNameOf(f), "FloatProperty"))
+            continue;
+          float *p = (float *)((uint8_t *)objs[i] + *(uint32_t *)((uint8_t *)f + 0x50));
+          if (!IsReadable(p, 4))
+            continue;
+          found[ni] = true;
+          static int s_told = 0;
+          if (s_told < 12)
+            ++s_told, Logf("commands: meteor -- %s on %s = %.0f%s", names[ni], ClassNameOf(objs[i]), *p, *p < want ? " (raised)" : "");
+          if (*p < want)
+            *p = want;
+        }
+  }
+  for (int ni = 0; ni < 3; ++ni)
+    if (!skip[ni] && !found[ni]) {
+      s_missCls[ni][0] = rcls[0], s_missCls[ni][1] = rcls[1];
       static int s_missTold = 0;
       if (s_missTold < 3)
-        ++s_missTold, Logf("commands: meteor -- %s not found on the herald", nm);
+        ++s_missTold, Logf("commands: meteor -- %s not found on the herald", names[ni]);
     }
-  }
 }
 // Every tick: the fired ability's and the controller's cooldown floats to 0.
 // GUESS: which of these names gate refire (all are reflected names in the
@@ -13796,13 +14963,16 @@ static void HeraldNukeOnly() {
 // shot. GUESS: Owner is the pawn or its weapon -- the proximity test covers
 // it if not. When that projectile is gone (impact) or after 30 s, it leaves.
 static bool ProjectileClass(UObjectMin *o);
+// The viewer's sliced projectile scan (ProjScanStep) also runs while a herald
+// is out; this reads its last completed list. A full GObjects walk here cost
+// 130-150 ms per herald every 500 ms (stutter-zone HeraldTick, 2026-10-23).
+static int ProjListLive(void **out, int max);
 static bool HeraldShotWatch(ULONGLONG now) {
   if (now < g_herald.watchAt)
     return false;
   g_herald.watchAt = now + 500;
-  FUObjectArrayMin *arr = GObjects();
   float me[3];
-  if (!arr || !arr->Objects || !ActorLocation(g_herald.pawn, me))
+  if (!ActorLocation(g_herald.pawn, me))
     return false;
   // N salvos counted, the last one 10 s gone quiet: leave. 60 s with no shot
   // at all after the last target visit also ends it.
@@ -13818,14 +14988,10 @@ static bool HeraldShotWatch(ULONGLONG now) {
     HeraldEnd("never fired");
     return true;
   }
-  for (int i = 0; i < arr->NumElements; ++i) {
-    FUObjectItemMin &it = arr->Objects[i];
-    UObjectMin *o = it.Object;
-    if (!o || (it.Flags & OBJ_PENDING_KILL) || !o->Class || !ProjectileClass(o))
-      continue;
-    const char *nm = NameText(o->Name);
-    if (!nm || !strncmp(nm, "Default__", 9))
-      continue;
+  static void *live[1024];
+  int nl = ProjListLive(live, 1024);
+  for (int i = 0; i < nl; ++i) {
+    UObjectMin *o = (UObjectMin *)live[i];
     bool known = false;
     for (int k = 0; k < g_herald.nSeen && !known; ++k)
       known = g_herald.seen[k] == o;
@@ -13841,6 +15007,11 @@ static bool HeraldShotWatch(ULONGLONG now) {
                                            (at[2] - me[2]) * (at[2] - me[2]))
                                    : 1e9f;
     if (!mine && d > 8000) // GUESS: a fresh salvo is still within 8000 uu of the herald
+      continue;
+    // Only the nuke counts by proximity: a stray WP_YProjectile_BP_C 3947 uu
+    // off was taken for the salvo and the herald left before it fired (live
+    // 2026-10-24 10:38:59).
+    if (!mine && !strstr(ClassNameOf(o), "WarpMissile"))
       continue;
     g_herald.seen[g_herald.nSeen++ % 64] = o;
     if (g_herald.nSeen > 64)
@@ -13921,16 +15092,73 @@ static void HeraldTick() {
       HeraldTickOne();
     }
 }
+// Step times of a slow herald tick (the first /meteor tick was ~310 ms,
+// stutter4 2026-10-24): which part.
+static double g_htT[8];
+static int g_htN;
+static void HtMark() { if (g_htN < 8) g_htT[g_htN++] = NowMs(); }
+static void HeraldTickOneInner();
 static void HeraldTickOne() {
+  g_htN = 0;
+  HtMark();
+  HeraldTickOneInner();
+  double t = NowMs();
+  if (t - g_htT[0] > 30) {
+    char b[160];
+    int n = 0;
+    static const char *names[] = {"nuke-only", "sweep", "shot watch", "clear spot", "team+teleport", "stretch:sweep",
+                                  "stretch:percept"};
+    for (int i = 1; i < g_htN && n < (int)sizeof b - 32; ++i)
+      n += _snprintf_s(b + n, sizeof b - n, _TRUNCATE, "%s %.0f, ", names[i - 1], g_htT[i] - g_htT[i - 1]);
+    Logf("commands: herald tick %.0f ms: %srest %.0f", t - g_htT[0], b, t - g_htT[g_htN - 1]);
+  }
+}
+// The herald's AI picked the nearest hostile, mostly NPCs (operator
+// 2026-10-24: "it needs to target *players*"). Each tick its controller's
+// m_abilityFavorTarget (FWeakObjectPtr, YNPCAIController +0xae8 by the
+// reflection probe, bounds1 2026-10-24) is pointed at the ship it was sent to.
+// GUESS: that the AI aims its abilities at the favor target.
+#define OFF_NPCCTRL_ABILITY_FAVOR_TARGET 0xae8
+static void HeraldFavorTarget() {
+  uint8_t *ctrl = (uint8_t *)g_herald.ctrl;
+  void *tgt = g_herald.tgt[g_herald.cur > 0 ? g_herald.cur - 1 : 0];
+  if (!ctrl || !ObjectLive(ctrl) || !tgt || !ObjectLive(tgt) || !ClassChainContains((UObjectMin *)ctrl, "YNPCAIController") ||
+      !IsReadable(ctrl + OFF_NPCCTRL_ABILITY_FAVOR_TARGET, 8))
+    return;
+  FUObjectArrayMin *arr = GObjects();
+  int idx = ((UObjectMin *)tgt)->InternalIndex;
+  if (!arr || !arr->Objects || idx < 0 || idx >= arr->NumElements || arr->Objects[idx].Object != tgt)
+    return;
+  int32_t serial = arr->Objects[idx].SerialNumber;
+  if (!serial) {
+    if (!g_herald.favorTold)
+      g_herald.favorTold = true, Logf("commands: meteor -- herald target %p has no weak-pointer serial, not pinned", tgt);
+    return;
+  }
+  int32_t *w = (int32_t *)(ctrl + OFF_NPCCTRL_ABILITY_FAVOR_TARGET);
+  if (w[0] != idx || w[1] != serial) {
+    // The AI overwrites it about once a second (comet3 2026-10-24), so it is
+    // re-pinned every tick; logged on the first pin and every 30th.
+    w[0] = idx, w[1] = serial;
+    if (g_herald.favorPins++ % 30 == 0)
+      Logf("commands: meteor -- herald %p favor target -> %s %p (pin %d)", g_herald.pawn, ClassNameOf(tgt), tgt, g_herald.favorPins);
+  }
+}
+static void HeraldTickOneInner() {
   if (!g_herald.pawn)
     return;
   if (!ObjectLive(g_herald.pawn))
     return g_herald.pawn = nullptr, HeraldEnd("herald died");
+  HeraldFavorTarget();
   HeraldNukeOnly();
+  HtMark();
   ULONGLONG now = GetTickCount64();
   if (now >= g_herald.sweepAt) // the slot re-apply can rebuild the ability objects
     g_herald.sweepAt = now + 5000, HeraldRangeSweep();
-  if (HeraldShotWatch(now))
+  HtMark();
+  bool done = HeraldShotWatch(now);
+  HtMark();
+  if (done)
     return;
   if (now < g_herald.nextAt)
     return;
@@ -13952,6 +15180,7 @@ static void HeraldTickOne() {
     dx = 1, dy = 0, d = 1;
   float v[6] = {at[0] + dx / d * g_heraldRange, at[1] + dy / d * g_heraldRange, at[2] + 1000.f, 0, 0, 0};
   int tries = HeraldClearSpot(at, dx / d, dy / d, v);
+  HtMark();
   dx = v[0] - at[0], dy = v[1] - at[1];
   // On the target's enemy team, so the client draws it as an enemy.
   // Client colours seen live 2026-10-18: 0 gray (neutral, hurts and is hurt
@@ -13978,12 +15207,14 @@ static void HeraldTickOne() {
        tries > 0 ? "clear line" : tries == 0 ? "no clear line found" : "not traced", ok ? "ok" : "FAILED");
   ++g_herald.cur;
   g_herald.nextAt = now + HERALD_DWELL_MS;
+  HtMark();
   HeraldStretchRange();
 }
 // /meteor N: one herald on the first ship (humans first), N salvos.
 static bool CommandHeraldMeteorOne(uint8_t *gm, void *tgt, float angle, float range, int team);
 struct HeraldModule;
 static int HeraldsPerHuman(uint8_t *gm, void **pawns, int n, const HeraldModule *mod, int salvos, float range, int team);
+static void TargetFieldProbe();
 static bool CommandHeraldMeteor(uint8_t *gm, int count, float range, int team) {
   void *pawns[64];
   float pts[64][3];
@@ -13993,7 +15224,13 @@ static bool CommandHeraldMeteor(uint8_t *gm, int count, float range, int team) {
   // One herald per human ship (operator 2026-10-21: "one comet per (real)
   // ship ... no need for the NPCs to get targetted"), N shots each, no
   // cooldown; NPC ships only when no human is in.
-  HeraldsPerHuman(gm, pawns, n, &kHeraldNuke, std::max(1, std::min(count, 40)), range, team);
+  // The Comet as it worked before 2026-10-21 (operator 2026-10-24): no
+  // installed module -- the Nuker's own WarpM_Swarm salvo, named Comet. The
+  // installed Starling module logged salvos the client never showed.
+  TargetFieldProbe();
+  CometDefFetch();
+  HeraldsPerHuman(gm, pawns, n, nullptr, std::max(1, std::min(count, 40)), range, team);
+  g_cometDef = nullptr;
   return true;
 }
 static int HeraldsPerHuman(uint8_t *gm, void **pawns, int n, const HeraldModule *mod, int salvos, float range, int team) {
@@ -14010,7 +15247,7 @@ static int HeraldsPerHuman(uint8_t *gm, void **pawns, int n, const HeraldModule 
     ++made;
   }
   g_heraldModNext = nullptr;
-  Logf("commands: meteor -- %d %ls heralds (%d human ships), %d salvos each", made, mod->label, humans, salvos);
+  Logf("commands: meteor -- %d %ls heralds (%d human ships), %d salvos each", made, mod ? mod->label : g_cometDef && g_cometDef->name[0] ? g_cometDef->name : L"Comet", humans, salvos);
   return made;
 }
 // /fighters (Onslaught): one herald per jet module, on the human ships in
@@ -14044,21 +15281,29 @@ static bool CommandHeraldMeteorOne(uint8_t *gm, void *tgt, float angle, float ra
         slot = &h;
   if (!slot)
     return Logf("commands: meteor -- %d heralds already out", HERALD_MAX), false;
-  g_spawnLabel = g_heraldModNext ? g_heraldModNext->label : L"Comet";
+  double mt[4] = {NowMs()}; // which part of a 2226 ms /meteor (stutter1 2026-10-24)
+  const BossDef *cd = g_heraldModNext ? nullptr : g_cometDef;
+  const char *ship = cd ? cd->ship : "DreadnoughtHeavyNukerT5";
+  g_spawnLabel = g_heraldModNext ? g_heraldModNext->label : cd && cd->name[0] ? cd->name : L"Comet";
+  g_spawnDef = cd;
   g_lastSpawnPawn = nullptr;
-  g_spawnNoGameBot = true;
-  CommandSpawn(gm, "DreadnoughtHeavyNukerT5", 1, 1);
-  g_spawnNoGameBot = false;
+  g_spawnNoGameBot = g_spawnHerald = true;
+  CommandSpawn(gm, ship, 1, 1);
+  mt[1] = NowMs();
+  g_spawnNoGameBot = g_spawnHerald = false;
+  g_spawnDef = nullptr;
   g_spawnLabel = nullptr;
   void *pawn = g_lastSpawnPawn;
   if (!pawn || !ObjectLive(pawn))
     return Logf("commands: meteor -- herald spawn failed"), false;
   HeraldAlwaysRelevant(pawn);
   if (g_heraldModNext)
-    InstallAbilityClasses(pawn, "DreadnoughtHeavyNukerT5", &g_heraldModNext->path, 1);
+    InstallAbilityClasses(pawn, ship, &g_heraldModNext->path, 1);
+  mt[2] = NowMs();
   g_heraldP = slot;
   g_herald = {};
-  g_herald.abil = g_heraldModNext ? g_heraldModNext->stem : nullptr;
+  // GUESS: that the AI fires a Comet def's first module like the salvo.
+  g_herald.abil = g_heraldModNext ? g_heraldModNext->stem : cd && g_cometStem[0] ? g_cometStem : nullptr;
   g_heraldRange = range > 0 ? range : HERALD_RANGE;
   g_heraldTeam = team;
   g_herald.pawn = pawn;
@@ -14067,6 +15312,10 @@ static bool CommandHeraldMeteorOne(uint8_t *gm, void *tgt, float angle, float ra
   g_herald.tgt[g_herald.nt++] = tgt;
   Logf("commands: meteor -- herald %p for %d targets (slot %d)", pawn, g_herald.nt, (int)(slot - g_heralds));
   HeraldTickOne();
+  mt[3] = NowMs();
+  if (mt[3] - mt[0] > 30)
+    Logf("commands: meteor timing %.0f ms: spawn %.0f, module %.0f, first tick %.0f", mt[3] - mt[0], mt[1] - mt[0],
+         mt[2] - mt[1], mt[3] - mt[2]);
   return true;
 }
 
@@ -14209,7 +15458,12 @@ static bool SquadEngage(void *pawn, void *target, int variant = 0) {
   int v = variant & 3;
   b[0x08] = (uint8_t)(v == 2 && g_ycsbSkirmish >= 0 ? g_ycsbSkirmish : v == 3 && g_ycsbGoto >= 0 ? g_ycsbGoto : g_ycsbEngage);
   *(void **)(b + 0x18) = target;
-  *(int32_t *)(b + 0x20) = v == 1 || v == 3 ? id : -1;
+  // GOTO's +0x20 is the STEP INDEX the scene manager's sequencer jumps to
+  // (0x2545D0, type 0x0F), not an NPC id: the NPC id there read step 42 of a
+  // 1-step array and crashed a live host (AV at 0x254724, 2026-10-24 11:25).
+  // Its own index takes the engine's GOTO-onto-GOTO path, which returns the
+  // same default (HOLD, time -1) the out-of-range jump ended in.
+  *(int32_t *)(b + 0x20) = v == 3 ? 0 : v == 1 ? id : -1;
   TArrayRaw arr = {b, 1, 1};
   g_squadIds.ours = true;
   ((tSceneReplaceBehaviours)(g_base + RVA_SCENE_REPLACE_NPC_BEHAVIOURS))(scene, id, &arr, 0);
@@ -14287,7 +15541,7 @@ static void __fastcall HookSceneReplace(void *scene, int id, void *behaviours, u
         int v = g_squadIds.variant[k] & 3;
         b[0x08] = (uint8_t)(v == 2 && g_ycsbSkirmish >= 0 ? g_ycsbSkirmish : v == 3 && g_ycsbGoto >= 0 ? g_ycsbGoto : g_ycsbEngage);
         *(void **)(b + 0x18) = t, ++changed;
-        *(int32_t *)(b + 0x20) = v == 1 || v == 3 ? id : -1;
+        *(int32_t *)(b + 0x20) = v == 3 ? i : v == 1 ? id : -1; // GOTO: a step index (see SquadEngage)
       }
     }
     if (g_squadIds.logged < 12) {
@@ -14353,6 +15607,37 @@ static void CreepFieldProbe() {
   }
 }
 
+// Owners and offsets of the AI target fields, for pinning /meteor's Comet on
+// player ships (operator 2026-10-24: it shot NPCs more than players). Once.
+static void TargetFieldProbe() {
+  static bool done = false;
+  if (done)
+    return;
+  done = true;
+  static const wchar_t *names[] = {L"m_currentTarget", L"m_favorTarget", L"m_onlyTarget", L"m_bOnlyTarget",
+                                   L"m_abilityFavorTarget", L"m_ignoreAllButAbilityTarget", L"m_targetShipTypes",
+                                   L"m_hasTarget"};
+  const int nn = (int)(sizeof names / sizeof names[0]);
+  FNameMin fn[8];
+  for (int i = 0; i < nn; ++i)
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&fn[i], names[i], 1);
+  FUObjectArrayMin *arr = GObjects();
+  if (!arr || !arr->Objects)
+    return;
+  for (int i = 0; i < arr->NumElements; ++i) {
+    UObjectMin *o = arr->Objects[i].Object;
+    if (!o || !o->Class || !IsReadable(o, 0x58))
+      continue;
+    for (int f = 0; f < nn; ++f)
+      if (o->Name.ComparisonIndex == fn[f].ComparisonIndex && strstr(ClassNameOf(o), "Property")) {
+        UObjectMin *owner = o->Outer;
+        const char *on = owner ? NameText(owner->Name) : nullptr;
+        Logf("commands: meteor -- field %S %s owned by %s +0x%x", names[f], ClassNameOf(o), on ? on : "?",
+             *(uint32_t *)((uint8_t *)o + 0x50));
+      }
+  }
+}
+
 static void CommandSwarm(uint8_t *gm, int size, int n, int team) {
   if (size == 0)
     CreepFieldProbe();
@@ -14380,22 +15665,12 @@ static void CommandSwarm(uint8_t *gm, int size, int n, int team) {
     if (hp && ActorLocation(hp, hum[nh]))
       hpawn[nh++] = hp;
   }
-  int hi = nh ? rand() % nh : -1;
-  // One cluster per command, so a swarm arrives together.
+  // One cluster per command at the shared wave spot (WaveSpot), so a /wave
+  // arrives together, 5-10 km out.
   float c[3] = {0, 0, 0};
-  if (nh) {
-    float *h = hum[hi], a = (float)(rand() % 6283) / 1000.f, d = 6000.f + (float)(rand() % 6001);
-    c[0] = h[0] + cosf(a) * d, c[1] = h[1] + sinf(a) * d, c[2] = h[2] + (float)(rand() % 2001 - 500);
-  }
-  // /wave sends /boss first: gather around that boss (operator 2026-10-21:
-  // the boss came in far off, the squads next to the player).
-  float bl[3];
-  if (g_lastBoss.pawn && (int)(GetTickCount() - g_lastBoss.at) < 20000 && ObjectLive(g_lastBoss.pawn) &&
-      ActorLocation(g_lastBoss.pawn, bl)) {
-    float a = (float)(rand() % 6283) / 1000.f, d = 3000.f + (float)(rand() % 2001);
-    c[0] = bl[0] + cosf(a) * d, c[1] = bl[1] + sinf(a) * d, c[2] = bl[2];
-    Logf("commands: %s -- gathering at the boss %.0f %.0f %.0f", what, bl[0], bl[1], bl[2]);
-  }
+  void *tgt = nullptr;
+  if (nh && !WaveSpot(gm, c, &tgt))
+    nh = 0;
   for (int k = 0; k < n; ++k) {
     void *pawn = SwarmOne(gm, gs, size, team, starts, ns);
     if (!pawn)
@@ -14413,10 +15688,10 @@ static void CommandSwarm(uint8_t *gm, int size, int n, int team) {
         g_squadIds.n = 0, g_squadIds.gm = gm;
       if (!k)
         g_squadIds.logged = 0;
-      if (size == 1 && SquadEngage(pawn, hpawn[hi], 3)) {
+      if (size == 1 && SquadEngage(pawn, tgt, 3)) {
         ++engaged;
         if (!k)
-          g_squadWatch.n = g_squadWatch.round = 0, g_squadWatch.target = hpawn[hi];
+          g_squadWatch.n = g_squadWatch.round = 0, g_squadWatch.target = tgt;
         if (g_squadWatch.n < 20)
           g_squadWatch.pawn[g_squadWatch.n++] = pawn, g_squadWatch.at = GetTickCount() + 5000;
       }
@@ -14451,9 +15726,10 @@ static void CommandSwarm(uint8_t *gm, int size, int n, int team) {
 // admin Hunters pool (GET /battle/hunters?n=K, admin_hunters.go; "hunterdef
 // <id>" asks for that one). Each is a BossDef flagged hunter: its base ShipId
 // spawned like /spawn, then its modules, coatings and feats applied as an
-// elite without the boss treatment. Packs are teleported 6000-9000 uu from
-// their player and sent there with the /squad GOTO (re-asserted by
-// HookSceneReplace on the nearest player). Enemy team by default. With no
+// elite without the boss treatment. Packs are teleported to the wave spot
+// (WaveSpot, 5-10 km out) and sent at their player with the /squad GOTO
+// (re-asserted by HookSceneReplace on the nearest player). Team 0 is the
+// enemy team; mmogbrain sends the Waves tab's team (3). With no
 // pool (mmogbrain down or every weight 0) a random class x weight T5 hull,
 // as before. GUESS: max 12 in all, the distances, and that a T5 AI ship
 // within 2500 uu opens fire on its own.
@@ -14472,7 +15748,7 @@ static void CommandHunters(uint8_t *gm, int per, int team, bool all, int id) {
     return (void)Logf("commands: hunters -- no live player ship");
   int total = std::min(12, id > 0 ? 1 : all ? per : per * nh);
   // The pool's picks, one "--" block each.
-  static char body[16384];
+  static char body[65536];
   char q[64];
   const BossDef *defs[12];
   int mults[12], nd = 0;
@@ -14502,11 +15778,9 @@ static void CommandHunters(uint8_t *gm, int per, int team, bool all, int id) {
   char names[240];
   int len = 0;
   names[0] = 0;
-  float c[64][3];
-  for (int h = 0; h < nh; ++h) {
-    float a = (float)(rand() % 6283) / 1000.f, d = 6000.f + (float)(rand() % 3001);
-    c[h][0] = hum[h][0] + cosf(a) * d, c[h][1] = hum[h][1] + sinf(a) * d, c[h][2] = hum[h][2] + (float)(rand() % 1501 - 500);
-  }
+  float c[3];
+  if (!WaveSpot(gm, c))
+    return (void)Logf("commands: hunters -- no wave spot");
   for (int k = 0; k < total; ++k) {
     int h = all || id > 0 ? k % nh : k / std::max(1, per);
     if (h >= nh)
@@ -14540,8 +15814,8 @@ static void CommandHunters(uint8_t *gm, int per, int team, bool all, int id) {
         Logf("commands: hunters -- team %d faulted", team);
       }
     }
-    float at[3] = {c[h][0] + 2500.f * (2.f * rand() / RAND_MAX - 1.f), c[h][1] + 2500.f * (2.f * rand() / RAND_MAX - 1.f),
-                   c[h][2] + 1000.f * (2.f * rand() / RAND_MAX - 1.f)};
+    float at[3] = {c[0] + 2500.f * (2.f * rand() / RAND_MAX - 1.f), c[1] + 2500.f * (2.f * rand() / RAND_MAX - 1.f),
+                   c[2] + 1000.f * (2.f * rand() / RAND_MAX - 1.f)};
     TeleportActor(pawn, at, (float)(rand() % 360));
     if (SquadEngage(pawn, hpawn[h], 3)) {
       ++engaged;
@@ -14723,6 +15997,18 @@ static void ProjScanStep(double budgetMs) {
 
 // Appends "p x y z kind id" lines, at most VIEWER_MAX_PROJ, to body, from the last
 // completed scan list.
+static int ProjListLive(void **out, int max) {
+  FUObjectArrayMin *arr = GObjects();
+  int cur = g_projCur, n = 0;
+  if (!arr || !arr->Objects || cur < 0)
+    return 0;
+  for (int k = 0; k < g_projN[cur] && n < max; ++k) {
+    int i = g_projIdx[cur][k];
+    if (i < arr->NumElements && arr->Objects[i].Object == g_projObj[cur][k] && !(arr->Objects[i].Flags & OBJ_PENDING_KILL))
+      out[n++] = g_projObj[cur][k];
+  }
+  return n;
+}
 static int ViewerProjectiles(char *body, int len, int cap) {
   FUObjectArrayMin *arr = GObjects();
   int cur = g_projCur;
@@ -15010,7 +16296,7 @@ static void ViewerSnapshot(const char *match) {
       NpcDisplayName(pawn, nm, sizeof nm);
     }
     int w = _snprintf_s(body + len, sizeof body - len, _TRUNCATE, "%.0f %.0f %.0f %d %d %d %s %s %s %d %s %d\n", at[0], at[1],
-                        at[2], ShipTeam(pawn), pct, npc ? 1 : 0, pid, ClassNameOf(pawn), yaw, e.vid, nm,
+                        at[2], ViewerTeam(pawn), pct, npc ? 1 : 0, pid, ClassNameOf(pawn), yaw, e.vid, nm,
                         PawnCloaked(pawn) ? 1 : 0);
     if (w > 0)
       len += w;
@@ -15323,6 +16609,20 @@ struct BoundBox {
 };
 static BoundBox g_boxes[TERRAIN_MAX_BOXES];
 static int g_nboxes;
+// Inside the warning box shrunk 15% per side; true with no box known yet.
+static bool InsideWarningBox(const float p[3]) {
+  for (int b = 0; b < g_nboxes; ++b)
+    if (!strcmp(g_boxes[b].kind, "warning")) {
+      const BoundBox &x = g_boxes[b];
+      for (int a = 0; a < 2; ++a) {
+        float m = 0.15f * (x.hi[a] - x.lo[a]);
+        if (p[a] < x.lo[a] + m || p[a] > x.hi[a] - m)
+          return false;
+      }
+      return true;
+    }
+  return true;
+}
 
 static void FillBounds(uint8_t *parms, const char *, const char *pn, uint32_t off, void *ctx) {
   uint32_t *o = (uint32_t *)ctx;
@@ -15420,12 +16720,22 @@ static void FillColliding(uint8_t *parms, const char *, const char *pn, uint32_t
   else if (!strcmp(pn, "BoxExtent"))
     o[1] = off;
 }
-static int ObjectBoxes(void *world, char *body, int cap, int *len) {
-  int n = 0, failed = 0;
+// In slices of OBJ_BOX_SLICE_MS, resumed on the next timer tick (*done false
+// until the last): in one go it held the game thread 1256 ms mid-match
+// (stutter1 2026-10-24).
+static const double OBJ_BOX_SLICE_MS = 30.0;
+static int ObjectBoxes(void *world, char *body, int cap, int *len, bool *done) {
+  static int s_i = 0, s_n = 0, s_failed = 0;
+  static long s_traces = 0;
+  static double s_ms = 0;
+  int &n = s_n, &failed = s_failed;
+  long &traces = s_traces;
   double t0 = NowMs();
-  long traces = 0;
-  for (int i = 0; i < HIT_SLOTS && n < OBJ_BOX_MAX && *len < cap - 128; ++i) {
-    HitSlot &sl = g_hitTally[i];
+  *done = false;
+  for (; s_i < HIT_SLOTS && n < OBJ_BOX_MAX && *len < cap - 128; ++s_i) {
+    if (NowMs() - t0 > OBJ_BOX_SLICE_MS)
+      return s_ms += NowMs() - t0, n;
+    HitSlot &sl = g_hitTally[s_i];
     if (!sl.actor || (sl.kind & 0x7F) != 'o' || !ObjectLive(sl.actor))
       continue;
     alignas(16) uint8_t parms[256];
@@ -15511,9 +16821,13 @@ static int ObjectBoxes(void *world, char *body, int cap, int *len) {
       }
     body[(*len)++] = '\n';
   }
-  Logf("terrain: %d object boxes with shapes, %ld traces, %.0f ms%s", n, traces, NowMs() - t0,
+  s_ms += NowMs() - t0;
+  Logf("terrain: %d object boxes with shapes, %ld traces, %.0f ms%s", n, traces, s_ms,
        failed ? " (some actors gave no bounds)" : "");
-  return n;
+  int r = n;
+  s_i = s_n = s_failed = 0, s_traces = 0, s_ms = 0;
+  *done = true;
+  return r;
 }
 
 // The coarse pass hit over half of its +-1e6 cells: backdrop meshes reach the
@@ -15539,6 +16853,58 @@ static void TerrainTick(uint8_t *gm, const char *match, bool frame = false) {
   static DWORD s_resweepAt = 0;
   static bool s_retracing = false;
   enum { RESWEEP_MS = 30000 };
+  // Phase 3: the grid text is built, object boxes go on in slices, then the post.
+  static char *s_body = nullptr;
+  static int s_cap = 0, s_len = 0, s_hits = 0, s_surf = 0;
+  if (s_phase == 3) {
+    if (frame)
+      return;
+    bool done = true;
+    int objs = g_hitTally ? ObjectBoxes(gm, s_body, s_cap, &s_len, &done) : 0;
+    if (!done)
+      return;
+    s_phase = 2;
+    char *body = s_body;
+    int len = s_len, hits = s_hits, surfaces = s_surf;
+    s_body = nullptr;
+    free(s_col);
+    s_col = nullptr;
+    if (g_hitTally) {
+      HitTallyLog();
+      free(g_hitTally);
+      g_hitTally = nullptr;
+    }
+    // Posted from a thread: the 3 MB upload held the game thread 1.5-2 s
+    // ("tick: commands took 2735 ms" right after each fine pass, 2026-10-23).
+    struct Post { char path[160]; char *body; int len; };
+    Post *post = (Post *)malloc(sizeof(Post));
+    if (!post) {
+      free(body);
+      return;
+    }
+    _snprintf_s(post->path, sizeof post->path, _TRUNCATE, "/battle/terrain?match=%s", match);
+    post->body = body, post->len = len;
+    Logf("terrain: fine %dx%d, %d columns hit, %d surfaces, %d object boxes, %.0f ms tracing, %d bytes -> posting",
+         TERRAIN_FINE, TERRAIN_FINE, hits, surfaces, objs, s_ms, len);
+    auto run = [](LPVOID pv) -> DWORD {
+      Post *p = (Post *)pv;
+      char buf[512];
+      const char *raw;
+      int n;
+      DWORD t0 = GetTickCount();
+      bool sent = HttpGetLoopbackRaw(p->path, buf, (int)sizeof buf, &raw, &n, p->body, p->len, 15000);
+      Logf("terrain: %d bytes %s in %lu ms", p->len, sent ? "sent" : "NOT sent", GetTickCount() - t0);
+      free(p->body);
+      free(p);
+      return 0;
+    };
+    HANDLE th = CreateThread(nullptr, 0, run, post, 0, nullptr);
+    if (th)
+      CloseHandle(th);
+    else
+      run(post);
+    return;
+  }
   if (s_phase == 2) {
     if (!s_resweepAt || frame || (int)(GetTickCount() - s_resweepAt) < 0)
       return;
@@ -15692,7 +17058,7 @@ static void TerrainTick(uint8_t *gm, const char *match, bool frame = false) {
   g_terrainFine = false;
   if (frame)
     return; // the next timer tick uploads
-  s_phase = 2;
+  s_phase = 3;
   static bool s_resweptOnce = false;
   if (!s_resweptOnce)
     s_resweptOnce = true, s_resweepAt = GetTickCount() + RESWEEP_MS;
@@ -15701,6 +17067,7 @@ static void TerrainTick(uint8_t *gm, const char *match, bool frame = false) {
   int cap = TERRAIN_FINE * TERRAIN_FINE * (2 * TERRAIN_LAYERS * 9 + 2) + TERRAIN_MAX_BOXES * 160 + OBJ_BOX_MAX * (96 + OBJ_SHAPE_MAX * OBJ_SHAPE_MAX * 7) + 128;
   char *body = (char *)malloc(cap);
   if (!body) {
+    s_phase = 2;
     free(s_col);
     s_col = nullptr;
     return;
@@ -15729,22 +17096,8 @@ static void TerrainTick(uint8_t *gm, const char *match, bool frame = false) {
     if (w > 0)
       len += w;
   }
-  int objs = g_hitTally ? ObjectBoxes(gm, body, cap, &len) : 0;
-  free(s_col);
-  s_col = nullptr;
-  if (g_hitTally) {
-    HitTallyLog();
-    free(g_hitTally);
-    g_hitTally = nullptr;
-  }
-  char path[160], buf[512];
-  _snprintf_s(path, sizeof path, _TRUNCATE, "/battle/terrain?match=%s", match);
-  const char *raw;
-  int n;
-  bool sent = HttpGetLoopbackRaw(path, buf, (int)sizeof buf, &raw, &n, body, len);
-  free(body);
-  Logf("terrain: fine %dx%d, %d columns hit, %d surfaces, %d object boxes, %.0f ms tracing, %d bytes -> %s",
-       TERRAIN_FINE, TERRAIN_FINE, hits, surfaces, objs, s_ms, len, sent ? "sent" : "NOT sent");
+  s_body = body, s_cap = cap, s_len = len, s_hits = hits, s_surf = surfaces;
+  s_phase = 3; // object boxes from the next timer tick
 }
 
 // Any outermost ProcessEvent on the game thread is a safe point to trace from
@@ -15921,7 +17274,10 @@ static void FrameTick() {
       g_terrainFine = false;
       Logf("terrain: fault in a frame tick -- fine pass continues on the timer only");
     }
-  if (g_viewerOn && !g_projScanOff)
+  bool heraldOut = false;
+  for (HeraldState &h : g_heralds)
+    heraldOut |= h.pawn != nullptr;
+  if ((g_viewerOn || heraldOut) && !g_projScanOff)
     __try {
       PhaseMark(2);
       ProjScanStep(PROJ_SCAN_MS);
@@ -15979,6 +17335,9 @@ static int FixNpcFireAbilities(void *ctrl, void *pawn, bool log) {
   };
   uint8_t *fa = *(uint8_t **)((uint8_t *)ctrl + 0x860);
   int nfa = *(int32_t *)((uint8_t *)ctrl + 0x868);
+  if (log) // the per-AI slot counts admin_bosses.go bossAISlots guesses from
+    Logf("commands: spawn abilities -- controller %s has %d fire slot(s), pawn %d abilit(ies)", ClassNameOf(ctrl), nfa,
+         *(int32_t *)(mgr + 0x100));
   int na = *(int32_t *)(mgr + 0x100);
   UObjectMin **abl = *(UObjectMin ***)(mgr + 0xF8);
   if (!fa || !abl || na <= 0 || !IsReadable(abl, na * 8))
@@ -15988,8 +17347,20 @@ static int FixNpcFireAbilities(void *ctrl, void *pawn, bool log) {
     uint8_t *e = fa + i * 0xD0;
     int32_t *idx = (int32_t *)(e + 8);
     UObjectMin **want = (UObjectMin **)(e + 0x10);
-    if (*idx >= 0 && *idx < na)
+    // A boss's modules replace the pawn's list after this first ran (boss
+    // "Rawr X3" 2026-10-23: "ability list 6 -> 8", jets in place of the
+    // Nuker's WarpM/MslH): keep the slot's class in step with what its index
+    // now holds, or the reset re-match below hunts the old class and the slot
+    // stays dead -- the jets never launched.
+    if (*idx >= 0 && *idx < na) {
+      if (IsReadable(abl[*idx], sizeof(UObjectMin)) && *want != abl[*idx]->Class) {
+        if (log)
+          Logf("commands: spawn abilities -- slot %d index %d now holds %s", i, *idx, ClassNameOf(abl[*idx]));
+        *want = abl[*idx]->Class;
+        ++fixed;
+      }
       continue;
+    }
     const char *wn = IsReadable(*want, sizeof(UObjectMin)) ? NameText((*want)->Name) : nullptr;
     int hit = -1;
     if (wn) {
@@ -16001,9 +17372,9 @@ static int FixNpcFireAbilities(void *ctrl, void *pawn, bool log) {
           if (!strcmp(ws, as))
             hit = j;
         }
-    } else if (i < na) {
-      hit = i; // GUESS: see above
     }
+    if (hit < 0 && i < na)
+      hit = i; // GUESS: see above; also a named class the pawn no longer has (swapped modules)
     if (hit < 0 || !IsReadable(abl[hit], sizeof(UObjectMin)))
       continue;
     *want = abl[hit]->Class;
@@ -16042,13 +17413,80 @@ static void NpcFireAbilitiesTick() {
       w.ctrl = nullptr;
       continue;
     }
+    // A /meteor herald is cut down to its nuke (ability list 6 -> 1); re-binding
+    // its slots to the stock six put its guns back and the nuke never came
+    // (operator 2026-10-24: "/meteor doesn't spawn the comet at all").
+    bool herald = false;
+    for (HeraldState &h : g_heralds)
+      herald |= h.pawn == w.pawn;
+    if (herald)
+      continue;
     int n = FixNpcFireAbilities(w.ctrl, w.pawn, w.resets == 0);
     if (n && (++w.resets <= 5 || w.resets % 100 == 0))
       Logf("commands: spawn abilities -- %p: %d slot(s) were reset, re-applied (#%d)", w.ctrl, n, w.resets);
   }
 }
 
+// Preload: every class's T5 AI pawn (what /spawn, /boss, /hunters and the
+// herald spawn) is loaded two per step after the game mode appears,
+// during orbit, so a mid-match spawn does not read it from the paks.
+// GUESS: the first-spawn stalls (hunters 1495 ms, meteor 2483 ms,
+// 2026-10-23) are those loads; "spawn X -> path (N ms)" times them.
+static void PreloadTick(uint8_t *gm) {
+  static void *s_for = nullptr;
+  static DWORD s_at = 0;
+  static int s_i = 0;
+  if (s_for != gm)
+    s_for = gm, s_at = GetTickCount(), s_i = 0;
+  static const char *const kShips[] = {"AssaultHeavyT5", "AssaultMediumT5", "AssaultLightT5", "DreadnoughtHeavyT5",
+                                       "DreadnoughtMediumT5", "DreadnoughtLightT5", "ScoutHeavyT5", "ScoutMediumT5",
+                                       "ScoutLightT5", "SniperHeavyT5", "SniperMediumT5", "SniperLightT5",
+                                       "SupportHeavyT5", "SupportMediumT5", "SupportLightT5"};
+  enum { NSHIPS = sizeof kShips / sizeof *kShips, NSCANS = 10 };
+  // The object walks first (marker 673 ms, officer table 381 ms, percept
+  // classes 674 ms: stutter2 2026-10-24 ran them after the ships, ~1 s per
+  // step, and they landed just past the 20 s orbit), then the herald modules
+  // (/meteor), the arrival shake, then two ship classes per step.
+  if (GetTickCount() - s_at < 1000 || s_i >= NSCANS + (NSHIPS + 1) / 2)
+    return;
+  static const HeraldModule *const kMods[] = {&kHeraldSalvo, &kHeraldNuke, &kHeraldJets[0], &kHeraldJets[1], &kHeraldJets[2]};
+  int k = s_i++;
+  if (k >= NSCANS) {
+    for (int j = (k - NSCANS) * 2; j < (k - NSCANS) * 2 + 2 && j < NSHIPS; ++j)
+      ShipIdPawnClass(kShips[j], false);
+    return;
+  }
+  double t0 = NowMs();
+  const char *what = nullptr;
+  __try {
+    if (k == 0 && !g_marker.done)
+      MarkerFind(), what = "marker lookup";
+    else if (k == 1)
+      OfficerTable(), what = "officer table";
+    else if (k == 2)
+      PerceptOwners(), what = "percept classes";
+    else if (k == 3)
+      // Instances too (the first /meteor's tick was 893 ms). Ones made later
+      // are not listed; the herald's own are covered by HeraldStretchRange.
+      PerceptSearch(0.f), what = "percept instances";
+    else if (k == 4)
+      ShakeClass(), what = "shake class";
+    else if (k >= 5) {
+      UObjectMin *uc = ResolveUClassClass(), *c = nullptr;
+      if (uc)
+        c = (UObjectMin *)((tStaticLoadClass)(g_base + RVA_STATIC_LOAD_CLASS))(uc, nullptr, kMods[k - 5]->path, nullptr, 0, nullptr, false);
+      if (IsReadable(c, sizeof(UObjectMin)))
+        PinToRootSet(c);
+      what = "herald module";
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("preload: step %d faulted", k);
+  }
+  if (what)
+    Logf("preload: %s (%.0f ms)", what, NowMs() - t0);
+}
 static void CommandsTick(uint8_t *gm) {
+  ZONE("PreloadTick", PreloadTick(gm));
   ZONE("NpcFireAbilitiesTick", NpcFireAbilitiesTick());
   ZONE("NpcTierTick", NpcTierTick());
   ZONE("BotsTick", BotsTick());
@@ -16057,8 +17495,13 @@ static void CommandsTick(uint8_t *gm) {
   ZONE("SkyMeteorTick", SkyMeteorTick(gm));
   ZONE("SquadWatchTick", SquadWatchTick());
   ZONE("HeraldTick", HeraldTick());
+  // Commands are polled every other tick; while a batch still has commands
+  // waiting (s_more), every tick, one spawning command per tick: a /wave ran
+  // bossdef+squad+swarm+hunters in one tick, 761 ms (2026-10-23).
   static int s_tick = 0;
-  if (++s_tick % 2)
+  static bool s_more = false;
+  bool odd = ++s_tick % 2;
+  if (odd && !s_more)
     return;
   static char s_match[96] = "";
   static bool s_haveMatch = false;
@@ -16068,7 +17511,7 @@ static void CommandsTick(uint8_t *gm) {
   // missing ProcessEvent hook on non-Havoc hosts showed up. Match id because
   // concurrent hosts share this log.
   static int s_hb = 0;
-  if (g_frameWanted && ++s_hb % 10 == 1) {
+  if (!odd && g_frameWanted && ++s_hb % 10 == 1) {
     Logf("frame: %s: %ld ticks, phase %ld, stale PE resets %ld, busy resets %ld, worst frame %.0f ms, %ld hitches >100 ms, %ld jumps, %ld stalls (worst %.0f ms), terrain fine %d, projectile list %d", s_match, g_frameTicks, g_framePhase, g_peStaleResets, g_frameBusyResets, g_frameWorstMs, g_frameHitches, g_jumps, g_stalls, g_stallWorstMs,
          (int)g_terrainFine, g_projCur);
     Logf("frame: VirtualQuery calls (ms) elsewhere %ld, terrain %ld (%.0f), projectiles %ld (%.0f), jump %ld (%.0f), snapshot %ld (%.0f), timer %ld; frame cache hits %ld",
@@ -16085,7 +17528,8 @@ static void CommandsTick(uint8_t *gm) {
     ViewerSnapshot(s_match);
   g_gameThreadId = GetCurrentThreadId();
   g_terrainGm = gm;
-  TerrainTick(gm, s_match);
+  if (!odd)
+    TerrainTick(gm, s_match);
   static long long s_since = 0;
   char path[192], buf[4096];
   _snprintf_s(path, sizeof path, _TRUNCATE, "/battle/commands?match=%s&since=%lld", s_match, s_since);
@@ -16102,11 +17546,22 @@ static void CommandsTick(uint8_t *gm) {
   char body[4096];
   memcpy(body, raw, n < (int)sizeof body ? n : (int)sizeof body - 1);
   body[n < (int)sizeof body ? n : (int)sizeof body - 1] = 0;
+  s_more = false;
+  bool spawned = false;
   for (char *line = strtok(body, "\r\n"); line; line = strtok(nullptr, "\r\n")) {
     long long seq = 0;
     char cmd[32] = "", arg[64] = "", arg2[64] = "", arg3[32] = "";
     if (sscanf(line, "%lld %31s %63s %63s %31s", &seq, cmd, arg, arg2, arg3) < 2 || seq <= s_since)
       continue;
+    static const char *const kHeavy[] = {"bossdef", "spawn", "hunters", "hunterdef", "swarm", "squad", "meteor", "nuke", "fighters"};
+    bool heavy = false;
+    for (const char *h : kHeavy)
+      heavy |= !strcmp(cmd, h);
+    if (heavy && spawned) { // next tick (s_since stops before it)
+      s_more = true;
+      break;
+    }
+    spawned |= heavy;
     s_since = seq;
     Logf("commands: #%lld %s %s", seq, cmd, arg);
     ZoneBegin("cmd", cmd); // ended by the next command's, or after the loop
@@ -16146,7 +17601,9 @@ static void CommandsTick(uint8_t *gm) {
         slot->team = atoi(arg2);
       }
       Logf("commands: team %s -> %s", arg, arg2);
-    } else if (!strcmp(cmd, "shake"))
+    } else if (!strcmp(cmd, "endmatch"))
+      CommandEndMatch(gm, atoi(arg) == 2 ? 2 : 1);
+    else if (!strcmp(cmd, "shake"))
       CommandShake(gm, (float)std::min(10, std::max(1, atoi(arg))));
     else if (!strcmp(cmd, "flash"))
       CommandFlash(gm, arg);
@@ -16160,7 +17617,7 @@ static void CommandsTick(uint8_t *gm) {
       // /meteor [targets]: the herald in Onslaught; elsewhere the old shower.
       // Braced: unbraced, the else-ifs below bound to this inner if, and
       // props/kill/ffa/spawn/enemy silently did nothing (2026-10-18).
-      if (HostIsHavoc() || HostIsHorde() || !InvasionGameState(gm) || !CommandHeraldMeteor(gm, atoi(arg) < 1 ? 1 : atoi(arg), (float)atof(arg2), arg3[0] ? std::min(255, atoi(arg3)) : 0))
+      if (HostIsHavoc() || HostIsHorde() || !InvasionGameState(gm) || !CommandHeraldMeteor(gm, atoi(arg) < 1 ? 1 : atoi(arg), (float)atof(arg2), arg3[0] ? std::min(255, atoi(arg3)) : -1))
         CommandSkyMeteor(gm, atoi(arg) < 1 ? 12 : std::min(40, atoi(arg)), (float)atof(arg2));
     } else if (!strcmp(cmd, "fighters")) {
       CommandFighters(gm, arg[0] ? std::min(255, std::max(0, atoi(arg))) : 0);
@@ -16177,9 +17634,13 @@ static void CommandsTick(uint8_t *gm) {
       ProbeProps(gm, arg, arg2);
     else if (!strcmp(cmd, "kill"))
       CommandKill(gm, arg);
+    else if (!strcmp(cmd, "teams") || !strcmp(cmd, "secret") || !strcmp(cmd, "ships") || !strcmp(cmd, "drain") ||
+             !strcmp(cmd, "shower") || !strcmp(cmd, "custom") || !strcmp(cmd, "creeps") ||
+             !strcmp(cmd, "scatter"))
+      CommandCustom(gm, cmd, arg, arg2);
     else if (!strcmp(cmd, "ffa")) {
       g_ffaGm = strcmp(arg, "off") ? gm : nullptr;
-      g_ffaN = 0;
+      g_ffaN = g_ffaSeq = 0;
       if (g_ffaLimitGm == gm && g_ffaLimitSaved > 0 && IsReadable(gm + OFF_GM_KILLS_FOR_WINNING, 4))
         *(int32_t *)(gm + OFF_GM_KILLS_FOR_WINNING) = g_ffaLimitSaved; // back to the team rule (on: re-read)
       g_ffaLimitGm = nullptr;

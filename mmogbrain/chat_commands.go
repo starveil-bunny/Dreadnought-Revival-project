@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -73,10 +74,10 @@ func init() {
 	chatCommands = []chatCommand{
 		{name: "help", args: "[word]", help: "this list, or only lines with word", run: cmdHelp},
 		{name: "online", help: "who is online, in battle, searching", run: cmdOnline},
-		{name: "season", args: "[1|3|debug|off]", help: "show or set the PvE season", run: cmdSeason},
+		{name: "season", args: "[1|3|debug] [episode] | next | off", help: "show or set the PvE season and episode; it stays until changed, next goes on to the next season after the last episode", run: cmdSeason},
 		{name: "event", args: "[invader|off|<item ids>]", help: "show or set the event cosmetics grant", run: cmdEvent},
 		{name: "xp", args: "[multiplier]", help: "show or set the match XP multiplier", run: cmdXP},
-		{name: "match", args: "<havoc|tdm|ffa|pod|turbo|onslaught|conquest|te|pve|pg> [map] | off", help: "pin the next match's mode and map (ffa: TDM, everyone on their own team, no bots)", admin: true, run: cmdMatch},
+		{name: "match", args: "<mode|custom mode> [map] | off", help: "pin the next match's mode and map; custom modes: ffa, ffa_pve, teams3, teams4, secret, lifedrain, meteors, fake_havoc", admin: true, run: cmdMatch},
 		// /bunny is off: the client font has no glyphs for much of the ASCII art
 		// (2026-10-17). cmdBunny is kept for when the art is redrawn.
 		// {name: "bunny", help: "post a bunny to this room", run: cmdBunny},
@@ -87,8 +88,9 @@ func init() {
 		{name: "enemy", args: "<ShipId>|off|list", help: "Havoc: every new enemy spawns as this ship (/enemy list)", admin: true, run: cmdEnemy},
 		{name: "spawn", args: "<ShipId>|boss [1-8] [x2-x10]", help: "spawn enemies now (Onslaught: assault ships, ShipId ignored; TDM/PodTDM/TER: enemy bots of that ship, the nearest tier the mode has); xN = elite with N times the health", admin: true, run: cmdSpawn},
 		{name: "boss", args: "[<id>|list|ShipId|random|stock] [2-10]", help: "one elite boss now: a numbered custom boss from the admin Bosses tab (/boss 1, /boss 1 3 overrides its multiplier); bare /boss picks a random custom boss (stock: a random stock boss at x2); in TDM/PodTDM/TER an enemy bot flying the boss's class at T5", admin: true, run: cmdBoss},
-		{name: "clone", args: "<player|me> [ship] [1-10]", help: "an AI copy of a player's ship as an enemy boss, Evil <player>: their flagship, or the named ship of theirs", admin: true, run: cmdClone},
+		{name: "clone", args: "<player|me> [ship] [1-10]", help: "an AI copy of a player's ship as an enemy boss, Evil <player>: their flagship, or the named ship of theirs; strength x2 unless given", admin: true, run: cmdClone},
 		{name: "team", args: "<player> <1|2>", help: "move a player to team 1 or 2", admin: true, run: cmdTeam},
+		{name: "endmatch", args: "1|2", help: "end the match now, that team wins", admin: true, run: hostCmd("endmatch", "1", "2")},
 		{name: "shake", args: "1-10", help: "shake every player's camera (strength 1-10)", admin: true, run: hostCmdCheck("shake", "1-10", func(a string) bool {
 			n, err := strconv.Atoi(a)
 			return err == nil && n >= 1 && n <= 10
@@ -98,12 +100,12 @@ func init() {
 			f, err := strconv.ParseFloat(a, 64)
 			return err == nil && f >= 0.2 && f <= 1
 		})},
-		{name: "kill", args: "me|all|<player>", help: "destroy ships (they respawn)", admin: true, run: cmdKill},
+		{name: "kill", args: "me|all|boss|<player>", help: "destroy ships (players respawn)", admin: true, run: cmdKill},
 		{name: "meteor", args: "[1-40] [distance] [team]", help: "Onslaught: a Comet per player ship fires n Warp Missile nukes from [distance] uu (default 1, 80000); elsewhere torpedoes rain from overhead (default 12)", admin: true, run: cmdMeteor},
 		{name: "swarm", args: "[1-60] [team]", help: "a swarm of Onslaught fighters (default and cap set in the admin Waves tab) near a random player, team 3 (purple, fights everyone) unless given", admin: true, run: cmdSwarm("swarm", 60)},
 		{name: "squad", args: "[1-20] [team]", help: "a squad of Onslaught assault ships (default and cap set in the admin Waves tab) near a random player, team 3 unless given", admin: true, run: cmdSwarm("squad", 20)},
 		{name: "wave", args: "[x2-x10] | skip|1-50", help: "faux Havoc wave: a boss (random custom boss, else stock) + assault ships + fighters + hunters at once (counts in the admin Waves tab); in Havoc, skip ends the current wave and N makes the next wave wave N", admin: true, run: cmdWave},
-		{name: "hunters", args: "[1-12] [team]", help: "a pack of hunters from the curated pool (admin Hunters tab; per player, default in the Waves tab) sent at each player, enemy team unless given", admin: true, run: cmdHunters},
+		{name: "hunters", args: "[1-12] [team]", help: "a pack of hunters from the curated pool (admin Hunters tab; per player, default in the Waves tab) sent at each player, the Waves tab team (3) unless given", admin: true, run: cmdHunters},
 		{name: "fighters", args: "[team]", help: "test (Onslaught): three heralds launch Fighters, Bombers and Interceptors at the player ships", admin: true, run: cmdFighters},
 		{name: "props", args: "<object> [filter]", help: "debug: log an object's properties to the mod log (pawn, pawn.<prop>, gm, gs)", admin: true, run: cmdProps},
 		{name: "host", args: "<raw command>", help: "debug: send a raw command line to the battle server mod", admin: true, run: cmdHost},
@@ -235,21 +237,59 @@ func cmdOnline(*chatCommandCtx) string {
 	return serverChatOnlineLine(online, inBattle, searching, "")
 }
 
-var pveSeasonAliases = map[string]string{"1": "PVE_Season1", "3": "PVE_Season3", "debug": "PVE_DebugSeason", "rotate": "rotate", "off": "off"}
+var pveSeasonAliases = map[string]string{"1": "PVE_Season1", "3": "PVE_Season3", "debug": "PVE_DebugSeason"}
 
-func cmdSeason(c *chatCommandCtx) string {
-	if len(c.args) == 0 {
-		if id := pveSeasonID(); id != "" {
-			return "Season: " + id + "."
+func pveSeasonLabel(id string) string {
+	for k, v := range pveSeasonAliases {
+		if v == id {
+			return k
 		}
-		return "Season: off."
 	}
-	id, ok := pveSeasonAliases[strings.ToLower(c.args[0])]
-	if !ok {
-		return "Unknown season " + c.args[0] + "; one of 1, 3, debug, rotate, off."
+	return id
+}
+
+func pveSeasonLine(prefix string) string {
+	season, events, active := pveSchedule(time.Now().UTC())
+	if active < 0 {
+		return prefix + "off."
 	}
-	_ = os.Setenv("DN_PVE_SEASON", id)
-	return "Season set to " + id + ". Players see it after their next login."
+	name := loadPVETables().events[events[active].id].Name.Text
+	return fmt.Sprintf("%sseason %s, episode %d of %d (%s).", prefix, pveSeasonLabel(season), active+1, len(events), name)
+}
+
+// cmdSeason: /season, /season <season> [episode], /season next, /season off.
+func cmdSeason(c *chatCommandCtx) string {
+	const usage = "Usage: /season [1|3|debug] [episode] | next | off"
+	if len(c.args) == 0 {
+		return pveSeasonLine("PvE: ")
+	}
+	st := pveSeasonState{Since: time.Now().UTC()}
+	switch arg := strings.ToLower(c.args[0]); arg {
+	case "off":
+	case "next":
+		season, _, active := pveSchedule(time.Now().UTC())
+		if active < 0 {
+			season, active = pveRotation[len(pveRotation)-1], 1<<30 // off: start the rotation over
+		}
+		st.Season, st.Episode = pveNextEpisode(season, active)
+	default:
+		id, ok := pveSeasonAliases[arg]
+		if !ok {
+			return usage
+		}
+		st.Season = id
+		if len(c.args) > 1 {
+			n, err := strconv.Atoi(c.args[1])
+			if err != nil || n < 1 || n > len(pveSeasonEvents(id)) {
+				return fmt.Sprintf("Season %s has episodes 1-%d.", arg, len(pveSeasonEvents(id)))
+			}
+			st.Episode = n - 1
+		}
+	}
+	if err := setPvESeasonState(&st); err != nil {
+		return "Could not save the season: " + err.Error()
+	}
+	return pveSeasonLine("PvE now: ") + " Players see it after their next login."
 }
 
 // Named event grants: the item ids of each original event's rewards.
@@ -317,7 +357,7 @@ var chatMatchModes = map[string]string{
 func cmdMatch(c *chatCommandCtx) string {
 	f := strings.TrimSpace(os.Getenv("DN_MATCH_PIN_FILE"))
 	if len(c.args) == 0 {
-		return "Usage: /match <havoc|tdm|ffa|pod|turbo|onslaught|conquest|te|pve|pg> [map] | off"
+		return "Usage: /match <havoc|tdm|pod|turbo|onslaught|conquest|te|pve|pg|" + strings.Join(customModeIDs(), "|") + "> [map] | off"
 	}
 	if strings.EqualFold(c.args[0], "off") {
 		if f != "" {
@@ -325,10 +365,10 @@ func cmdMatch(c *chatCommandCtx) string {
 		}
 		return "Match pin cleared."
 	}
-	ffa := strings.EqualFold(c.args[0], "ffa")
+	custom, isCustom := customModeByID(c.args[0])
 	mode, ok := chatMatchModes[strings.ToLower(c.args[0])]
-	if ffa {
-		mode, ok = "TDM", true
+	if isCustom {
+		mode, ok = custom.Base, true
 	}
 	if !ok {
 		mode = c.args[0]
@@ -341,15 +381,15 @@ func cmdMatch(c *chatCommandCtx) string {
 	if len(c.args) > 1 {
 		mapName = c.args[1]
 	}
-	data := fmt.Sprintf(`{"mode":%q,"map":%q,"ffa":%t}`, mode, mapName, ffa)
-	if err := os.WriteFile(f, []byte(data), 0o644); err != nil { //nolint:gosec // local pin file
+	data, _ := json.Marshal(map[string]string{"mode": mode, "map": mapName, "custom": custom.ID})
+	if err := os.WriteFile(f, data, 0o644); err != nil { //nolint:gosec // local pin file
 		return "Could not write the pin: " + err.Error()
 	}
 	if mapName == "" {
 		mapName = "any map"
 	}
-	if ffa {
-		mode = "FFA (TDM, everyone on their own team, no bots)"
+	if isCustom {
+		mode = custom.Label + " (" + custom.Base + ")"
 	}
 	return "Next match pinned: " + mode + " on " + mapName + " (one match)."
 }
@@ -860,7 +900,7 @@ func cmdNuke(c *chatCommandCtx) string {
 
 // cmdMeteor: /meteor [n] [distance]. In Onslaught the host mod sends one
 // nuker herald that fires n salvos (default 3) with no cooldown, distance uu from the first ship
-// (default 6000; uu are cm), on team [team] (default 0, neutral);
+// (default 6000; uu are cm), on team [team] (default: the target's enemy side);
 // elsewhere n Ultra torpedoes rain on the ships (default 12)
 // launched distance uu up (CommandHeraldMeteor / CommandSkyMeteor).
 func cmdMeteor(c *chatCommandCtx) string {
@@ -961,7 +1001,7 @@ func cmdWave(c *chatCommandCtx) string {
 		parts = append(parts, fmt.Sprintf("%d fighters", cfg.WaveSwarm))
 	}
 	if cfg.WaveHunters > 0 {
-		queueHostCommand(target, fmt.Sprintf("hunters %d 0 all", cfg.WaveHunters))
+		queueHostCommand(target, fmt.Sprintf("hunters %d %d all", cfg.WaveHunters, cfg.Team))
 		parts = append(parts, fmt.Sprintf("%d hunters", cfg.WaveHunters))
 	}
 	what := strings.TrimSuffix(strings.SplitN(boss, " sent to", 2)[0], ".")
@@ -999,6 +1039,9 @@ func cmdHunters(c *chatCommandCtx) string {
 	if len(c.args) == 0 {
 		cmd += " " + strconv.Itoa(waveCfg().HuntersDefault)
 	}
+	if len(c.args) < 2 { // the Waves tab's team (3, fights everyone) unless given
+		cmd += " " + strconv.Itoa(waveCfg().Team)
+	}
 	queueHostCommand("", cmd)
 	return "Hunters incoming."
 }
@@ -1030,7 +1073,7 @@ func cmdHost(c *chatCommandCtx) string {
 // ServerKillMe debug RPC; the player respawns as after any death.
 func cmdKill(c *chatCommandCtx) string {
 	if len(c.args) != 1 {
-		return "Usage: /kill me|all|<player>"
+		return "Usage: /kill me|all|boss|<player>"
 	}
 	// /team and /kill used to queue with an empty target whatever room they
 	// were typed in, i.e. they always broadcast; see matchCommandTarget.
@@ -1045,6 +1088,9 @@ func cmdKill(c *chatCommandCtx) string {
 	case "me":
 		queueHostCommand(target, "kill "+strings.ReplaceAll(c.pid, "-", ""))
 		return "Your ship is destroyed."
+	case "boss":
+		queueHostCommand(target, "kill boss")
+		return "The bosses in " + where + " are destroyed."
 	}
 	p, bad := onlinePlayerByName(c.args[0])
 	if bad != "" {

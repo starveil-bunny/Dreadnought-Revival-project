@@ -53,9 +53,9 @@ func TestBossValidation(t *testing.T) {
 }
 
 func TestBossChatAndHost(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	withBosses(t, gorgon())
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	for _, tc := range []struct{ in, want string }{
 		{"/boss 1", " bossdef 1 3"},
 		{"/boss 1 5", " bossdef 1 5"},
@@ -112,4 +112,34 @@ func TestBossCatalog(t *testing.T) {
 	}
 	t.Logf("%d bases, %d modules, %d paints, %d patterns, %d decals, %d emblems, %d feats; paint[0]=%+v",
 		len(c.Bases), len(c.Modules), len(c.Paints), len(c.Patterns), len(c.Decals), len(c.Emblems), len(c.Feats), c.Paints[0])
+}
+
+func TestBossAIs(t *testing.T) {
+	c := buildBossCatalog()
+	byID := map[string]bossCatalogAI{}
+	for _, a := range c.AIs {
+		byID[a.ID] = a
+	}
+	if a := byID["TitanCarrier_behavior_PanC_Hard"]; a.Label != "Superheavy Carrier" || len(a.Ships) != 3 {
+		t.Errorf("titan carrier AI: %+v", a)
+	}
+	if a := byID["DreadnoughtHeavy_Behavior_ArmoredNuker_Hard"]; a.Slots != 6 {
+		t.Errorf("nuker slots %d", a.Slots)
+	}
+	d := bossDef{ID: 1, Name: "X", Tier: "legendary", Class: "Dreadnought", Manufacturer: "JupiterArms", Base: "DreadnoughtHeavyNukerT5", Mult: 3,
+		Modules: make([]string, 7)}
+	d.Modules[6] = "/Game/A/B.B_C"
+	if err := d.validate(); err == nil {
+		t.Error("7th module accepted on a 6-slot AI")
+	}
+	d.AI = "SniperMedium_Behavior_Standard_Hard"
+	if err := d.validate(); err != nil {
+		t.Errorf("13-slot AI: %v", err)
+	}
+	if !strings.Contains(bossHostText(d), "ai=/Game/") {
+		t.Error("no ai= path in host text")
+	}
+	for _, a := range c.AIs {
+		t.Logf("%-50s %2d %s", a.ID, a.Slots, a.Label)
+	}
 }

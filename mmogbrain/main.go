@@ -416,6 +416,8 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	r.Handle("/launcher/viewer/chat", launcherAuth(http.HandlerFunc(launcherViewerChatHandler))).Methods(http.MethodPost)
 	r.Handle("/launcher/viewer/page", launcherAuth(http.HandlerFunc(launcherViewerPage))).Methods(http.MethodGet)
 	r.Handle("/launcher/fleet", launcherAuth(http.HandlerFunc(launcherFleetHandler))).Methods(http.MethodGet)
+	r.Handle("/launcher/rotation", launcherAuth(http.HandlerFunc(launcherRotation))).Methods(http.MethodGet, http.MethodPost) // rotation_settings.go
+	r.Handle("/launcher/rotation/page", launcherAuth(http.HandlerFunc(launcherRotationPage))).Methods(http.MethodGet)
 	r.Handle("/launcher/fleet/page", launcherAuth(http.HandlerFunc(launcherFleetPage))).Methods(http.MethodGet)
 	r.Handle("/launcher/fleet/art", launcherAuth(http.HandlerFunc(launcherFleetArt))).Methods(http.MethodGet)
 	r.Handle("/launcher/fleet/action", launcherAuth(http.HandlerFunc(launcherFleetAction))).Methods(http.MethodPost)
@@ -424,6 +426,7 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API
 	// requires the admin key.
+	loadRotationSettings() // rotation_settings.go
 	registerAdminDashboard(r, adminKey, getenv("GAME_MGR_URL", "http://127.0.0.1:8085"), os.Getenv("INTERNAL_API_KEY"))
 
 	// Admin endpoints
@@ -454,7 +457,7 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 
 // configureMatchAutoscale sizes matches by who is around instead of a fixed
 // PLAYERS_PER_MATCH: a match waits for every player who is online and not in a
-// battle (capped at DN_MATCH_MAX_PLAYERS, default 10 = the host's -maxplayers),
+// battle (capped at DN_MATCH_MAX_PLAYERS, default 16 = 8v8, the host's -maxplayers),
 // or DN_MATCH_MAX_WAIT (default 60s) after its first player queued. A lone
 // player still starts at once; two players online land in ONE match instead of
 // two private ones. DN_MATCH_AUTOSCALE=0 restores the fixed size.
@@ -476,7 +479,7 @@ func configureMatchAutoscale(mm *matchmaker.Matchmaker, log *logrus.Logger) {
 		log.WithField("players_per_match", mm.PlayersPerMatch).Info("matchmaker: fixed match size (DN_MATCH_AUTOSCALE=0)")
 		return
 	}
-	maxPlayers := 10
+	maxPlayers := 16
 	if v, err := strconv.Atoi(os.Getenv("DN_MATCH_MAX_PLAYERS")); err == nil && v > 0 {
 		maxPlayers = v
 	}

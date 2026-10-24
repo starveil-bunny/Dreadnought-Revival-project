@@ -20,8 +20,10 @@ package main
 // (credentialServer in account.go).
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -199,6 +201,11 @@ func fetchServerCA(ip, webPort string) ([]byte, error) {
 		return nil, fmt.Errorf("cannot reach the server at %s: %w", net.JoinHostPort(ip, port), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound && leaf != nil && leaf.VerifyHostname(gatewayName) == nil {
+		// A gateway that does not hand out its CA: the player has to get it
+		// from the server's operator (SetServerCA).
+		return nil, &needsCAError{addr: net.JoinHostPort(ip, port)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("the server at %s does not offer its certificate (HTTP %d) -- is it a Dreadnought private server, and up to date?",
 			net.JoinHostPort(ip, port), resp.StatusCode)
@@ -206,6 +213,11 @@ func fetchServerCA(ip, webPort string) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return nil, err
+	}
+	// A web page instead (seen 2026-10-24: a web login page on 443):
+	// some other server, not one of ours.
+	if t := bytes.TrimSpace(raw); bytes.HasPrefix(t, []byte("<")) || strings.Contains(resp.Header.Get("Content-Type"), "html") {
+		return nil, fmt.Errorf("%s answered with a web page, not a certificate -- it is not a server this launcher can join", net.JoinHostPort(ip, port))
 	}
 	der, err := parseCACert(raw)
 	if err != nil {
@@ -216,6 +228,74 @@ func fetchServerCA(ip, webPort string) ([]byte, error) {
 		return nil, errors.New("the server's connection is not signed by the certificate it offers; not trusting it")
 	}
 	return der, nil
+}
+
+// needsCAError: a gateway that keeps its CA to itself.
+type needsCAError struct{ addr string }
+
+func (e *needsCAError) Error() string {
+	return "this server requires a certificate (" + e.addr + " does not hand it out) -- ask its operator for it and add it here"
+}
+
+// presentedLeaf returns the certificate a server's web port presents.
+func presentedLeaf(ip, webPort string) (*x509.Certificate, error) {
+	port := webPort
+	if port == "" {
+		port = "443"
+	}
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	//nolint:gosec // only reads the presented certificate, checked against a CA by the caller.
+	c, err := tls.DialWithDialer(d, "tcp", net.JoinHostPort(ip, port), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach the server at %s: %w", net.JoinHostPort(ip, port), err)
+	}
+	defer func() { _ = c.Close() }()
+	certs := c.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil, errors.New("the server presented no certificate")
+	}
+	return certs[0], nil
+}
+
+// readCAText accepts a CA as PEM text or base64 DER (what the page sends for
+// a picked file).
+func readCAText(text string) ([]byte, error) {
+	text = strings.TrimSpace(text)
+	if !strings.Contains(text, "-----BEGIN") {
+		if raw, err := base64.StdEncoding.DecodeString(text); err == nil {
+			if !bytes.Contains(raw, []byte("-----BEGIN")) {
+				return parseCACert(raw)
+			}
+			text = string(raw)
+		}
+	}
+	return parseCACert([]byte(text))
+}
+
+// gatewayName is the name every gateway's certificate carries: the game's
+// sign-in host. A web port that presents something else is not a gateway.
+const gatewayName = "profile-api.prod.greybox.sixfoot.live"
+
+// gatewayPort finds the web port when the player typed none: 443, else 8443
+// (the port the host guide uses when 443 is taken by something else).
+func gatewayPort(ip string) string {
+	for _, port := range []string{"443", "8443"} {
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		//nolint:gosec // only reads the presented certificate's name.
+		c, err := tls.DialWithDialer(d, "tcp", net.JoinHostPort(ip, port), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			continue
+		}
+		certs := c.ConnectionState().PeerCertificates
+		_ = c.Close()
+		if len(certs) > 0 && certs[0].VerifyHostname(gatewayName) == nil {
+			if port == "443" {
+				return ""
+			}
+			return port
+		}
+	}
+	return ""
 }
 
 // applySavedServer runs at start-up, after loadConfig: the window's choice,
@@ -291,6 +371,10 @@ func (a *launcherAPI) UseServer(id string) map[string]any {
 		restore := prevCfg
 		credentialServer = prevKey
 		_ = runMachineSetup(a.exeDir, &restore)
+		var need *needsCAError
+		if errors.As(err, &need) {
+			return map[string]any{"ok": false, "needs_ca": true, "id": choice.id(), "name": choice.Name, "error": capitalise(err.Error())}
+		}
 		return map[string]any{"ok": false, "error": capitalise(err.Error())}
 	}
 	settings.Server = choice.id()
@@ -323,6 +407,11 @@ func (a *launcherAPI) AddServer(name, address string) map[string]any {
 	if s.Name == "" {
 		s.Name = s.Address
 	}
+	if !strings.Contains(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(address), "https://"), "http://"), ":") {
+		if ip, err := resolveServerIP(s.Address); err == nil {
+			s.WebPort = gatewayPort(ip)
+		}
+	}
 	settings := loadSettings()
 	if _, exists := findServer(settings, s.id()); !exists {
 		settings.Servers = append(settings.Servers, s)
@@ -331,8 +420,50 @@ func (a *launcherAPI) AddServer(name, address string) map[string]any {
 		}
 	}
 	r := a.UseServer(s.id())
-	if r["ok"] != true {
+	if r["ok"] != true && r["needs_ca"] != true {
 		a.forgetServer(s.id())
+	}
+	return r
+}
+
+// SetServerCA takes the CA for a listed server that does not hand its own out
+// (PEM text or a base64 file), keeps it only if it really signed the
+// certificate the server presents, then switches to the server -- which shows
+// the fingerprint for the player to confirm, as for any other server.
+func (a *launcherAPI) SetServerCA(id, text string) map[string]any {
+	choice, ok := findServer(loadSettings(), id)
+	if !ok || choice.Address == "" {
+		return map[string]any{"ok": false, "needs_ca": true, "id": id, "error": "That server is not in the list."}
+	}
+	fail := func(msg string) map[string]any {
+		return map[string]any{"ok": false, "needs_ca": true, "id": id, "name": choice.Name, "error": msg}
+	}
+	der, err := readCAText(text)
+	if err != nil {
+		return fail("That is not a certificate file: " + err.Error())
+	}
+	ip, err := resolveServerIP(choice.Address)
+	if err != nil {
+		return fail(capitalise(err.Error()))
+	}
+	leaf, err := presentedLeaf(ip, choice.WebPort)
+	if err != nil {
+		return fail(capitalise(err.Error()))
+	}
+	ca, _ := x509.ParseCertificate(der)
+	if ca == nil || leaf.CheckSignatureFrom(ca) != nil {
+		return fail("That certificate is not the one this server uses.")
+	}
+	f := choice.caFile()
+	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+		return fail(err.Error())
+	}
+	if err := os.WriteFile(f, der, 0o600); err != nil {
+		return fail(err.Error())
+	}
+	r := a.UseServer(id)
+	if r["ok"] != true {
+		_ = os.Remove(f)
 	}
 	return r
 }

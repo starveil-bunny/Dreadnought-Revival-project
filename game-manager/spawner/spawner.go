@@ -166,7 +166,7 @@ func (s *Spawner) Launch(gameMode, mapName, mapPath string, port int, players []
 		battleServerMapURL(mapPath, mapName, gameMode),
 		"-server",
 		fmt.Sprintf("-port=%d", port),
-		"-maxplayers=10",
+		"-maxplayers=16",
 		fmt.Sprintf("-GameMode=%s", gameMode),
 		fmt.Sprintf("-MatchID=%s", inst.MatchID),
 		"-nullrhi",
@@ -419,7 +419,7 @@ func (s *Spawner) registerWithMaster(inst *Instance) (string, error) {
 		"port":        inst.Port,
 		"game_mode":   inst.GameMode,
 		"map":         inst.Map,
-		"max_players": 10,
+		"max_players": 16,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal register request: %w", err)

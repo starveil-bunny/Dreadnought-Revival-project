@@ -70,16 +70,16 @@ type GameModeConfig struct {
 }
 
 var clientGameModeConfigs = []GameModeConfig{
-	{Name: "TDM", TeamSize: 5},
+	{Name: "TDM", TeamSize: 8},
 	{Name: "PodTDM", TeamSize: 5},
-	{Name: "TE", TeamSize: 5},
+	{Name: "TE", TeamSize: 8},
 	{Name: "TM", TeamSize: 5},
 	{Name: "TER", TeamSize: 5},
 	{Name: "Territory", TeamSize: 5},
 	{Name: "Onslaught", TeamSize: 5},
 	{Name: "BC", TeamSize: 1},
 	{Name: "Bootcamp", TeamSize: 1},
-	{Name: "TurboTDM", TeamSize: 5},
+	{Name: "TurboTDM", TeamSize: 8},
 }
 
 var gameModeAliases = map[string]string{
@@ -197,7 +197,7 @@ var pveMaps = []GameMap{
 
 // ValidGameMode returns true if the given mode is supported.
 func ValidGameMode(mode string) bool {
-	return validGameModes[mode]
+	return validGameModes[mode] && !ModeSwitchedOff(mode)
 }
 
 // GameModeList returns all supported game modes.
@@ -212,11 +212,16 @@ func GameModeList() []string {
 // GameModeConfigs returns the deterministic client-facing game mode rows,
 // plus "PVE" while a PvE season event is running.
 func GameModeConfigs() []GameModeConfig {
-	out := append([]GameModeConfig(nil), clientGameModeConfigs...)
-	if _, ok := ActivePvEEvent(); ok {
+	out := []GameModeConfig{}
+	for _, m := range clientGameModeConfigs {
+		if ModeEnabled(m.Name) {
+			out = append(out, m)
+		}
+	}
+	if _, ok := ActivePvEEvent(); ok && ModeEnabled(PvEGameMode) {
 		out = append(out, GameModeConfig{Name: PvEGameMode, TeamSize: pveTeamSize})
 	}
-	if havocListed() {
+	if ModeEnabled(HavocGameMode) {
 		out = append(out, GameModeConfig{Name: havocClientName, TeamSize: pveTeamSize})
 	}
 	return out
@@ -1076,6 +1081,7 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 			}
 		}
 	}
+	maps = rotationMaps(maps)
 	chosen := maps[time.Now().UnixNano()%int64(len(maps))]
 	if pveMap != nil {
 		chosen = *pveMap
@@ -1107,6 +1113,13 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	}
 	if pinned && pin.FFA && OnPinnedFFA != nil {
 		OnPinnedFFA(battleMatchID)
+	}
+	if OnMatchFormed != nil {
+		custom := ""
+		if pinned {
+			custom = pin.Custom
+		}
+		OnMatchFormed(battleMatchID, launchMode, custom, pinned)
 	}
 	serverIP = battleServerIPv4(serverIP, m.Log)
 

@@ -210,6 +210,9 @@ type pveScheduledEvent struct {
 // current cycle, and the index of the one running now.
 func pveSchedule(now time.Time) (season string, events []pveScheduledEvent, active int) {
 	period := pveEventPeriod()
+	if st, ok := pveSeasonStateNow(); ok {
+		return pveScheduleFromState(st, now, period)
+	}
 	since := now.Sub(pveScheduleAnchor)
 	if since < 0 {
 		since = 0
@@ -236,6 +239,110 @@ func pveSchedule(now time.Time) (season string, events []pveScheduledEvent, acti
 		events = append(events, pveScheduledEvent{id: id, start: start, end: start.Add(period - time.Second)})
 	}
 	return season, events, slot % len(ids)
+}
+
+// The /season command pins the season and episode (data/pve_season.json);
+// the episode runs until the next /season, with no timer. Without the file
+// the dated schedule above applies.
+type pveSeasonState struct {
+	Season  string    `json:"season"`  // season id, or "" = off
+	Episode int       `json:"episode"` // 0-based index into pveSeasonEvents
+	Since   time.Time `json:"since"`
+}
+
+var pveSeasonStore struct {
+	sync.Mutex
+	loaded bool
+	st     *pveSeasonState
+}
+
+var pveSeasonStateFile = func() string { return filepath.Join(dreadconfig.DataDir(), "pve_season.json") }
+
+func pveSeasonStateNow() (pveSeasonState, bool) {
+	pveSeasonStore.Lock()
+	defer pveSeasonStore.Unlock()
+	if !pveSeasonStore.loaded {
+		pveSeasonStore.loaded = true
+		if raw, err := os.ReadFile(pveSeasonStateFile()); err == nil {
+			var st pveSeasonState
+			if json.Unmarshal(raw, &st) == nil {
+				pveSeasonStore.st = &st
+			}
+		}
+	}
+	if pveSeasonStore.st == nil {
+		return pveSeasonState{}, false
+	}
+	return *pveSeasonStore.st, true
+}
+
+// setPvESeasonState saves st (nil forgets it, back to the dated schedule).
+func setPvESeasonState(st *pveSeasonState) error {
+	pveSeasonStore.Lock()
+	defer pveSeasonStore.Unlock()
+	pveSeasonStore.loaded, pveSeasonStore.st = true, st
+	if st == nil {
+		if err := os.Remove(pveSeasonStateFile()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	raw, _ := json.MarshalIndent(st, "", "  ")
+	tmp := pveSeasonStateFile() + ".tmp"
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, pveSeasonStateFile())
+}
+
+// pveScheduleFromState: the pinned episode runs from Since; the client gets
+// an end date that stays a period ahead, so it never shows the event over.
+// The other episodes are dated around it in table order.
+func pveScheduleFromState(st pveSeasonState, now time.Time, period time.Duration) (string, []pveScheduledEvent, int) {
+	ids := pveSeasonEvents(st.Season)
+	if st.Season == "" || len(ids) == 0 {
+		return "", nil, -1
+	}
+	ep := st.Episode
+	if ep < 0 || ep >= len(ids) {
+		ep = 0
+	}
+	start := st.Since.UTC().Truncate(time.Second)
+	if start.IsZero() || start.After(now) {
+		start = now.Truncate(time.Second)
+	}
+	span := period
+	if end := now.Add(period); end.Sub(start) > span {
+		span = end.Sub(start).Truncate(time.Second)
+	}
+	var events []pveScheduledEvent
+	for i, id := range ids {
+		s := start.Add(time.Duration(i-ep) * period)
+		e := s.Add(period - time.Second)
+		if i == ep {
+			e = s.Add(span - time.Second)
+		} else if i > ep {
+			s = start.Add(span + time.Duration(i-ep-1)*period)
+			e = s.Add(period - time.Second)
+		}
+		events = append(events, pveScheduledEvent{id: id, start: s, end: e})
+	}
+	return st.Season, events, ep
+}
+
+// pveNextEpisode is the episode after (season, ep): the season's next one,
+// or after its last, the first of the next season in pveRotation.
+func pveNextEpisode(season string, ep int) (string, int) {
+	if ep+1 < len(pveSeasonEvents(season)) {
+		return season, ep + 1
+	}
+	next := pveRotation[0]
+	for i, s := range pveRotation {
+		if s == season {
+			next = pveRotation[(i+1)%len(pveRotation)]
+		}
+	}
+	return next, 0
 }
 
 // activePvEEvent is the event running now, for the matchmaker.

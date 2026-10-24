@@ -4,23 +4,25 @@ package main
 
 // Launcher skins: one set of actions (launcher_api_windows.go), several pages.
 // "dreadnought" (default) is the compact game-launcher page in
-// skin_dreadnought.html, dressed in the game's own art (media/: the loading
-// screens, login background and logo from the client paks, decoded with
-// tools/tex2png.py); "classic" is the original page (desktopPageHTML).
+// skin_dreadnought.html, dressed in the game's own art (the loading screens,
+// logo, icons and font, read from the player's own paks: gamemedia.go);
+// "classic" is the original page (desktopPageHTML).
 //
 // Media goes to the page through the API as data: URIs rather than inline in
 // the HTML: the desktop window loads its page with NavigateToString, which
 // refuses strings over 2 MB.
 
 import (
-	"embed"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,9 +30,6 @@ import (
 
 //go:embed skin_dreadnought.html
 var dreadnoughtPageHTML string
-
-//go:embed media
-var launcherMedia embed.FS
 
 var skins = []string{"dreadnought", "classic"}
 
@@ -59,10 +58,34 @@ func (a *launcherAPI) SetSkin(name string) bool {
 	return saveSettings(settings) == nil
 }
 
-// Media returns media/<name> as a data: URI ("" if there is none).
+// launcherMedia is the page's art, extracted from the game the launcher
+// would start (gamemedia.go).
+var (
+	launcherMediaOnce sync.Once
+	launcherMedia     *gameMedia
+)
+
+func (a *launcherAPI) media() *gameMedia {
+	launcherMediaOnce.Do(func() {
+		launcherMedia = newGameMedia(filepath.Join(os.Getenv("LOCALAPPDATA"), "DreadnoughtPrivateServer"), func() string {
+			return gamePaksDir(findGameBinary(a.exeDir, a.cfg))
+		})
+	})
+	return launcherMedia
+}
+
+// gamePaksDir is Content\Paks beside the executable's Binaries\Win64.
+func gamePaksDir(exe string) string {
+	if exe == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "..", "..", "Content", "Paks")
+}
+
+// Media returns the named art as a data: URI ("" if there is none).
 func (a *launcherAPI) Media(name string) string {
 	name = path.Base(name)
-	b, err := launcherMedia.ReadFile("media/" + name)
+	b, err := a.media().Get(name)
 	if err != nil {
 		return ""
 	}
@@ -77,13 +100,12 @@ func (a *launcherAPI) Media(name string) string {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b)
 }
 
-// Backgrounds lists the bg_*.jpg media, for the page to pick from.
+// Backgrounds lists the bg_*.jpg art the game files can supply.
 func (a *launcherAPI) Backgrounds() []string {
-	entries, _ := launcherMedia.ReadDir("media")
 	var out []string
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "bg_") {
-			out = append(out, e.Name())
+	for _, n := range mediaNames() {
+		if strings.HasPrefix(n, "bg_") && a.media().Available(n) {
+			out = append(out, n)
 		}
 	}
 	return out

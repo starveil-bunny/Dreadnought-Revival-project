@@ -109,6 +109,9 @@
   .card h2 { margin:0 0 14px; font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:var(--acc2); font-weight:600; }
   input, select { width:100%; padding:9px 11px; margin-bottom:8px; font:inherit; color:#e8edf2; background:rgba(0,0,0,.5);
     border:1px solid var(--line); border-radius:2px; user-select:text; }
+  textarea { width:100%; height:110px; padding:8px 10px; margin-bottom:8px; font:11px/1.4 Consolas, monospace; color:#e8edf2;
+    background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.18); resize:none; }
+  textarea:focus { outline:none; border-color:var(--acc); }
   input:focus, select:focus { outline:none; border-color:var(--acc); }
   .btn { width:100%; padding:10px 0; font:inherit; font-weight:600; letter-spacing:.12em; text-transform:uppercase; cursor:pointer;
     color:#130c02; background:linear-gradient(180deg,var(--acc2),var(--acc)); border:0; border-radius:2px; }
@@ -216,6 +219,19 @@
   </form>
 </div>
 
+<div class="ov" id="ov-ca">
+  <div class="card">
+    <h2>Server certificate</h2>
+    <div class="path" id="ca-name"></div>
+    <textarea id="ca-text" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea>
+    <input type="file" id="ca-file" accept=".crt,.pem,.cer,.der" hidden onchange="caFile(this)">
+    <div class="row"><button class="btn sec" onclick="$('ca-file').click()">Browse…</button>
+      <button class="btn" onclick="useCA($('ca-text').value)">Use</button></div>
+    <div class="err" id="ca-err"></div>
+    <button class="lnk" onclick="next()">Cancel</button>
+  </div>
+</div>
+
 <div class="ov" id="ov-cert">
   <div class="card">
     <h2>Trust server certificate</h2>
@@ -274,12 +290,12 @@
   const err = (id, t, good) => { $(id).textContent = t || ''; $(id).className = 'err' + (good ? ' good' : ''); };
   const say = (t, kind) => { $('msg').textContent = t || ''; $('msg').className = kind || ''; };
   function overlay(which) {
-    for (const o of ['server', 'signin', 'cert', 'game']) $('ov-' + o).classList.toggle('on', o === which);
+    for (const o of ['server', 'signin', 'cert', 'game', 'ca']) $('ov-' + o).classList.toggle('on', o === which);
     if (which === 'server') setTimeout(() => $('sv-addr').focus(), 50);
     if (which === 'signin') setTimeout(() => $(mode === 'register' ? 'username' : 'identifier').focus(), 50);
     updatePlay();
   }
-  const shown = () => ['server', 'signin', 'cert', 'game'].find(o => $('ov-' + o).classList.contains('on'));
+  const shown = () => ['server', 'signin', 'cert', 'game', 'ca'].find(o => $('ov-' + o).classList.contains('on'));
   function drawer(on) { $('set').classList.toggle('on', on); }
   function updatePlay() { $('play').disabled = playing || !!shown() || !state.signedIn; }
 
@@ -287,7 +303,7 @@
   let bgs = [], bgFlip = 0, bgLast = -1;
 
   // The game's own face and its resource glyphs. Both come from the client's
-  // paks through media/ (scripts/gen-launcher-media.py); if either is missing
+  // paks (the launcher's gamemedia.go); if either is missing
   // the page simply keeps its fallback font and its plain wallet text.
   async function loadDreadnoughtUI() {
     const faces = [['Quantico-Regular.ttf', 400], ['Quantico-Bold.ttf', 700]];
@@ -648,10 +664,39 @@
     err('srv-err', '…', true); err('sv-err', '…', true);
     dnAddServer('', $(input || 'srv-addr').value);
   }
+  // A server that does not hand out its certificate: the player supplies it.
+  let caId = '';
+  function caFile(input) {
+    const f = input.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const b = new Uint8Array(rd.result);
+      let bin = '';
+      for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+      useCA(btoa(bin));
+    };
+    rd.readAsArrayBuffer(f);
+    input.value = '';
+  }
+  function useCA(text) {
+    if (serverBusy || !text.trim()) return;
+    serverBusy = true;
+    err('ca-err', '…', true);
+    dnSetServerCA(caId, text);
+  }
   function dnServerResult(r) {
     serverBusy = false;
+    if (!r.ok && r.needs_ca) {
+      caId = r.id;
+      $('ca-name').textContent = r.name || '';
+      err('sv-err'); err('srv-err');
+      drawer(false);
+      overlay('ca');
+      return err('ca-err', r.error);
+    }
     if (!r.ok) { err('sv-err', r.error || 'Failed'); return err('srv-err', r.error || 'Failed'); }
-    err('sv-err');
+    err('sv-err'); err('ca-err'); $('ca-text').value = '';
     const keep = { setupDone: state.setupDone };
     state = Object.assign(r, keep);
     $('srv-addr').value = '';

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	"github.com/sirupsen/logrus"
 )
 
 // Market pictures: the hero icons the client ships as cooked textures,
@@ -29,6 +31,9 @@ func handleMarketImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if !strings.HasPrefix(r.RemoteAddr, "127.") {
+		logrus.WithFields(logrus.Fields{"name": name, "host": r.Host, "by": r.RemoteAddr}).Info("market image")
+	}
 	http.ServeFile(w, r, marketImageFile(name))
 }
 
@@ -53,7 +58,7 @@ func gatewayAbsoluteImageURLs(payload map[string]any, r *http.Request) map[strin
 	if r.TLS == nil {
 		scheme = "http"
 	}
-	base := scheme + "://" + r.Host
+	base := scheme + "://" + marketImageHost(r.Host)
 	for _, list := range payload {
 		entities, ok := list.([]any)
 		if !ok {
@@ -72,4 +77,27 @@ func gatewayAbsoluteImageURLs(payload map[string]any, r *http.Request) map[strin
 		}
 	}
 	return payload
+}
+
+// marketImageHost: the catalog's Host, except a public IP (a relayed friend's
+// client reaches the gateway at the relay's edge IP, from -GatewayAddress)
+// becomes SERVER_IP (PUBLIC_HOST) on the same port. The server certificate
+// names the DNS name but not the relay IP, so picture fetches by IP failed
+// TLS (2026-10-23: shop bunnies did not load for a relayed friend; the API
+// itself is reached the same way, so it does not check the name).
+// GUESS: the picture loader verifies the name while the API client does not.
+func marketImageHost(host string) string {
+	h, port, err := net.SplitHostPort(host)
+	if err != nil {
+		h, port = host, ""
+	}
+	ip := net.ParseIP(h)
+	name := os.Getenv("SERVER_IP")
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || name == "" || net.ParseIP(name) != nil {
+		return host
+	}
+	if port == "" {
+		return name
+	}
+	return net.JoinHostPort(name, port)
 }

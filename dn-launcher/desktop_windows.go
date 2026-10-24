@@ -87,6 +87,9 @@ func runDesktopLauncher(exeDir string, cfg Config) bool {
 	_ = w.Bind("dnAddServer", func(name, address string) {
 		go func() { reply("dnServerResult", api.AddServer(name, address)) }()
 	})
+	_ = w.Bind("dnSetServerCA", func(id, text string) {
+		go func() { reply("dnServerResult", api.SetServerCA(id, text)) }()
+	})
 	// Network calls run off the UI thread and report back through a callback.
 	_ = w.Bind("dnSubmit", func(mode, username, identifier, password string) {
 		go func() { reply("dnAuthResult", api.Submit(mode, username, identifier, password)) }()
@@ -309,6 +312,13 @@ const desktopPageHTML = `<!doctype html>
         <p class="hint">Hosting your own? Add <b>localhost</b> if the server runs on this computer, or add its address.
           <button class="link" onclick="dnOpenHostGuide()">How to host a server</button></p>
         <div class="msg" id="srvmsg"></div>
+        <div id="srv-ca" hidden>
+          <label for="srv-ca-text">Server certificate</label>
+          <textarea id="srv-ca-text" rows="5" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" style="width:100%;font:11px Consolas,monospace"></textarea>
+          <input type="file" id="srv-ca-file" accept=".crt,.pem,.cer,.der" hidden onchange="caFile(this)">
+          <div class="row2"><button class="srv" onclick="$('srv-ca-file').click()">Browse…</button>
+            <button class="srv" onclick="useCA($('srv-ca-text').value)">Use</button></div>
+        </div>
         <button class="go" id="srv-next" onclick="serverNext()">Next</button>
       </div>
       <div class="wstep" id="wiz-game">
@@ -551,13 +561,34 @@ const desktopPageHTML = `<!doctype html>
     serverWorking('Knocking on the server\u2019s door\u2026');
     dnAddServer($('srv-name').value, $('srv-addr').value);
   }
+  let caId = '';
+  function caFile(input) {
+    const f = input.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const b = new Uint8Array(rd.result);
+      let bin = '';
+      for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+      useCA(btoa(bin));
+    };
+    rd.readAsArrayBuffer(f);
+    input.value = '';
+  }
+  function useCA(text) {
+    if (serverBusy || !text.trim()) return;
+    serverWorking('Checking the certificate\u2026');
+    dnSetServerCA(caId, text);
+  }
   function dnServerResult(r) {
     serverBusy = false;
     $('srv-next').disabled = false;
+    $('srv-ca').hidden = !r.needs_ca;
+    if (r.needs_ca) caId = r.id;
     if (!r.ok) { $('wiz-bunny').textContent = BUNNY.sad; say('srvmsg', r.error || 'That did not work.', 'bad'); return; }
     state = r;
     $('wiz-bunny').textContent = BUNNY.server;
-    $('srv-addr').value = ''; $('srv-name').value = ''; $('srv-add').open = false;
+    $('srv-addr').value = ''; $('srv-name').value = ''; $('srv-ca-text').value = ''; $('srv-add').open = false;
     renderServers();
     showGame(r.game);
     say('srvmsg', 'Now flying with ' + ((r.servers && r.servers.current) || 'the default server') + '.', 'good');

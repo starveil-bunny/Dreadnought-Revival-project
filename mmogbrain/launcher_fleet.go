@@ -400,7 +400,7 @@ func fleetArtURI(rel string) string {
 		file = filepath.Join(dreadconfig.MarketImagesDir(), filepath.FromSlash(rest))
 	}
 	if b, err := os.ReadFile(file); err == nil {
-		u = "data:image/png;base64," + base64.StdEncoding.EncodeToString(b)
+		u = "data:" + http.DetectContentType(b) + ";base64," + base64.StdEncoding.EncodeToString(b)
 	}
 	fleetArt.uris[rel] = u
 	return u
@@ -505,6 +505,15 @@ func fleetShipLook(l mmogShipLoadoutSeed) (hull string, tier int32, class, maker
 			hull, _ = shipHullLine(l.ship.id)
 		}
 		maker = baseShipManufacturerByClassSize[hull]
+		// Not a base precast (an upgraded or variant ship): tier 0 made /clone
+		// pick the T1 AI hull for a T5 ship (operator 2026-10-24).
+		if tier < 1 {
+			if t, ok := shipTierForIDChecked(l.ship.id); ok {
+				tier = t
+			} else if t, ok := shipTierForIDChecked(l.precastLoadoutID); ok {
+				tier = t
+			}
+		}
 	}
 	for _, cl := range bossClasses {
 		if strings.HasPrefix(hull, cl.ID) {
@@ -977,8 +986,9 @@ func cloneByID(id int) (bossDef, bool) {
 // of the same hull line nearest its tier (a VH_*_AI_Pawn_T<n> must exist), the
 // loadout's modules, officers and guns by item id through the boss catalog, and
 // its coating, pattern, decal and emblem from the saved appearance string.
-// GUESS: the hull's mesh parts are not carried -- the boss "parts" field takes
-// hero ship parts only, and nothing shows the host could swap a base hull's.
+// Its hull parts are carried too (operator 2026-10-24: "why not?"); the host
+// imports them into the AI hull. GUESS: player parts of the same hull line fit
+// the AI hull's mesh slots -- the import is accepted, not seen on a client.
 func cloneBossDef(name string, l mmogShipLoadoutSeed) (bossDef, error) {
 	c := bossCatalogData()
 	hull, tier, class, maker, _ := fleetShipLook(l)
@@ -1026,7 +1036,20 @@ func cloneBossDef(name string, l mmogShipLoadoutSeed) (bossDef, error) {
 	d.Weapons = []string{byID(c.Weapons, l.weaponPrimaryID), byID(c.Weapons, l.weaponSecondaryID)}
 	// Appearance: "<parts>;<item>;<item>..." -- the category byte of each item
 	// (Category law) says which it is: 21 emblem, 22 coating, 23 pattern, 24 decal.
-	for _, f := range strings.Split(l.displayInfo(), ";") {
+	// The first group is the hull parts "fore#hull#bridge#stern" (category 20),
+	// imported into the AI hull like a boss's parts (PaintPawn).
+	groups := strings.Split(l.displayInfo(), ";")
+	if len(groups) > 0 && strings.Contains(groups[0], "#") {
+		for i, f := range strings.Split(groups[0], "#") {
+			if v, err := strconv.ParseInt(strings.TrimSpace(f), 10, 32); err == nil && v > 0 && v>>24 == 20 && i < 4 {
+				for len(d.Parts) <= i {
+					d.Parts = append(d.Parts, 0)
+				}
+				d.Parts[i] = int32(v)
+			}
+		}
+	}
+	for _, f := range groups {
 		v, err := strconv.ParseInt(strings.TrimSpace(f), 10, 32)
 		if err != nil || v <= 0 {
 			continue
@@ -1063,7 +1086,7 @@ func cmdClone(c *chatCommandCtx) string {
 		return usage
 	}
 	args := append([]string(nil), c.args...)
-	mult := 1
+	mult := 2 // a stock clone loses to the player it copies
 	if v, err := strconv.Atoi(strings.TrimPrefix(strings.ToLower(args[len(args)-1]), "x")); err == nil && len(args) > 1 {
 		if v < 1 || v > 10 {
 			return usage
@@ -1103,7 +1126,7 @@ func cmdClone(c *chatCommandCtx) string {
 			return fmt.Sprintf("%s has no ship named %s.", name, strings.Join(args[1:], " "))
 		}
 	} else {
-		_, l, ok = battleDefaultLoadoutFor(pid)
+		l, ok = battlePickedLoadoutFor(pid)
 		if !ok {
 			return name + " has no ships."
 		}

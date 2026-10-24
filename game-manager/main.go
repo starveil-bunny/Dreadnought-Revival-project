@@ -35,10 +35,10 @@ const fieldStatus = "status"
 var gameModeMapPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // maxPlayersPerInstance bounds the player list accepted on instance creation.
-// Production match size caps at 10 players (see spawner's "-maxplayers=10"
+// Production match size caps at 16 players (see spawner's "-maxplayers=16"
 // and master-server's default max_players); allow up to 2x that as headroom
 // without permitting an unbounded payload (M13).
-const maxPlayersPerInstance = 20
+const maxPlayersPerInstance = 32
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

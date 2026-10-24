@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
 )
@@ -47,6 +48,7 @@ func battleLoadoutHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such loadout for this player", http.StatusNotFound)
 		return
 	}
+	noteBattlePick(pid, id)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(formatBattleLoadout(id, pid, loadout)))
 }
@@ -89,6 +91,7 @@ func battleDefaultLoadoutHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no loadout for this player", http.StatusNotFound)
 		return
 	}
+	noteBattlePick(normalizedPlayerStatePID(pid), id)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(formatBattleLoadout(id, pid, loadout)))
 }
@@ -190,4 +193,22 @@ func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
 	if captain := strings.TrimSpace(state.displayInfo); captain != "" && !strings.ContainsAny(captain, "\r\n") {
 		_, _ = fmt.Fprintf(w, "captain=%s\n", captain)
 	}
+}
+
+// The loadout each player last spawned in (the id the host asked for above),
+// so /clone copies the ship actually flown rather than the flagship.
+var battlePicks sync.Map // pid -> loadout id
+
+func noteBattlePick(pid, id string) { battlePicks.Store(pid, id) }
+
+// battlePickedLoadoutFor is the player's last spawned loadout, else the
+// flagship.
+func battlePickedLoadoutFor(pid string) (mmogShipLoadoutSeed, bool) {
+	if id, ok := battlePicks.Load(normalizedPlayerStatePID(pid)); ok {
+		if l, ok := battleLoadoutFor(normalizedPlayerStatePID(pid), id.(string)); ok {
+			return l, true
+		}
+	}
+	_, l, ok := battleDefaultLoadoutFor(pid)
+	return l, ok
 }

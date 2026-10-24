@@ -8,22 +8,26 @@ import (
 )
 
 func TestChatCommandsAdminGate(t *testing.T) {
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	other := "c332d9b0be8d4844883be2496ef58b22"
-	t.Setenv("DN_ADMINS", "a0a0a0a0-b1b1-c2c2-d3d3-e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94b-c4ba-49f9-8f65-5c15b1ec1d27")
 	t.Setenv("DN_PVE_SEASON", "")
+	noPvESeasonPin(t)
 
 	if _, ok := handleChatCommand(other, "dreadnought.global", "hello /season"); ok {
 		t.Fatal("a line not starting with / or ! is chat, not a command")
 	}
-	if out, ok := handleChatCommand(other, "dreadnought.global", "/season"); !ok || !strings.Contains(out, "PVE_Season1") {
+	if out, ok := handleChatCommand(other, "dreadnought.global", "/season"); !ok || !strings.Contains(out, "season 1, episode") {
 		t.Fatalf("anyone may read the season: %q", out)
 	}
 	if out, _ := handleChatCommand(other, "dreadnought.global", "/season 3"); !strings.Contains(out, "admins only") {
 		t.Fatalf("setting the season needs DN_ADMINS: %q", out)
 	}
-	if out, _ := handleChatCommand(admin, "dreadnought.global", "!season 3"); !strings.Contains(out, "PVE_Season3") || os.Getenv("DN_PVE_SEASON") != "PVE_Season3" {
-		t.Fatalf("admin /season 3: %q, env %q", out, os.Getenv("DN_PVE_SEASON"))
+	if out, _ := handleChatCommand(admin, "dreadnought.global", "!season 3 2"); !strings.Contains(out, "season 3, episode 2") {
+		t.Fatalf("admin /season 3 2: %q", out)
+	}
+	if out, _ := handleChatCommand(admin, "dreadnought.global", "!season next"); !strings.Contains(out, "season 3, episode 3") {
+		t.Fatalf("admin /season next: %q", out)
 	}
 	if out, _ := handleChatCommand(other, "dreadnought.global", "/help"); strings.Contains(out, "/turbo") {
 		t.Fatalf("non-admin help lists admin commands: %q", out)
@@ -34,18 +38,18 @@ func TestChatCommandsAdminGate(t *testing.T) {
 }
 
 func TestChatCommandXPMultiplier(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	t.Setenv("DN_REWARD_XP_MULT", "")
-	handleChatCommand("a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4", "dreadnought.global", "/xp 2")
+	handleChatCommand("4d26d94bc4ba49f98f655c15b1ec1d27", "dreadnought.global", "/xp 2")
 	if matchXPMultiplier() != 2 {
 		t.Fatalf("multiplier %v", matchXPMultiplier())
 	}
 }
 
 func TestHostCommandQueue(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	base := queueHostCommand("other-match", "noop x")
-	out, _ := handleChatCommand("a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4", "dreadnought.global", "/turbo on")
+	out, _ := handleChatCommand("4d26d94bc4ba49f98f655c15b1ec1d27", "dreadnought.global", "/turbo on")
 	if !strings.Contains(out, "every running match") {
 		t.Fatalf("hangar /turbo: %q", out)
 	}
@@ -73,8 +77,8 @@ func TestMatchIDFromChannel(t *testing.T) {
 }
 
 func TestSpawnAndBossCommands(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	for _, tc := range []struct{ in, want string }{
 		{"/spawn titancarriert6 2 x3", " spawn TitanCarrierT6 2 3"},
 		{"/spawn TitanCarrierT6", " spawn TitanCarrierT6 1 1"},
@@ -121,8 +125,8 @@ func TestBunnyCommand(t *testing.T) {
 }
 
 func TestShakeAndTeamCommands(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	base := queueHostCommand("other-match", "noop x")
 	handleChatCommand(admin, "dreadnought.global", "/shake 7")
 	if got := hostCommandsSince("m1", base); len(got) != 1 || !strings.HasSuffix(got[0], " shake 7") {
@@ -159,11 +163,11 @@ func TestHelpFilterAndFile(t *testing.T) {
 	t.Setenv("DATA_DIR", dir)
 	os.MkdirAll(filepath.Join(dir, "chat"), 0o755)
 	os.WriteFile(filepath.Join(dir, "chat", "help.txt"), []byte("// note\nHi\n/bunny -- b\n[admin]\n/nuke -- n\n"), 0o644)
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	if out, _ := handleChatCommand("x", "dreadnought.global", "/help"); out != "Hi\n/bunny -- b" {
 		t.Fatalf("player help %q", out)
 	}
-	if out, _ := handleChatCommand("a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4", "dreadnought.global", "/help nuke"); out != "/nuke -- n" {
+	if out, _ := handleChatCommand("4d26d94bc4ba49f98f655c15b1ec1d27", "dreadnought.global", "/help nuke"); out != "/nuke -- n" {
 		t.Fatalf("filtered admin help %q", out)
 	}
 	os.WriteFile(filepath.Join(dir, "chat", "bunnies.txt"), []byte("// n\nA\nB\n---\n\nC\n"), 0o644)
@@ -185,9 +189,9 @@ func TestHelpFilterAndFile(t *testing.T) {
 // never exercised is the in-room targeting, which is the other test in this
 // file: every live call so far was typed in Global.
 func TestTurboAndNpcCommandParsing(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	t.Setenv("DN_CHAT_COMMANDS", "")
-	const admin = "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	const admin = "4d26d94bc4ba49f98f655c15b1ec1d27"
 
 	queued := func(line string) (string, []string) {
 		base := queueHostCommand("other-match", "noop x")
@@ -247,8 +251,8 @@ func TestTurboAndNpcCommandParsing(t *testing.T) {
 // every running match (hostCommandsSince matches any id), so the reply has to
 // stop promising one match.
 func TestHostCommandInMatchRoomWithoutBattle(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
-	const admin = "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
+	const admin = "4d26d94bc4ba49f98f655c15b1ec1d27"
 	const room = "fdf82dd4-9eeb-4e7d-b370-85cb68a9ba0e.all"
 
 	base := queueHostCommand("other-match", "noop x")
@@ -266,8 +270,8 @@ func TestHostCommandInMatchRoomWithoutBattle(t *testing.T) {
 // named one. /team and /kill went further and queued with an empty target
 // whatever room they were typed in, so they always broadcast.
 func TestHandRolledCommandsRefuseWithoutBattle(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
-	const admin = "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
+	const admin = "4d26d94bc4ba49f98f655c15b1ec1d27"
 	const room = "fdf82dd4-9eeb-4e7d-b370-85cb68a9ba0e.all"
 
 	// A room whose battle does not exist yet (matchmaking creates the room
