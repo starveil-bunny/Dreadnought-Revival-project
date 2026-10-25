@@ -391,7 +391,9 @@ var targetSizes = map[string]int{
 	// DailyContractLastReplaceTime were the current time on every login; they
 	// are now the player's real times, 0 until a contract is assigned
 	// (daily_contracts.go). The test player has no database, so no contracts.
-	"YA_PlayerGet": 21968,
+	// 21968 -> 21790 (-178): the empty CustomRoom object is gone; its presence
+	// put the client in a custom room and broke PvE end of match.
+	"YA_PlayerGet": 21790,
 	// +56 on 2026-08-04: each of the four fleet loadout entries gained m_shipId
 	// (14 bytes x 4). Without it the hangar loaded the LIGHT bay for every owned
 	// ship -- all four starters are Mediums -- while tech tree ships, which

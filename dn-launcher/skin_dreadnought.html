@@ -28,14 +28,18 @@
   #logo { position:relative; height:52px; }
   /* Logo border: a thin outline in a moving gradient plus a soft glow, cut
      from the logo's own alpha (copies offset round it, masked by the logo).
-     Off by default; a click cycles the styles. */
+     Off by default; a click cycles the styles (and saves the pick). */
   /* The gradient-filled logo shape, grown outward by #lgf (built in logoFx):
      1px black, 3px of the colour, then a 5px glow fading 90% -> 10%. With
      the style off only the black edge is drawn (#lgk). */
   #lgfx { position:absolute; inset:-16px; pointer-events:none; filter:url(#lgf); }
   #lgfx.plain { filter:url(#lgk); }
-  #lgfx i { position:absolute; inset:16px; background:var(--lgg); background-size:420px 100%; animation:lgmove 7s linear infinite;
-    -webkit-mask:var(--lgm) center/contain no-repeat; mask:var(--lgm) center/contain no-repeat; }
+  /* The animated layer spans the whole glow area (padding, mask on the
+     content box): WebKitGTK repaints only the moving element's own box, so
+     with inset:16px the glow outside it kept stale colours. */
+  #lgfx i { position:absolute; inset:0; padding:16px; background:var(--lgg); background-size:420px 100%; background-origin:content-box;
+    animation:lgmove 7s linear infinite;
+    -webkit-mask:var(--lgm) content-box center/contain no-repeat; mask:var(--lgm) content-box center/contain no-repeat; }
   @keyframes lgmove { to { background-position:420px 0; } }
   .lgc { display:flex; gap:6px; margin-top:6px; } .lgc input { width:44px; height:28px; padding:2px; margin:0; }
   .sp { flex:1; }
@@ -165,7 +169,7 @@
 <div class="bg" id="bg0"></div><div class="bg" id="bg1"></div><div class="shade"></div>
 <main>
   <header>
-    <div id="lgw" title="" onclick="logoFx(1)"><div id="lgfx" hidden><i></i></div><svg width="0" height="0" style="position:absolute"><filter id="lgf" x="-5%" y="-30%" width="110%" height="160%" color-interpolation-filters="sRGB"></filter><filter id="lgk" x="-5%" y="-30%" width="110%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="1"/></filter></svg><img id="logo" alt="Dreadnought"></div>
+    <div id="lgw" title="" onclick="cycleLogoFx()"><div id="lgfx" hidden><i></i></div><svg width="0" height="0" style="position:absolute"><filter id="lgf" x="-5%" y="-30%" width="110%" height="160%" color-interpolation-filters="sRGB"></filter><filter id="lgk" x="-5%" y="-30%" width="110%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="1"/></filter></svg><img id="logo" alt="Dreadnought"></div>
     <span class="sp"></span>
   </header>
   <div class="body">
@@ -626,6 +630,9 @@
       f.innerHTML = h + `<feMerge>${merge}<feMergeNode in="c4"/><feMergeNode in="k1"/></feMerge>`;
     }
   }
+  // Clicking the logo saves too (2026-10-24: a style picked by clicking came
+  // back as the old one next start -- only the settings list saved).
+  function cycleLogoFx() { $('lgset').value = LOGO_ORDER[(lgAt + 1) % LOGO_ORDER.length]; saveLogoFx(); }
   async function saveLogoFx() {
     const cols = [0, 1, 2].map(i => $('lgc' + i).value);
     LOGO_FX.custom = cols;

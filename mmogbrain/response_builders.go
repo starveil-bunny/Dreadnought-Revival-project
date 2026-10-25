@@ -1872,21 +1872,17 @@ func buildMmogPlayerDataPayload(rt string, playerPID string) []byte {
 	b = protocol.AppendStringField(b, "PublicIP", "")
 	b = protocol.AppendStringField(b, "Country", "")
 	b = protocol.AppendStringField(b, "Platform", "steam")
-	b, stack = protocol.AppendObjectStart(b, stack, "CustomRoom")
-	b = protocol.AppendStringField(b, "roomId", "")
-	b = protocol.AppendStringField(b, "hostPid", "")
-	b, stack = protocol.AppendArrayStart(b, stack, "teams")
-	b, stack = protocol.AppendObjectEnd(b, stack)
-	b, stack = protocol.AppendArrayStart(b, stack, "settings")
-	b, stack = protocol.AppendObjectEnd(b, stack)
-	b, stack = protocol.AppendArrayStart(b, stack, "supportedModes")
-	b, stack = protocol.AppendObjectEnd(b, stack)
-	b = protocol.AppendStringField(b, "gameMode", "")
-	b = protocol.AppendStringField(b, "mapName", "")
-	b, stack = protocol.AppendArrayStart(b, stack, "supportedMaps")
-	b, stack = protocol.AppendObjectEnd(b, stack)
-	b = protocol.AppendStringField(b, "chatRoomId", "")
-	b, stack = protocol.AppendObjectEnd(b, stack)
+	// No "CustomRoom" object. It used to go here, empty (roomId "", no
+	// teams), and its mere presence put the client in a custom room: the
+	// YA_PlayerGet parse copies it to YMmogbrain +0x3AA8 and sets the
+	// in-room flag +0x3B08 (0x2A28DCC, mmog dispatcher 0x2A23440). That flag
+	// makes AYGameState_MP::InitializeEndOfMatchStagingManager (0x391E50)
+	// take m_endOfMatchCustomRoomStagingManagerClass, which Horde/Escort
+	// leave null -> "not correctly set up", no EOM manager, PvE ended on an
+	// endless black screen. Measured with the client probe (dn_host_loadout
+	// DN_CLIENT_EOM_PROBE, 2026-10-24): +0x3B08 0 -> 1 inside dispatch #20
+	// (YA_PlayerGet by send order), still 1 at EOM init. Also the source of
+	// "LeaveCustomRoom - Failed to find player in room!" on exit.
 	// NOTE: unlike appendMmogFleetRawFields/appendMmogPlayerFleetEntry (the
 	// YA_PlayerFleets/Fleets-array entry versions, which the client parses
 	// through FUN_142a77910's restrictive int32-blind union and therefore

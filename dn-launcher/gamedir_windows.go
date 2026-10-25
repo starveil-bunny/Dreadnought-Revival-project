@@ -27,7 +27,7 @@ type launcherSettings struct {
 	// reports. Much larger log files.
 	VerboseLog bool `json:"verbose_log"`
 	// LogoFx is the wordmark's border at start ("" off, rgb, aurora, trans,
-	// bi, lesbian, custom; clicking the logo cycles them for the session) and
+	// bi, lesbian, custom; clicking the logo cycles and saves them) and
 	// LogoCustom the custom gradient's colours, "#rrggbb,#rrggbb[,...]".
 	LogoFx     string `json:"logo_fx,omitempty"`
 	LogoCustom string `json:"logo_custom,omitempty"`

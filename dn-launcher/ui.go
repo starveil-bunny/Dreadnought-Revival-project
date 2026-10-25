@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -15,6 +16,11 @@ import (
 // reports as malicious tool execution (a tester's PC flagged the launcher as
 // "post-exploit via malicious tool execution").
 func openBrowser(address string) {
+	// --no-browser / DN_NO_BROWSER: whoever started the launcher opens the page
+	// itself (run/dreadnought-launcher-entry.sh opens its own Firefox window).
+	if flagRequested("no-browser") || os.Getenv("DN_NO_BROWSER") != "" {
+		return
+	}
 	verb, _ := windows.UTF16PtrFromString("open")
 	target, _ := windows.UTF16PtrFromString(address)
 	if err := windows.ShellExecute(0, verb, target, nil, nil, windows.SW_SHOWNORMAL); err != nil {

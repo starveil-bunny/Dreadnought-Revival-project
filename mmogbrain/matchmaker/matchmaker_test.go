@@ -26,11 +26,18 @@ func TestModesOnlyGetMapsWithTheirSublevel(t *testing.T) {
 }
 
 // Onslaught uses the regular rotation, which since 2026-10-17 carries every
-// MP map (operator: "put those all up for matchmaking"), Amirani included.
+// MP map (operator: "put those all up for matchmaking"), Amirani included --
+// but not the PvE season maps (2026-10-24), which have no _Onslaught sublevel.
 func TestOnslaughtUsesTheRegularMaps(t *testing.T) {
 	maps := mapsByGameMode["Onslaught"]
-	if len(maps) != len(availableMaps) {
-		t.Fatalf("Onslaught maps %v, want the %d rotation maps", maps, len(availableMaps))
+	pve := 0
+	for _, m := range availableMaps {
+		if strings.HasPrefix(m.Path, "/Game/Maps/PVE/") {
+			pve++
+		}
+	}
+	if pve == 0 || len(maps) != len(availableMaps)-pve {
+		t.Fatalf("Onslaught maps %v, want the %d rotation maps minus %d PvE maps", maps, len(availableMaps), pve)
 	}
 	amirani := false
 	for _, m := range maps {

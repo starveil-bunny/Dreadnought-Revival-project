@@ -1,0 +1,23 @@
+# hangar -> Proving Grounds -> NO ship picked: the host must hand out the flagship (GiveDefaultShipIfNone) when the picker timer ends, not a black screen.
+wait-hangar
+shot hangar
+click 645 446     # OK on the Login Streak popup (first login of a day; covered PLAY on sweep 2026-10-14 17:17); empty hangar otherwise
+sleep 2
+click 107 288     # PLAY (left menu, top item)
+sleep 5
+click 353 380     # RECRUIT fleet card
+sleep 5
+click 1073 260    # PROVING GROUNDS
+sleep 5
+shot fleet
+click 640 155     # PLAY on the fleet screen -> matchmaking -> battle server
+wait-log ClientLoadingCompleted
+sleep 8           # ship picker presents a few s after loading completes
+shot choose-ship
+sleep 40          # picker timer runs out untouched
+shot timer-out
+wait-log Starting game music   # orbit intro only if a ship was given
+sleep 20
+shot spawned
+sleep 30
+shot flight

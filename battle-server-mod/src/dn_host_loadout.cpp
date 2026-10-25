@@ -78,14 +78,14 @@
 
 static FILE *g_logFile = nullptr;
 
-static void LogOpen() {
+static void LogOpen(const char *file = "dn_host_loadout.log") {
   char path[MAX_PATH];
   if (!GetModuleFileNameA(NULL, path, MAX_PATH))
     return;
   char *slash = strrchr(path, '\\');
   if (!slash)
     return;
-  strcpy_s(slash + 1, sizeof(path) - (slash + 1 - path), "dn_host_loadout.log");
+  strcpy_s(slash + 1, sizeof(path) - (slash + 1 - path), file);
   // _fsopen, not fopen: the CRT's fopen takes an exclusive lock on Windows, so
   // the file cannot even be COPIED while the host is running, and the whole
   // point of this log is that an operator can read it during a match.
@@ -2338,8 +2338,10 @@ static int g_extraTier = 0; // the last /spawn'd game bot's ShipId tier (T<n>, c
 extern void *g_ffaGm; // /match ffa (FfaTick)
 static int FfaKillLimit(uint8_t *gm);                                  // after FfaTick
 static void FfaCountKill(uint8_t *gm, void *killer, void *victimCtrl); // after FfaTick
-static bool FfaLeader(void *gm, uint8_t *gs);                          // after FfaTick
+static bool FfaLeader(void *gm, uint8_t *gs, bool final);              // after FfaTick
 static void CustomTick(uint8_t *gm);                                        // custom modes, after CommandKill
+static void BossPingTick(uint8_t *gm);                                      // boss attack pings, resent
+static uint8_t *g_tickGm = nullptr;                                          // game mode of the last timer tick
 static int CustomKillLimit(uint8_t *gm);                                    // custom modes
 static void CustomCountKill(uint8_t *gm, void *killer, void *victimCtrl);   // custom modes
 static bool CustomLeader(void *gm, uint8_t *gs);                            // custom modes
@@ -2601,6 +2603,12 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
     CustomTick(gm);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("custom: EXCEPTION in the tick");
+  }
+  g_tickGm = gm;
+  __try {
+    BossPingTick(gm);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("boss marker: EXCEPTION in the ping tick");
   }
   g_origGameModeTimer(gameMode);
   // Our ticks run at most every TICK_MIN_MS of wall time. This timer loops
@@ -3171,11 +3179,17 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
 
 // The leader/winner by points, not kills, in Onslaught. The original's
 // "a team has no players" branches (+0x4F8/+0x4FC) are kept.
+// The match is over or no longer running (GameState +0x56A / +0x569, see
+// OFF_GS_MATCH_OVER): FFA writes its winner only then.
+static bool FfaMatchOver(uint8_t *gs) {
+  return gs && IsReadable(gs + 0x569, 2) && (gs[0x56A] || !gs[0x569]);
+}
 static void __fastcall HookDetermineLeader(void *gameMode) {
   g_origDetermineLeader(gameMode);
   __try {
     if (g_ffaGm == gameMode && IsReadable((uint8_t *)gameMode + OFF_GM_GAMESTATE, 8) &&
-        FfaLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE)))
+        FfaLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE),
+                  FfaMatchOver(*(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE))))
       return;
     if (IsReadable((uint8_t *)gameMode + OFF_GM_GAMESTATE, 8) &&
         CustomLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE)))
@@ -4746,8 +4760,9 @@ static void __fastcall HookClientApplyRespawnFilter(void *self, void *filter) {
 }
 
 // ---------------------------------------------------------------------------
-// End-of-match stack probe (DIAGNOSTIC; dn_host_no_stack_probe.txt /
-// DN_HOST_NO_STACK_PROBE=1 turns it off)
+// End-of-match stack probe (DIAGNOSTIC, opt-in since 2026-10-24:
+// dn_host_stack_probe.txt / DN_HOST_STACK_PROBE=1; the crash handler below
+// stays on unless dn_host_no_stack_probe.txt / DN_HOST_NO_STACK_PROBE=1)
 //
 // The host overflows its stack in about 40% of matches, ~3 ms after EndMatch
 // starts ("Match over event" -> music reset -> EXCEPTION_STACK_OVERFLOW; 5 of
@@ -4963,7 +4978,16 @@ static void InstallHostCrashHandler() {
 static void ArmStackProbe() {
   static int s_state = -1; // -1 unknown, 0 off, 1 on
   if (s_state < 0) {
-    s_state = SwitchOn("DN_HOST_NO_STACK_PROBE", "dn_host_no_stack_probe.txt") ? 0 : 1;
+    // Opt-in since 2026-10-24: the watcher suspends/resumes the game thread
+    // back to back for the whole 5 s, which under Wine starves it -- every
+    // match end froze for 5.0 s ("UNetDriver::TickDispatch: Very long time
+    // between ticks. DeltaTime: 5.01", 13 of 16 matches that day; clients saw
+    // 1-2 s before the victory/defeat screen). The overflow it hunted is fixed
+    // (ClientApplyRespawnFilter guard above).
+    s_state = SwitchOn("DN_HOST_STACK_PROBE", "dn_host_stack_probe.txt") &&
+                      !SwitchOn("DN_HOST_NO_STACK_PROBE", "dn_host_no_stack_probe.txt")
+                  ? 1
+                  : 0;
     if (s_state) {
       InitProbeOutput();
       if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
@@ -5955,16 +5979,16 @@ static int TeamOverrideFor(uint8_t *pc) {
 }
 
 // /match ffa (the brain sends "ffa on" to that match): every human's ship on
-// a team of its own, 3 and up, and no bots. Only the ship (pawn) team is set
+// a team of its own, 2 and up (operator 2026-10-24: 0 and 1 excluded), and no bots. Only the ship (pawn) team is set
 // -- targeting, damage and colours follow it, as the herald and /boss showed
 // (2026-10-18) -- while the player state and controller keep the matchmaker's
 // 1/2, so spawn points and the scoreboard stay the stock TDM ones.
 // GUESS: kills between two players of the same 1/2 side may score as team
 // kills; TDM's team score only knows 1 and 2.
 void *g_ffaGm = nullptr;
-static struct { void *pc; uint8_t team; int kills; } g_ffaSlot[64];
+static struct { void *pc; uint8_t team; bool human; int kills; } g_ffaSlot[64];
 static int g_ffaN = 0;
-static int g_ffaSeq = 0; // teams handed out, so a dropped slot's team is not reused
+static int g_ffaSeq = 0; // slots handed out (the log's player count)
 // FFA score (2026-10-20): the kill handler 0x375F30 passes the killer SHIP's
 // team (0x57C100, pawn +0x8C0) to 0x39E470, which adds 1 to gs+0x1DF0 for
 // team 1 and to gs+0x1DF4 for any other -- teams 3+ all score as team 2 --
@@ -5972,9 +5996,8 @@ static int g_ffaSeq = 0; // teams handed out, so a dropped slot's team is not re
 // gs+0x4E8 holds only 1, 2 or 3 (draw). So FFA keeps its own tally per
 // player (g_ffaSlot[].kills), ends the match when one reaches the game
 // mode's own limit (saved in g_ffaLimit, then lifted like Onslaught's), and
-// names as winner the leader's PLAYER STATE team (1/2, the matchmaker's).
-// GUESS: the victory screen follows +0x4E8, so the leader's whole 1/2 side
-// sees "victory"; a per-player screen is unknown (not run with 2+ players).
+// names the leader the winner: player-state team 1 for them, 2 for the rest
+// (FfaLeader, 2026-10-24; before, the leader's whole matchmaker side won).
 static int g_ffaLimit = 0, g_ffaLead = -1, g_ffaLimitArg = 0; // "ffa on N": N kills (else the mode's)
 static int g_ffaLimitSaved = 0; // the game mode's own m_killsForWinning, restored on "ffa off"
 static void *g_ffaLimitGm = nullptr;
@@ -6011,39 +6034,144 @@ static void FfaCountKill(uint8_t *gm, void *killer, void *victimCtrl) {
   if (g_ffaLimit <= 0 || k < g_ffaLimit || !IsReadable(gm + OFF_GM_GAMESTATE, 8))
     return;
   uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
-  if (!gs || !FfaLeader(gm, gs))
+  if (!gs || !FfaLeader(gm, gs, true))
     return;
-  g_ffaEnded = true;
   Logf("ffa: controller %p reached %d kills -- ending the match, winner byte %d", killer, k, gs[OFF_GS_WINNING_TEAM]);
   AwardManOfTheDay(killer, gs[OFF_GS_WINNING_TEAM], "ffa kill limit");
   void **vt = *(void ***)gm;
   ((void(__fastcall *)(void *))vt[VT_GM_END_MATCH / 8])(gm);
 }
 // gs+0x4E8 from the FFA leader's player-state team; false = leave the stock value.
-static bool FfaLeader(void *gm, uint8_t *gs) {
+// Only at the end (final): the determine-leader hook runs on every kill, and
+// rewriting the player-state teams there flipped every player to 1/2 mid-match
+// (match 2026-10-25 10:16, "ffa: winner" on each kill) while FixTeam put them
+// back each second. Mid-match the stock leader stays.
+static bool FfaLeader(void *gm, uint8_t *gs, bool final) {
   if (g_ffaLimitGm != gm || g_ffaLead < 0 || !gs || !IsReadable(gs + OFF_GS_WINNING_TEAM, 1))
     return false;
+  if (!final)
+    return true;
+  if (g_ffaEnded)
+    return true; // already written (kill limit, then the end's own determine-leader)
+  g_ffaEnded = true;
   uint8_t *pc = (uint8_t *)g_ffaSlot[g_ffaLead].pc;
   uint8_t *pri = IsReadable(pc + OFF_PC_PLAYER_STATE, 8) ? *(uint8_t **)(pc + OFF_PC_PLAYER_STATE) : nullptr;
   int t = pri && IsReadable(pri + 0x940 /* OFF_PRI_TEAM */, 1) ? pri[0x940] : 0;
   int tie = 0;
   for (int i = 0; i < g_ffaN; ++i)
     tie += g_ffaSlot[i].kills == g_ffaSlot[g_ffaLead].kills;
-  gs[OFF_GS_WINNING_TEAM] = tie > 1 || (t != 1 && t != 2) ? 3 : (uint8_t)t;
+  if (tie > 1) {
+    gs[OFF_GS_WINNING_TEAM] = 3;
+    return true;
+  }
+  // Operator 2026-10-24: the leader gets the team-1 victory, everyone else the
+  // team-2 defeat. Each player's PLAYER STATE team (+0x940) is rewritten at the
+  // end (ships keep their FFA teams 2+). GUESS: the client picks victory vs
+  // defeat by gs+0x4E8 against its own player state's team; not run with 2+
+  // players yet.
+  for (int i = 0; i < g_ffaN; ++i) {
+    uint8_t *c = (uint8_t *)g_ffaSlot[i].pc;
+    uint8_t *r = ObjectLive(c) && IsReadable(c + OFF_PC_PLAYER_STATE, 8) ? *(uint8_t **)(c + OFF_PC_PLAYER_STATE) : nullptr;
+    if (r && IsReadable(r + 0x940, 1))
+      r[0x940] = i == g_ffaLead ? 1 : 2;
+  }
+  Logf("ffa: winner %p (was player-state team %d) -> team 1, %d other(s) -> team 2", pc, t, g_ffaN - 1);
+  gs[OFF_GS_WINNING_TEAM] = 1;
   return true;
 }
-static void FfaTick(uint8_t *pc) {
+// FFA teams (2026-10-25 rework). The 10:16 match (2 humans, bots) handed out
+// 2..7 in turn to 58 controllers (every bot life is a new one), so bots shared
+// the humans' teams: a purple bot could not be hurt by the purple player, bots
+// healed each other. What decides what:
+//   - the server compares the whole team byte (IsFriendly 0x3098D0 -> GetTeam
+//     0x57C100 ==; IsFriendlyTeam 0x3099C0 is movzx/cmp/sete), so 2 and 10
+//     are enemies there;
+//   - EYTeam has 6 values (YT_NONE, TEAM1, TEAM2, TEAM3, YT_IGNORE, YT_MAX), so
+//     the team replicates in 3 bits: the client sees team & 7 for colour and
+//     friend/foe (the /dummy sweep's "mod 8").
+// So every live controller gets a team byte of its own, and the low 3 bits
+// ("colour") of each human's team are used by no other ship: every human sees
+// every other ship as an enemy, and the server agrees. Bots share colours
+// with each other (never with a human); the server still keeps them apart.
+// Colours 0 and 1 (white, blue) are skipped, and the bytes 4 and 5 themselves
+// (YT_IGNORE, YT_MAX: GUESS that code special-cases them) -- 12 and 13 carry
+// the same colours. More than 6 humans: colours repeat between humans
+// (allies on their screens, still enemies on the server), logged.
+static bool FfaTeamOk(int t) { return (t & 7) >= 2 && t != 4 && t != 5; }
+static bool FfaTeamTaken(int t, int self) {
+  for (int k = 0; k < g_ffaN; ++k)
+    if (k != self && g_ffaSlot[k].team == t && ObjectLive(g_ffaSlot[k].pc))
+      return true;
+  return false;
+}
+static bool FfaColourHuman(int colour, int self) {
+  for (int k = 0; k < g_ffaN; ++k)
+    if (k != self && g_ffaSlot[k].human && (g_ffaSlot[k].team & 7) == colour && ObjectLive(g_ffaSlot[k].pc))
+      return true;
+  return false;
+}
+static bool FfaColourUsed(int colour, int self) {
+  for (int k = 0; k < g_ffaN; ++k)
+    if (k != self && (g_ffaSlot[k].team & 7) == colour && ObjectLive(g_ffaSlot[k].pc))
+      return true;
+  return false;
+}
+// The lowest free team byte for slot i (0 = none left).
+static int FfaPickTeam(int i) {
+  bool human = g_ffaSlot[i].human;
+  for (int pass = 0; pass < 3; ++pass)
+    for (int t = 2; t < 255; ++t) {
+      if (!FfaTeamOk(t) || FfaTeamTaken(t, i) || FfaColourHuman(t & 7, i))
+        continue;
+      // humans: a colour no ship has (pass 0), else one only bots have (the
+      // bots move off it next tick); bots: any colour no human has
+      if (human && pass == 0 && FfaColourUsed(t & 7, i))
+        continue;
+      return t;
+    }
+  if (human) // more humans than colours: share one with a human, own byte still
+    for (int t = 2; t < 255; ++t)
+      if (FfaTeamOk(t) && !FfaTeamTaken(t, i))
+        return t;
+  return 0;
+}
+static void FfaCompact() {
+  int k = 0;
+  void *lead = g_ffaLead >= 0 ? g_ffaSlot[g_ffaLead].pc : nullptr;
+  for (int i = 0; i < g_ffaN; ++i)
+    if (ObjectLive(g_ffaSlot[i].pc) || g_ffaSlot[i].human)
+      g_ffaSlot[k++] = g_ffaSlot[i];
+  g_ffaN = k, g_ffaLead = -1;
+  for (int i = 0; i < g_ffaN; ++i)
+    if (g_ffaSlot[i].pc == lead)
+      g_ffaLead = i;
+  if (g_ffaLead < 0) // the leader was a bot that is gone
+    for (int i = 0; i < g_ffaN; ++i)
+      if (g_ffaSlot[i].kills > 0 && (g_ffaLead < 0 || g_ffaSlot[i].kills > g_ffaSlot[g_ffaLead].kills))
+        g_ffaLead = i;
+}
+static void FfaTick(uint8_t *pc, bool human) {
   int i = 0;
   while (i < g_ffaN && g_ffaSlot[i].pc != pc)
     ++i;
   if (i == g_ffaN) {
     if (g_ffaN >= 64)
+      FfaCompact(), i = g_ffaN;
+    if (g_ffaN >= 64)
       return;
-    g_ffaSlot[g_ffaN].pc = pc;
-    g_ffaSlot[g_ffaN].team = (uint8_t)(3 + g_ffaSeq++ % 250);
-    ++g_ffaN;
+    g_ffaSlot[i] = {pc, 0, human, 0};
+    ++g_ffaN, ++g_ffaSeq;
   }
   uint8_t want = g_ffaSlot[i].team;
+  // (re)pick: new, or a bot on a colour a human has now taken
+  if (!want || FfaTeamTaken(want, i) || (!human && FfaColourHuman(want & 7, i))) {
+    int t = FfaPickTeam(i);
+    if (!t)
+      return (void)Logf("ffa: no free team for controller %p (%d live slots)", pc, g_ffaN);
+    if (human && FfaColourHuman(t & 7, i))
+      Logf("ffa: more humans than colours -- controller %p shares colour %d with another player", pc, t & 7);
+    g_ffaSlot[i].team = want = (uint8_t)t;
+  }
   uint8_t *pawn = IsReadable(pc + OFF_CONTROLLER_PAWN, 8) ? *(uint8_t **)(pc + OFF_CONTROLLER_PAWN) : nullptr;
   if (!pawn || !IsReadable(pawn + OFF_SHIP_TEAM, 1) || pawn[OFF_SHIP_TEAM] == want)
     return;
@@ -6053,7 +6181,8 @@ static void FfaTick(uint8_t *pc) {
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return (void)Logf("ffa: controller %p ship team set faulted", pc);
   }
-  Logf("ffa: controller %p ship %s team %d -> %d", pc, ClassNameOf((UObjectMin *)pawn), was, want);
+  Logf("ffa: %s %p ship %s team %d -> %d (colour %d, slot %d of %d)", human ? "player" : "bot", pc,
+       ClassNameOf((UObjectMin *)pawn), was, want, want & 7, i, g_ffaN);
 }
 
 static void FixTeam(uint8_t *pc, uint8_t *pri, PlayerSeen *seen) {
@@ -6099,6 +6228,10 @@ static void PlayersTick(uint8_t *gm) {
     uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
     if (!IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16))
       return;
+    // FFA ended on time: the end's determine-leader may run before the
+    // match-over byte is set, so the winner is written here at the latest.
+    if (g_ffaGm == gm && !g_ffaEnded && FfaMatchOver(gs) && FfaLeader(gm, gs, true))
+      Logf("ffa: match over -- winner written from the tick, byte %d", gs[OFF_GS_WINNING_TEAM]);
     uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
     int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
     if (count <= 0 || count > 256 || !IsReadable(arr, (size_t)count * 8))
@@ -6128,9 +6261,10 @@ static void PlayersTick(uint8_t *gm) {
         if (UrlOptionForController(pc, L"DNPID=", pidTmp, sizeof(pidTmp)))
           RememberControllerPID(pc, pidTmp);
       }
-      FixTeam(pc, pri, seen);
+      if (g_ffaGm != gm || !g_ffaEnded) // FFA's end writes the winner/loser teams
+        FixTeam(pc, pri, seen);
       if (g_ffaGm == gm)
-        FfaTick(pc);
+        FfaTick(pc, true);
       int t = pri[OFF_PRI_TEAM];
       if (t == 1 || t == 2)
         ++humansOnTeam[t];
@@ -6901,6 +7035,192 @@ static tSceneReplaceBehaviours g_origSceneReplace = nullptr;
 typedef void(__fastcall *tRegisterProjectileFn)(void *mgr, void *proj);
 static tRegisterProjectileFn g_origRegisterProjectile;
 
+// ---------------------------------------------------------------------------
+// Flagship for a player who picked nothing at orbit (on unless
+// dn_host_no_default_ship.txt / DN_HOST_NO_DEFAULT_SHIP=1)
+//
+// 2026-10-24 15:59 match: the orbit timer ran out with no card clicked, the
+// client sent ServerTeleportIntoLevel, and the host logged "ActivateLoadout |
+// Loadout nullptr" + "SpawnDefaultPawn: Active Loadout not found" -> black
+// screen. The spawn path's loadout lookup 0x370970 (.pdata ENTRY
+// 0x370970-0x370A1D; rcx = GameMode, rdx = controller) returns the loadout
+// manager's active loadout (0x5787C0); with none it falls back to
+// 0x346240(holder = ctrl+0x958, holder's flagship id via leaf 0x345420), which
+// searches the holder's fleet entries (+0x30, 0x50 bytes, id at +0x20) -- empty
+// on a host that never logged in -- and activates whatever that returns, here
+// null. Nothing on the host has ever registered a loadout either, because
+// registration happens on the FindLoadoutByID miss a card click causes.
+//
+// So before the original runs, a human controller with no active loadout gets
+// the server's answer to "which ship" -- /battle/default-loadout (mmogbrain
+// battle_loadout.go: the active fleet's FlagShipLoadoutIndex entry, the card
+// the orbit screen opens on) -- registered through the same FindLoadoutByID
+// miss path a click takes, then activated. The original then returns it.
+// NOT verified against a live client yet.
+// ---------------------------------------------------------------------------
+#define RVA_SPAWN_LOADOUT_LOOKUP 0x370970
+#define OFF_CTRL_LOADOUT_HOLDER 0x958 // -> +0x28 the loadout manager
+// 0x370970 forwards r8/r9 untouched into gm->vfunc[0x880] (r8 is dereferenced at
+// 0x36EE8E), so the detour must take and pass four args: a two-arg detour let r8 be
+// clobbered by our own calls and crashed the host at ship select (2026-10-24).
+typedef void *(__fastcall *tSpawnLoadoutLookup)(void *gm, void *ctrl, void *a3, void *a4);
+static tSpawnLoadoutLookup g_origSpawnLoadoutLookup = nullptr;
+
+// ServerPlayerClickedShipLoadout body: PC vtable +0xEE8 (pc, FName *id), the
+// exec thunk 0x7722C0 calls it after _Validate (+0xEE0) -- disassembled
+// 2026-10-24. ServerTeleportIntoLevel's thunk 0x774670 (.pdata entry) calls
+// +0xEF0 _Validate then +0xEF8 with two 12-byte structs.
+#define VT_PC_CLICKED_SHIP_LOADOUT 0xEE8
+#define RVA_TELEPORT_INTO_LEVEL_THUNK 0x774670
+typedef void(__fastcall *tClickedShipLoadout)(void *pc, void *name);
+static void GiveDefaultShipIfNone(void *ctrl, bool viaClick = false) {
+  uint8_t *holder = IsReadable((uint8_t *)ctrl + OFF_CTRL_LOADOUT_HOLDER, 8)
+                        ? *(uint8_t **)((uint8_t *)ctrl + OFF_CTRL_LOADOUT_HOLDER) : nullptr;
+  void *mgr = holder && IsReadable(holder + 0x28, 8) ? *(void **)(holder + 0x28) : nullptr;
+  if (!mgr || !IsReadable((uint8_t *)mgr + OFF_LOADOUT_MGR_ACTIVE, 8) ||
+      *(void **)((uint8_t *)mgr + OFF_LOADOUT_MGR_ACTIVE))
+    return; // picked already (or not a player): leave the engine alone
+  char pid[80];
+  if (!PlayerPIDForManagerRobust(mgr, pid, sizeof(pid)))
+    return; // bots and the host's own controller have no pid
+  char path[160], body[4096], id[256];
+  _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/default-loadout?pid=%s", pid);
+  if (!HttpGetLoopback(path, body, sizeof(body)) || !FieldValue(body, "id", id, sizeof(id)) || !id[0]) {
+    Logf("default ship: %s picked nothing and mmogbrain has no flagship for them", pid);
+    return;
+  }
+  wchar_t idW[256];
+  MultiByteToWideChar(CP_UTF8, 0, id, -1, idW, 256);
+  FNameMin name = {};
+  void *loadout = nullptr;
+  __try {
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&name, idW, 1 /* FNAME_Add */);
+    void *nameP = &name;
+    if (viaClick) {
+      // the client's own pick, sent for them: whatever else the click does
+      // on the server (the no-pick flow lacks it: "not in orbit") runs too
+      void **vt = *(void ***)ctrl;
+      ((tClickedShipLoadout)vt[VT_PC_CLICKED_SHIP_LOADOUT / 8])(ctrl, nameP);
+      loadout = *(void **)((uint8_t *)mgr + OFF_LOADOUT_MGR_ACTIVE);
+    } else {
+      loadout = HookFindLoadoutByID(mgr, (void **)nameP, 0); // registers on a miss, like a click
+      if (loadout)
+        ((tActivateLoadout)(g_base + RVA_ACTIVATE_LOADOUT))(mgr, loadout, 1);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("default ship: EXCEPTION giving %s their flagship %s", pid, id);
+    return;
+  }
+  Logf("default ship: %s picked nothing -> flagship %s%s: %s", pid, id, viaClick ? " (click sent for them)" : "",
+       !loadout ? "NOT REGISTERED"
+       : *(void **)((uint8_t *)mgr + OFF_LOADOUT_MGR_ACTIVE) == loadout ? "active" : "activation refused");
+}
+
+static void *__fastcall HookSpawnLoadoutLookup(void *gm, void *ctrl, void *a3, void *a4) {
+  if (ctrl)
+    GiveDefaultShipIfNone(ctrl);
+  return g_origSpawnLoadoutLookup(gm, ctrl, a3, a4);
+}
+
+// Flagship auto-pick (operator 2026-10-24: "the server needs to be aware of
+// the flagship and just slot it into the picked ship once picking is no
+// longer available"). Battle logs: a picking client sends ServerSpawnNearActor
+// -> ServerPlayerClickedShipLoadout -> ...; one that let the orbit timer run
+// out sends only ServerTeleportIntoLevel, and the host answered "Trying to
+// teleport into level player 256 that is not in orbit!" -- the spawn-lookup
+// hook above never ran ("default ship:" never logged). So the click is sent
+// for them here, before the teleport runs. Verified live 2026-10-24 (cycle
+// 20261024-194702-nopick-ons, Onslaught, no card clicked): the client's own
+// timeout teleport arrived ~60 s after loading, "default ship: ... -> flagship
+// Default__VH_AssaultMedium_T1_PrecastLoadout_BP_C (click sent for them):
+// active", no "not in orbit", player flying in it.
+typedef void(__fastcall *tExecThunkT)(void *ctx, uint8_t *stack, void *result);
+static tExecThunkT g_origTeleportThunk = nullptr;
+static void __fastcall HookTeleportThunk(void *ctx, uint8_t *stack, void *result) {
+  __try {
+    if (ctx)
+      GiveDefaultShipIfNone(ctx, true);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("default ship: teleport-time pick faulted for %p", ctx);
+  }
+  g_origTeleportThunk(ctx, stack, result);
+}
+
+typedef void *(__fastcall *tChoosePlayerStart)(void *gm, void *ctrl);
+static void *__fastcall HookChoosePlayerStart(void *gm, void *ctrl); // after FindPlayerStarts
+extern tChoosePlayerStart g_origChoosePlayerStart;
+// Search manager null guard. 0x28CD20 (12 callers; nearest valid point of the
+// AI search grid: rcx = YDNSearchManager, rdx = out, r8 = in, r9d flag) reads
+// [rcx+0x474] first. Its callers take the singleton from 0x3E04CB0, re-found by
+// 0x2938A0 when null -- which stays null once the manager is gone. Crash
+// 2026-10-25 10:51:00 (4-team custom on PVE_S3E1): EOM stage UnloadSublevels,
+// "GSearchManager destroyed", then AV at 0x28CD3A reading 0x474 from AI
+// movement (0x283010 <- 0x2A9300) of ships still alive on a PvE map. No
+// manager: the point is returned unchanged (the function always writes out).
+typedef float *(__fastcall *tSearchNearest)(void *mgr, float *out, const float *in, int flag);
+static tSearchNearest g_origSearchNearest = nullptr;
+static float *__fastcall HookSearchNearest(void *mgr, float *out, const float *in, int flag) {
+  if (mgr)
+    return g_origSearchNearest(mgr, out, in, flag);
+  static DWORD s_last;
+  if (GetTickCount() - s_last > 5000)
+    s_last = GetTickCount(), Logf("search manager: gone -- nearest-point query passed through");
+  out[0] = in[0], out[1] = in[1], out[2] = in[2];
+  return out;
+}
+// 75 loads of that singleton sit in ~20 functions (0x27A6C0..0x2A735F), so the
+// guard above cannot cover them all. 0x27B150 is the manager's teardown (nulls
+// 0x3E04CB0, logs "GSearchManager destroyed", tail-jumps to the base
+// 0x1712850). When it runs with the match over, the level is being unloaded by
+// the EOM stage graph behind the clients' fade to black: every AI controller
+// and its ship is destroyed with it, so nothing paths on a grid that is gone.
+typedef void (*tParmFill)(uint8_t *parms, const char *propClass, uint32_t off, void *ctx);
+static bool CallFilled(void *obj, const wchar_t *name, tParmFill fill, void *ctx);
+typedef void(__fastcall *tSearchManagerTeardown)(void *mgr);
+static tSearchManagerTeardown g_origSearchManagerTeardown = nullptr;
+static void __fastcall HookSearchManagerTeardown(void *mgr) {
+  g_origSearchManagerTeardown(mgr);
+  __try {
+    uint8_t *gs = g_tickGm && IsReadable(g_tickGm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(g_tickGm + OFF_GM_GAMESTATE) : nullptr;
+    if (!gs || !IsReadable(gs + OFF_GS_MATCH_RUNNING, 2) || !(gs[OFF_GS_MATCH_OVER] || !gs[OFF_GS_MATCH_RUNNING]))
+      return (void)Logf("search manager: destroyed during play (match not over) -- AI left alone");
+    FUObjectArrayMin *arr = GObjects();
+    if (!arr || !arr->Objects)
+      return;
+    // One name walk per distinct class (open addressing on the class pointer);
+    // a 64-entry list filled with unrelated classes first and matched nothing
+    // (headless eom-s3e1 2026-10-25 11:06: "0 AI controllers", then the AV).
+    static void *s_cls[4096];
+    static bool s_ai[4096];
+    void *ctrls[512];
+    int nc = 0;
+    for (int i = 0; i < arr->NumElements && nc < 512; ++i) {
+      UObjectMin *o = arr->Objects[i].Object;
+      if (!o || (o->Flags & RF_CDO_OR_ARCHETYPE) || (arr->Objects[i].Flags & OBJ_PENDING_KILL) || !o->Class)
+        continue;
+      uint32_t h = (uint32_t)(((uintptr_t)o->Class >> 4) * 2654435761u) & 4095;
+      int probes = 0;
+      while (s_cls[h] && s_cls[h] != o->Class && probes++ < 4096)
+        h = (h + 1) & 4095;
+      if (probes >= 4096)
+        continue;
+      if (!s_cls[h])
+        s_cls[h] = o->Class, s_ai[h] = ClassChainContains(o, "AIController");
+      if (s_ai[h])
+        ctrls[nc++] = o;
+    }
+    int np = 0;
+    for (int i = 0; i < nc; ++i) {
+      void *pawn = IsReadable((uint8_t *)ctrls[i] + OFF_CONTROLLER_PAWN, 8) ? *(void **)((uint8_t *)ctrls[i] + OFF_CONTROLLER_PAWN) : nullptr;
+      if (pawn && ObjectLive(pawn) && CallFilled(pawn, L"K2_DestroyActor", nullptr, nullptr))
+        ++np;
+      CallFilled(ctrls[i], L"K2_DestroyActor", nullptr, nullptr);
+    }
+    Logf("search manager: destroyed after the match -- %d AI controllers and %d ships destroyed with it", nc, np);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("search manager: AI teardown faulted");
+  }
+}
 static void InstallSwitchedHook(const char *what, uintptr_t rva, void *detour,
                                 void **orig) {
   void *target = (void *)(g_base + rva);
@@ -7070,9 +7390,149 @@ static bool IsEnabled() {
   return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+// ---------------------------------------------------------------------------
+// Client EOM probe (headless test clients only; DN_CLIENT_EOM_PROBE=1 in the
+// CLIENT's environment, which no player's launcher sets; added 2026-10-24)
+//
+// PvE (Horde/Escort) clients log "AYGameState_MP::InitializeEndOfMatchStaging
+// Manager: m_endOfMatchStagingManagerClass or m_endOfMatchCustomRoom... not
+// correctly set up" at match end and sit on a black screen; the host builds
+// its EOM fine from the same GameState_Horde_BP. 0x391E50-0x3920FE takes
+// gs+0x1CC8 (normal class) unless the YMmogbrain custom-room bytes
+// (+0x3B08/+0x3B0B) are set, then gs+0x1CD0 (custom class; Horde/Escort have
+// none), each only if its SuperStruct (+0x30) chain reaches
+// YEndOfMatchStagingManagerBase (0x60A190). Havoc (no custom class either)
+// builds its EOM on the client, so the custom-room bytes read 0 there. This
+// logs what the client actually holds, to dn_client_probe.log. Read-only.
+// ---------------------------------------------------------------------------
+static const uintptr_t RVA_INIT_EOM_STAGING = 0x391E50;
+typedef void(__fastcall *InitEomStagingFn)(void *gs);
+static InitEomStagingFn g_origInitEomStaging = nullptr;
+
+static void ProbeClassChain(const char *what, void *cls) {
+  char buf[600];
+  int n = _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%s %p", what, cls);
+  for (int i = 0; cls && i < 8 && n > 0 && n < (int)sizeof(buf) - 80; ++i) {
+    if (!IsReadable(cls, 0x38))
+      break;
+    const char *nm = NameText(((UObjectMin *)cls)->Name);
+    n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE, " %s %s", i ? "<" : "=", nm ? nm : "?");
+    cls = *(void **)((uint8_t *)cls + 0x30);
+  }
+  Logf("eom probe: %s", buf);
+}
+
+static void __fastcall HookInitEomStaging(void *gs) {
+  __try {
+    uint8_t *g = (uint8_t *)gs;
+    if (IsReadable(g + 0x1CC8, 0x18)) {
+      Logf("eom probe: InitializeEndOfMatchStagingManager on %p %s; manager %p",
+           gs, ClassNameOf(gs), *(void **)(g + 0x1CD8));
+      ProbeClassChain("normal  +0x1CC8", *(void **)(g + 0x1CC8));
+      ProbeClassChain("custom  +0x1CD0", *(void **)(g + 0x1CD0));
+      void *cls = IsReadable(gs, sizeof(UObjectMin)) ? ((UObjectMin *)gs)->Class : nullptr;
+      ProbeClassChain("gs class", cls);
+      uint8_t *mm = MmogClient();
+      if (mm && IsReadable(mm + 0x3B08, 4))
+        Logf("eom probe: at init, custom-room bytes +0x3B08..0B = %02x %02x %02x %02x", mm[0x3B08],
+             mm[0x3B09], mm[0x3B0A], mm[0x3B0B]);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("eom probe: faulted reading %p", gs);
+  }
+  g_origInitEomStaging(gs);
+  __try {
+    Logf("eom probe: after: manager %p", *(void **)((uint8_t *)gs + 0x1CD8));
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+}
+
+// The YMmogbrain module's object, as 0x391E5A..0x391E90 gets it (MmogClient():
+// ANSI FName ctor 0xC9CF20 -- an earlier probe passed a wide string and got
+// null). Polled for changes of the custom-room bytes +0x3B08..+0x3B0B (the
+// writers are all inside the mmog dispatcher 0x2A236C2-0x2A31A32, too big to
+// hook usefully).
+static DWORD WINAPI ClientProbeFlagWatch(LPVOID) {
+  Sleep(5000);
+  uint8_t *mm = nullptr;
+  __try {
+    mm = MmogClient();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("eom probe: faulted finding the YMmogbrain object");
+    return 0;
+  }
+  Logf("eom probe: YMmogbrain object %p", mm);
+  if (!mm)
+    return 0;
+  uint32_t last = 0xFFFFFFFF;
+  for (;;) {
+    uint32_t v = IsReadable(mm + 0x3B08, 4) ? *(uint32_t *)(mm + 0x3B08) : 0xEEEEEEEE;
+    if (v != last)
+      Logf("eom probe: custom-room bytes +0x3B08..0B = %02x %02x %02x %02x", v & 0xFF, (v >> 8) & 0xFF,
+           (v >> 16) & 0xFF, v >> 24);
+    last = v;
+    Sleep(50);
+  }
+}
+
+// The mmog response dispatcher, 0x2A23440-0x2A234EB (body chunk 0x2A236C2-
+// 0x2A31A32): this = YMmogbrain client, rdx = the frame. Logs the frame
+// whenever a response changes +0x3B08 (the custom-room flag that steers
+// InitializeEndOfMatchStagingManager away from the normal EOM class).
+#define RVA_MMOG_DISPATCH 0x2A23440
+typedef void *(__fastcall *tMmogDispatch)(void *self, void *frame);
+static tMmogDispatch g_origMmogDispatch = nullptr;
+static void *__fastcall HookMmogDispatch(void *self, void *frame) {
+  uint8_t *m = (uint8_t *)self;
+  uint8_t before = IsReadable(m + 0x3B08, 4) ? m[0x3B08] : 0xEE;
+  void *r = g_origMmogDispatch(self, frame);
+  uint8_t after = IsReadable(m + 0x3B08, 4) ? m[0x3B08] : 0xEE;
+  static int seq = 0;
+  if (++seq <= 300 || before != after) {
+    // The frame is a struct, not the raw bytes: scan what it points at for a
+    // "YA_" name, ASCII or UTF-16, one pointer level deep.
+    char name[64] = "?";
+    uint8_t *f = (uint8_t *)frame;
+    for (int k = -1; k < 8 && name[0] == '?'; k++) {
+      uint8_t *base = k < 0 ? f : (IsReadable(f + k * 8, 8) ? *(uint8_t **)(f + k * 8) : nullptr);
+      for (int i = 0; base && i < 512 && name[0] == '?' && IsReadable(base + i, 64); i++) {
+        int w = (base[i] == 'Y' && base[i + 1] == 0 && base[i + 2] == 'A' && base[i + 3] == 0) ? 2
+                : (base[i] == 'Y' && base[i + 1] == 'A' && base[i + 2] == '_') ? 1 : 0;
+        if (!w)
+          continue;
+        int n = 0;
+        for (int j = i; n < 63 && base[j] >= 0x20 && base[j] < 0x7F; j += w)
+          name[n++] = (char)base[j];
+        name[n] = 0;
+      }
+    }
+    Logf("eom probe: dispatch #%d %s +0x3B08 %02x -> %02x", seq, name, before, after);
+  }
+  return r;
+}
+
+static DWORD WINAPI ClientProbeStartup() {
+  LogOpen("dn_client_probe.log");
+  g_base = (uintptr_t)GetModuleHandleW(L"DreadGame-Win64-Shipping.exe");
+  if (!g_base || MH_Initialize() != MH_OK) {
+    Logf("eom probe: no module base / MH_Initialize failed");
+    return 0;
+  }
+  InstallSwitchedHook("client eom probe", RVA_INIT_EOM_STAGING, (void *)&HookInitEomStaging,
+                      (void **)&g_origInitEomStaging);
+  InstallSwitchedHook("client eom probe dispatch", RVA_MMOG_DISPATCH, (void *)&HookMmogDispatch,
+                      (void **)&g_origMmogDispatch);
+  CreateThread(nullptr, 0, ClientProbeFlagWatch, nullptr, 0, nullptr);
+  return 0;
+}
+
 static DWORD WINAPI Startup(LPVOID) {
-  if (!IsBattleServer())
+  if (!IsBattleServer()) {
+    char pb[4];
+    if (GetEnvironmentVariableA("DN_CLIENT_EOM_PROBE", pb, sizeof(pb)) == 1 && pb[0] == '1')
+      return ClientProbeStartup();
     return 0; // a client. Do nothing at all, and say nothing.
+  }
 
   LogOpen();
 
@@ -7212,6 +7672,11 @@ static DWORD WINAPI Startup(LPVOID) {
   } else
     Logf("onslaught points: OFF (dn_host_no_onslaught_points.txt / "
          "DN_HOST_NO_ONSLAUGHT_POINTS=1). Onslaught ends at 30 kills.");
+  InstallSwitchedHook("search manager null guard", 0x28CD20, (void *)&HookSearchNearest, (void **)&g_origSearchNearest);
+  InstallSwitchedHook("search manager teardown (AI with it)", 0x27B150, (void *)&HookSearchManagerTeardown,
+                      (void **)&g_origSearchManagerTeardown);
+  InstallSwitchedHook("player start fallback (ChoosePlayerStart)", 0x36C1A0 /* RVA_CHOOSE_PLAYER_START */,
+                      (void *)&HookChoosePlayerStart, (void **)&g_origChoosePlayerStart);
 
   if (!SwitchOn("DN_HOST_NO_ONS_GUN_ROWS", "dn_host_no_ons_gun_rows.txt"))
     InstallSwitchedHook("command ship gun rows (LoadWeaponDataTableRow)", RVA_WEAPON_GROUP_LOAD_ROW,
@@ -7234,6 +7699,12 @@ static DWORD WINAPI Startup(LPVOID) {
     InstallSwitchedHook("havoc unready (ServerUnReadyPlayerForNextWave exec thunk)", 0x774B40 /* RVA_HVC_UNREADY_THUNK */,
                         (void *)&HookHavocUnReadyThunk, (void **)&g_origHavocUnReadyThunk);
 
+  if (!SwitchOn("DN_HOST_NO_DEFAULT_SHIP", "dn_host_no_default_ship.txt"))
+    InstallSwitchedHook("default ship for a player who picked nothing (spawn loadout lookup)", RVA_SPAWN_LOADOUT_LOOKUP,
+                        (void *)&HookSpawnLoadoutLookup, (void **)&g_origSpawnLoadoutLookup);
+  if (!SwitchOn("DN_HOST_NO_DEFAULT_SHIP", "dn_host_no_default_ship.txt"))
+    InstallSwitchedHook("flagship for a player who picked nothing (ServerTeleportIntoLevel exec thunk)",
+                        RVA_TELEPORT_INTO_LEVEL_THUNK, (void *)&HookTeleportThunk, (void **)&g_origTeleportThunk);
   InstallSwitchedHook("match ready up (ServerPlayerReadyUpForMatch exec thunk, log only)", RVA_READY_UP_FOR_MATCH_THUNK,
                       (void *)&HookReadyUpForMatchThunk, (void **)&g_origReadyUpForMatchThunk);
   if (HostIsHavoc() && !SwitchOn("DN_HOST_NO_HAVOC_DIRECTOR", "dn_host_no_havoc_director.txt")) {
@@ -8331,7 +8802,6 @@ static HavocPlayer *HavocPlayerFor(void *pc, bool create) {
 
 // Calls a UFunction by name, letting `fill` write each parameter by its
 // property class and offset; logs the parameter list the first few times.
-typedef void (*tParmFill)(uint8_t *parms, const char *propClass, uint32_t off, void *ctx);
 static bool CallFilled(void *obj, const wchar_t *name, tParmFill fill, void *ctx) {
   if (!IsReadable(obj, sizeof(UObjectMin)))
     return false;
@@ -9096,6 +9566,64 @@ static int HumanTeam(uint8_t *gm) {
   return 1;
 }
 
+// YPlayerReplicationInfo_PvE.m_pveRewardsDataRep, the server build's half of
+// the PvE end-of-match screen. The client's UI-widgets stage (0x34B3F0,
+// UYEndOfMatchSetupPveUIWidgetsStage) completes only once PRI+0xA10 is set,
+// and the only writer is OnRep_PveRewardsData (native 0x768F20 -> body
+// 0x5BD550-0x5BD59F: +0xA10 = 1, then broadcasts PRI+0x960 with a copy of
+// the rep, 0x333240). Nothing in the client fills the rep (the OnRep has no
+// direct callers), so without this the screen sat black in SetupUIWidgets
+// (cycle 20261024-214814-pve-eomfix2; operator's S1E1 match 2026-10-24).
+// Layout from the property probe (cycle pve-eomprobe4): YPveRewardsDataRep
+// +0x00 FName m_pid, +0x08 FName m_activeEventID, +0x10 FName
+// m_activeSeasonID, +0x18 int m_numEventsGainedInSeason, +0x1C bool
+// m_gameModeGoalReached, +0x20 TArray<uint8> m_eventRewards, +0x30
+// TArray<uint8> m_seasonRewards.
+// Event id = the map's DN_Events_DT row (rows PVE_S1E1..PVE_S3E4 are named
+// after their maps PVE_SxEy_P), season = that row's m_season (PVE_Season1 /
+// PVE_Season3, i.e. the digit after "S").
+// GUESS: the reward arrays (EYPVERewardLevel bytes newly unlocked) and
+// m_numEventsGainedInSeason came from the backend's per-player PvE progress,
+// which does not exist here; left empty / 0.
+#define OFF_PRI_PVE_REWARDS_REP 0x9D0
+static void WritePveRewardsRep(uint8_t *gm, bool playersWon) {
+  const wchar_t *cmd = GetCommandLineW();
+  const wchar_t *m = cmd ? wcsstr(cmd, L"/PVE_S") : nullptr;
+  wchar_t ev[16] = {}, season[24] = {};
+  if (!m || !iswdigit(m[6]) || m[7] != L'E' || !iswdigit(m[8]))
+    return (void)Logf("pve rewards: no PVE_SxEy map on the command line; rep not written");
+  wcsncpy(ev, m + 1, 8);                       // PVE_SxEy
+  _snwprintf(season, 23, L"PVE_Season%c", m[6]);
+  uint8_t *pcs[64];
+  int n = CollectHumanPCs(gm, pcs, 64), wrote = 0;
+  for (int i = 0; i < n; ++i) {
+    uint8_t *pri = IsReadable(pcs[i] + OFF_PC_PLAYER_STATE, 8) ? *(uint8_t **)(pcs[i] + OFF_PC_PLAYER_STATE) : nullptr;
+    if (!pri || PropOffset((UObjectMin *)pri, "m_pveRewardsDataRep") != OFF_PRI_PVE_REWARDS_REP)
+      continue;
+    char pid[80];
+    wchar_t pidW[80] = {};
+    if (PlayerPIDForController(pcs[i], pid, sizeof(pid)))
+      MultiByteToWideChar(CP_UTF8, 0, pid, -1, pidW, 80);
+    uint8_t *r = pri + OFF_PRI_PVE_REWARDS_REP;
+    __try {
+      tFNameCtor ctor = (tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE);
+      if (pidW[0])
+        ctor((FNameMin *)(r + 0x00), pidW, 1 /* FNAME_Add */);
+      ctor((FNameMin *)(r + 0x08), ev, 1);
+      ctor((FNameMin *)(r + 0x10), season, 1);
+      r[0x1C] = playersWon ? 1 : 0;
+      ++wrote;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      Logf("pve rewards: EXCEPTION 0x%08X writing PRI %p", GetExceptionCode(), pri);
+      continue;
+    }
+    Logf("pve rewards: PRI %p rep -- pid %s event %ls season %ls goal %d; pushed %d", pri, pidW[0] ? pid : "(none)",
+         ev, season, playersWon, PushActorNow(pri));
+  }
+  if (!wrote)
+    Logf("pve rewards: no PvE PRI among %d human controllers", n);
+}
+
 // Ends a PvE episode: winner, the game state's native-called
 // PVEMatchEnded(playersWon) (GameState_Horde_BP / _Escort_BP multicast the
 // outro from it; its caller went with the server code), then EndMatch
@@ -9107,6 +9635,7 @@ static void PveEndMatch(uint8_t *gm, uint8_t *gs, bool playersWon, const char *w
               CallFilled(gs, L"PVEMatchEnded", playersWon ? FillBoolTrue : nullptr, nullptr);
   Logf("pve: %s -- players %s (team %d), PVEMatchEnded %d, ending the match", why, playersWon ? "win" : "lose",
        team, told);
+  WritePveRewardsRep(gm, playersWon);
   void **vt = *(void ***)gm;
   ((void(__fastcall *)(void *))vt[VT_GM_END_MATCH / 8])(gm);
 }
@@ -10763,6 +11292,12 @@ static void CommandEndMatch(uint8_t *gm, int team) {
   if (!gs || !IsReadable(gs + OFF_GS_WINNING_TEAM, 1))
     return (void)Logf("commands: endmatch -- no game state");
   g_ons.ended = true;
+  // PvE (Horde/Escort game states carry PVEMatchEnded): end it the way the
+  // director does, so the client gets the outro the PvE end-of-match screen
+  // waits on (a bare EndMatch left it in SetupUIWidgets, cycle
+  // 20261024-214131-pve-eomfix). Team 1 = the players' side here.
+  if (FindFnOnChain(gs, "PVEMatchEnded"))
+    return PveEndMatch(gm, gs, team == HumanTeam(gm), "endmatch command");
   gs[OFF_GS_WINNING_TEAM] = (uint8_t)team;
   Logf("commands: endmatch -- team %d wins, ending the match", team);
   void **vt = *(void ***)gm;
@@ -10964,6 +11499,13 @@ static void ProbeStructFields(UObjectMin *st, int depth) {
          f = *(UObjectMin **)((uint8_t *)f + 0x28), ++shown) {
       const char *fc = ClassNameOf(f);
       UObjectMin *sub = !strcmp(fc, "StructProperty") ? PropRef(f, "ScriptStruct") : nullptr;
+      if (!strcmp(fc, "ArrayProperty")) { // element struct, if the elements are structs
+        UObjectMin *in = PropRef(f, "*Property");
+        if (in && !strcmp(ClassNameOf(in), "StructProperty"))
+          sub = PropRef(in, "ScriptStruct");
+        else if (in)
+          Logf("props: %*s  (elements %s)", depth * 2, "", ClassNameOf(in));
+      }
       Logf("props: %*s+0x%03x size 0x%x %-18s %s%s%s", depth * 2, "", *(uint32_t *)((uint8_t *)f + 0x50),
            *(uint32_t *)((uint8_t *)f + 0x34), fc, NameText(f->Name), sub ? " : " : "", sub ? NameText(sub->Name) : "");
       if (sub && depth < 2)
@@ -10990,6 +11532,11 @@ static void ProbeProps(uint8_t *gm, const char *objName, const char *filter) {
     int n = CollectHumanPCs(gm, pcs, 64);
     for (int i = 0; i < n && !obj; ++i)
       obj = IsReadable(pcs[i] + OFF_CONTROLLER_PAWN, 8) ? *(UObjectMin **)(pcs[i] + OFF_CONTROLLER_PAWN) : nullptr;
+  } else if (!_stricmp(objName, "pri")) {
+    uint8_t *pcs[64];
+    int n = CollectHumanPCs(gm, pcs, 64);
+    for (int i = 0; i < n && !obj; ++i)
+      obj = IsReadable(pcs[i] + OFF_PC_PLAYER_STATE, 8) ? *(UObjectMin **)(pcs[i] + OFF_PC_PLAYER_STATE) : nullptr;
   } else if (!_strnicmp(objName, "pawn.", 5)) {
     uint8_t *pcs[64];
     int n = CollectHumanPCs(gm, pcs, 64);
@@ -12245,16 +12792,8 @@ static void CustomTick(uint8_t *gm) {
   if (g_cm.gm != gm)
     return;
   double now = NowMs();
-  if (g_ffaGm == gm && g_cm.ships && g_ffaN >= 60) { // FFA bots: drop the controllers that are gone
-    int k = 0;
-    for (int i = 0; i < g_ffaN; ++i)
-      if (ObjectLive(g_ffaSlot[i].pc))
-        g_ffaSlot[k++] = g_ffaSlot[i];
-    g_ffaN = k, g_ffaLead = -1;
-    for (int i = 0; i < g_ffaN; ++i)
-      if (g_ffaLead < 0 || g_ffaSlot[i].kills > g_ffaSlot[g_ffaLead].kills)
-        g_ffaLead = i;
-  }
+  if (g_ffaGm == gm && g_cm.ships && g_ffaN >= 60) // FFA bots: drop the controllers that are gone
+    FfaCompact();
   // Ships: sides (teams / secret), FFA bots, the drain.
   for (FeatsByPawn &e : g_featsByPawn) {
     if (!e.pawn || !ObjectLive(e.pawn) || FeatsCompOf(e.pawn) != e.comp)
@@ -12279,7 +12818,7 @@ static void CustomTick(uint8_t *gm) {
     if (g_cm.secret && !npc && IsReadable((uint8_t *)ctrl + OFF_PC_PLAYER_STATE, 8))
       CmBlankPlayerName(*(void **)((uint8_t *)ctrl + OFF_PC_PLAYER_STATE));
     if (g_ffaGm == gm && g_cm.ships && npc)
-      FfaTick((uint8_t *)ctrl); // humans are done by PlayersTick
+      FfaTick((uint8_t *)ctrl, false); // humans are done by PlayersTick
     else if (g_cm.secret || g_cm.teams >= 3) {
       CmSlot *s = CmSlotOf(ctrl);
       int entry = !s && npc ? CmBotEntry(gm, pawn) : -1;
@@ -12288,8 +12827,10 @@ static void CustomTick(uint8_t *gm) {
           s = &g_cm.slot[i], s->ctrl = ctrl; // the same bot, a new life
       if (!s && pawn[OFF_SHIP_TEAM] >= 1 && pawn[OFF_SHIP_TEAM] <= 2 && (s = CmSlotNew(ctrl, pawn[OFF_SHIP_TEAM])))
         s->entry = entry;
-      if (s && pawn[OFF_SHIP_TEAM] != s->team) {
-        uint8_t t = s->team;
+      // sides 4/5 would land on YT_IGNORE/YT_MAX -- give them plain bytes (12/13 read as 4/5 on the client)
+      uint8_t want = s ? (s->team == 4 ? 12 : s->team == 5 ? 13 : s->team) : 0;
+      if (s && pawn[OFF_SHIP_TEAM] != want) {
+        uint8_t t = want;
         __try {
           ((tPawnSetTeam)(g_base + RVA_PAWN_SET_TEAM))(pawn, &t);
           Logf("custom: %s %s entry %d side %d -> team %d", npc ? "bot" : "player", ClassNameOf((UObjectMin *)pawn), s->entry,
@@ -12892,7 +13433,10 @@ struct BossDef {
   // replicated m_isSpotted, the flag a player's ServerSetPawnToSpotted sets).
   int marker;
 };
-enum { MARKER_DEFAULT = -1, MARKER_NONE = -2, MARKER_SPOTTED = 100 };
+// MARKER_ATTACK: the player "attack this target" ping (EYUIShortCommands), sent
+// to every human -- the default outside Havoc (operator 2026-10-25: the boss
+// should carry a player marker, not the Command Ship slot; 2 still picks that).
+enum { MARKER_DEFAULT = -1, MARKER_NONE = -2, MARKER_SPOTTED = 100, MARKER_ATTACK = 101 };
 static BossDef g_bossDefs[32];
 static int g_bossDefNext;
 static const BossDef *g_spawnDef = nullptr; // CommandBossDef's, while it runs CommandSpawn
@@ -12999,10 +13543,103 @@ static void MarkerFind() {
         }
     }
 }
+// Player ping. ServerSendShortCommand (exec 0x773000: byte command, object
+// target; body PC vt+0xFB8 = 0x592990) spots an enemy target, then for each
+// teammate's PRI calls 0x5E5AF0(pc, command, sender pawn, target), the
+// ClientSendShortCommand send. Client side (exec 0x746690 ->
+// vt+0xED8 0x574320 -> HUD 0x55A9A0): a target found in the HUD's tracked-actor
+// map (keyed by its FName) gets +0x74 = command and +0x60 = now, so the mark
+// times out; with a null sender the chat line is skipped (verbose log only).
+// GUESS: AttackTarget = 1 (declaration order of the EYUISC_ strings in the
+// exe: PointAtTarget, AttackTarget, NeedBackup, FollowMe, NeedRepair, ReGroup,
+// DestroyTarget, Thanks); the mark's lifetime is unknown, so it is resent.
+#define SHORT_COMMAND_ATTACK_TARGET 1
+#define BOSS_PING_MS 4000
+static void *g_bossPing[16];
+static bool g_bossPingParmsLogged;
+static bool BossPingSend(uint8_t *gm, void *pawn, bool log) {
+  uint8_t *pcs[16];
+  int n = CollectHumanPCs(gm, pcs, 16), sent = 0;
+  struct Ctx { void *target; int obj; } c = {pawn, 0};
+  for (int i = 0; i < n; ++i) {
+    c.obj = 0;
+    auto fill = [](uint8_t *p, const char *pc, const char *pn, uint32_t off, void *ctx) {
+      Ctx *c = (Ctx *)ctx;
+      if (!strcmp(pc, "ByteProperty") || !strcmp(pc, "EnumProperty"))
+        p[off] = SHORT_COMMAND_ATTACK_TARGET;
+      else if (!strcmp(pc, "ObjectProperty") && c->obj++ == 1) // (sender, target): sender stays null
+        *(void **)(p + off) = c->target;
+      if (!g_bossPingParmsLogged)
+        Logf("boss marker:   ClientSendShortCommand parm %s %s +0x%x", pn, pc, off);
+    };
+    if (CallNamed(pcs[i], L"ClientSendShortCommand", fill, &c))
+      ++sent;
+    g_bossPingParmsLogged = true;
+  }
+  if (log)
+    Logf("boss marker: attack ping on %s(%p) to %d of %d players", ClassNameOf(pawn), pawn, sent, n);
+  return sent > 0 || n == 0;
+}
+static void BossPingTick(uint8_t *gm) {
+  static DWORD s_last;
+  DWORD now = GetTickCount();
+  if (now - s_last < BOSS_PING_MS)
+    return;
+  s_last = now;
+  for (int i = 0; i < 16; ++i)
+    if (g_bossPing[i]) {
+      if (!ObjectLive(g_bossPing[i]))
+        g_bossPing[i] = nullptr;
+      else
+        BossPingSend(gm, g_bossPing[i], false);
+    }
+}
 static void BossMarker(uint8_t *gm, void *pawn, int want) {
   __try {
     if (want == MARKER_NONE)
       return;
+    void *gsH = gm && IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(void **)(gm + OFF_GM_GAMESTATE) : nullptr;
+    if (want == MARKER_DEFAULT && gsH && PropOffset((UObjectMin *)gsH, "HordeManager") <= 0)
+      want = MARKER_ATTACK; // Havoc keeps AddBossMarker below
+    if (want == MARKER_ATTACK) {
+      int at = -1;
+      for (int i = 0; i < 16 && at < 0; ++i)
+        if (g_bossPing[i] == pawn)
+          at = i;
+      for (int i = 0; i < 16 && at < 0; ++i)
+        if (!g_bossPing[i] || !ObjectLive(g_bossPing[i]))
+          at = i;
+      if (at >= 0)
+        g_bossPing[at] = pawn;
+      BossPingSend(gm, pawn, true);
+      return;
+    }
+    // Onslaught: the Command Ship marker is GameState_Onslaught_BP_C's own.
+    // Reflection (live, 2026-10-24): AITargetH_Team1/_Team2 ObjectProperty
+    // +0x1E70/+0x1E78, AITargetH_T1/T2MarkerComponent +0x1E80/+0x1E88, and
+    // AITargetHMarkerTickCheckTime/Timer; MarkerSetup_AITargetH_Team1 reads
+    // GetFirstLocalPlayerController -> pawn -> GetTeam, skips on
+    // IsDedicatedServer and AddComponent's the marker, so every client builds
+    // the mark itself from the slot. The slot is CPF_Net without RepNotify
+    // (flags 0x1040010A25); the client's tick check picks it up. Verified on a
+    // remote headless client (cycle 20261024-181126-ons-boss-slot): fist
+    // "Primary Target" + distance + minimap mark on a team-3 boss in slot 2.
+    // GUESS: with creeps on, this displaces the real Command Ship's mark, and
+    // team-2 players may see the boss as their own Command Ship.
+    void *gsO = gm && IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(void **)(gm + OFF_GM_GAMESTATE) : nullptr;
+    if (want == 2 && gsO && ClassChainContains((UObjectMin *)gsO, "GameState_Onslaught_BP_C")) {
+      int t = IsReadable((uint8_t *)pawn + OFF_SHIP_TEAM, 1) ? ((uint8_t *)pawn)[OFF_SHIP_TEAM] : 0;
+      const char *slot = t == 1 ? "AITargetH_Team1" : "AITargetH_Team2";
+      int off = PropOffset((UObjectMin *)gsO, slot);
+      UObjectMin *pr = FindPropObj((UObjectMin *)gsO, slot);
+      if (off > 0) {
+        void *prev = *(void **)((uint8_t *)gsO + off);
+        *(void **)((uint8_t *)gsO + off) = pawn;
+        Logf("boss marker: %s +0x%x (flags %llx) %p -> %s(%p), boss team %d", slot, off,
+             pr ? (unsigned long long)*(uint64_t *)((uint8_t *)pr + 0x38) : 0ull, prev, ClassNameOf(pawn), pawn, t);
+        return;
+      }
+    }
     // PvP modes: MulticastShowHUDMarkerOnActor is on YGameState_PVE only, and
     // SetGenericMissionMarker "called" showed nothing (operator 2026-10-24:
     // boss still not marked). The default there is the spotted mark.
@@ -13037,10 +13674,36 @@ static void BossMarker(uint8_t *gm, void *pawn, int want) {
                            : nullptr;
       if (!ps || !IsReadable(ps, sizeof(UObjectMin)) || !ClassChainContains(ps, "ReplicationInfo"))
         return Logf("boss marker: %s has no replication info -- not marked", ClassNameOf(pawn));
-      if (SetBoolProp(ps, "m_isSpotted", true))
-        return Logf("boss marker: m_isSpotted set on %s", ClassNameOf(ps));
       uint8_t *pcs[8];
       int npc = CollectHumanPCs(gm, pcs, 8);
+      // Run the spot exactly as a player's does: ServerSetPawnToSpotted's
+      // body (exec 0x773460 -> PC_TER vtable 0x2FD2B90 slot 0xDF8 =
+      // 0x592BB0-0x592C3F, `this` unused): for a YNPCReplicationInfo it is
+      // 0x2E21F0 (+0x669 = state, then the OnRep body 0x2DC2C0, which on the
+      // authority calls world+0x58 vfunc 0x790(+0x3E0, state)). Headless
+      // Onslaught 2026-10-24 (cycle 174744-ons-boss-spot2): ran, boss in full
+      // view on the remote client, NO marker drawn.
+      // YNPCReplicationInfo's branch is 0x2E21F0: +0x669 = state, then the
+      // OnRep body 0x2DC2C0 (+0x94A is the YPlayerReplicationInfo branch,
+      // 0x5C2960). Which reflected properties sit there, replicated (CPF_Net
+      // 0x20)? Diagnostic, once per run.
+      static bool s_propsLogged;
+      for (UObjectMin *cls = s_propsLogged ? nullptr : ps->Class; cls && IsReadable(cls, 0x40);
+           cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER))
+        for (UObjectMin *f = *(UObjectMin **)((uint8_t *)cls + 0x38); f && IsReadable(f, 0x58); f = *(UObjectMin **)((uint8_t *)f + 0x28)) {
+          uint32_t off = *(uint32_t *)((uint8_t *)f + 0x50);
+          if (strcmp(ClassNameOf(f), "Function") && ((off >= 0x660 && off < 0x670) || (off >= 0x540 && off < 0x558) || (off >= 0x3E0 && off < 0x408)))
+            Logf("boss marker:   %s.%s %s +0x%x flags %016llx", NameText(cls->Name), NameText(f->Name), ClassNameOf(f), off,
+                 (unsigned long long)*(uint64_t *)((uint8_t *)f + 0x38));
+        }
+      s_propsLogged = true;
+      __try {
+        ((void(__fastcall *)(void *, void *, uint8_t))(g_base + 0x592BB0))(npc ? pcs[0] : nullptr, ps, 1);
+        Logf("boss marker: +0x669 now %d", ((uint8_t *)ps)[0x669]);
+        return Logf("boss marker: spot body 0x592BB0 run on %s of %s", ClassNameOf(ps), ClassNameOf(pawn));
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Logf("boss marker: spot body 0x592BB0 faulted; falling back to ProcessEvent");
+      }
       UObjectMin *fn = npc ? FindFnOnChain(pcs[0], "ServerSetPawnToSpotted") : nullptr;
       if (!fn)
         return Logf("boss marker: ServerSetPawnToSpotted %s", npc ? "not found" : "-- no human controller");
@@ -13072,6 +13735,29 @@ static void BossMarker(uint8_t *gm, void *pawn, int want) {
     if (!g_marker.done)
       MarkerFind();
     uint8_t *gs = gm && IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+    // Havoc: the game's own boss marker is PVE_HordeManager_BP_C.AddBossMarker,
+    // flags 0x0C0040C0 (NetMulticast|NetReliable|Net, BP), parms 8 = one object
+    // (reflect dump 2026-10-24). A multicast run on the authority reaches every
+    // client, unlike the local-only scene marker 0x25D220. The object is
+    // the boss pawn: the parameter is BossPawn (ObjectProperty +0x0).
+    if (want == MARKER_DEFAULT && gs && IsReadable(gs + OFF_HVC_GS_HORDE_MANAGER, 8)) {
+      int hmOff = PropOffset((UObjectMin *)gs, "HordeManager");
+      void *hm = *(void **)(gs + (hmOff > 0 ? hmOff : OFF_HVC_GS_HORDE_MANAGER));
+      if (hm && IsReadable(hm, sizeof(UObjectMin)) && ClassChainContains((UObjectMin *)hm, "PVE_HordeManager_BP_C")) {
+        auto fillBoss = [](uint8_t *p, const char *pc, const char *pn, uint32_t off, void *ctx) {
+          Logf("boss marker:   AddBossMarker parm %s %s +0x%x", pn, pc, off);
+          if (!strcmp(pc, "ObjectProperty"))
+            *(void **)(p + off) = ctx;
+        };
+        bool ok = CallNamed(hm, L"AddBossMarker", fillBoss, pawn);
+        Logf("boss marker: AddBossMarker on %s(%p) for %s -> %s", ClassNameOf(hm), hm, ClassNameOf(pawn), ok ? "called" : "failed");
+        // Verified on a remote headless client (cycle 20261024-172351-boss-here):
+        // the boss shows the fist "Primary Target" marker with its distance. The
+        // HostileTarget multicast after it relabels it "Hostile Target", so stop.
+        if (ok)
+          return;
+      }
+    }
     int64_t type = want > 0 && want < 11 ? want : g_marker.hostile;
     struct Ctx { void *pawn; int64_t type; bool text, obj; } c = {pawn, type, false, false};
     auto fill = [](uint8_t *p, const char *pc, const char *, uint32_t off, void *ctx) {
@@ -13933,6 +14619,50 @@ static int FindPlayerStarts(void **out, int max) {
   }
   return n;
 }
+// Respawn with no free player start (match 2026-10-25 10:41, TDM "teams 4" on
+// PVE_S3E1): the battle log said "No Available PlayerStart Found!" every
+// second and the player sat on "press space". The picker is a game-mode
+// virtual (entry 0x36C1A0-0x36C1C0, body chunk 0x36C1C0-0x36C9FA; vtable slot
+// 0x5F0 in the game-mode tables): it skips starts whose team (+0x3F0) is 4 or
+// neither 0 nor the controller's (+0xC30, or gm+0x748 when set), starts the
+// start's own vt+0x5F0 calls blocked, and those the game mode's vt+0x8B8
+// refuses; none left -> logs, xor esi,esi, returns null. PvE maps carry few
+// starts, so bots parked on them leave a respawning player none. Fallback: a
+// random start of the player's team (0 or the same), else any start.
+// GUESS: spawning on an occupied start is resolved by the spawn itself.
+#define RVA_CHOOSE_PLAYER_START 0x36C1A0
+#define OFF_PLAYER_START_TEAM 0x3F0
+tChoosePlayerStart g_origChoosePlayerStart = nullptr;
+static void *__fastcall HookChoosePlayerStart(void *gm, void *ctrl) {
+  void *r = g_origChoosePlayerStart(gm, ctrl);
+  if (r || !ctrl)
+    return r;
+  __try {
+    static void *starts[64];
+    int ns = FindPlayerStarts(starts, 64);
+    if (!ns)
+      return r;
+    int team = IsReadable((uint8_t *)ctrl + OFF_PC_TEAM, 1) ? ((uint8_t *)ctrl)[OFF_PC_TEAM] : 0;
+    void *mine[64];
+    int nm = 0;
+    for (int i = 0; i < ns; ++i) {
+      uint8_t *st = (uint8_t *)starts[i];
+      int t = IsReadable(st + OFF_PLAYER_START_TEAM, 1) ? st[OFF_PLAYER_START_TEAM] : -1;
+      if (t == 0 || t == team)
+        mine[nm++] = st;
+    }
+    r = nm ? mine[rand() % nm] : starts[rand() % ns];
+    static double s_lastLog = 0;
+    if (NowMs() - s_lastLog > 5000) {
+      s_lastLog = NowMs();
+      Logf("player start: none free for controller %p (team %d) -- %s start %p of %d (%d of its team)", ctrl, team,
+           nm ? "team" : "any", r, ns, nm);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return r;
+}
+
 // nearest: dn_host_spawn_near.txt, a test switch -- does a player-start AI ship
 // fight once a target is in range? (spawn-fight 2026-10-20: at the farthest
 // start, 4.3-6.8 km out, it never moved or fired in TDM/PodTDM/TER/Havoc.)
@@ -17485,6 +18215,116 @@ static void PreloadTick(uint8_t *gm) {
   if (what)
     Logf("preload: %s (%.0f ms)", what, NowMs() - t0);
 }
+// /dummy <team> [ShipId] [uu] (2026-10-24, the FFA colour sweep): one ship of
+// that team, with no controller (a spawned pawn gets none unless the caller
+// spawns one -- SpawnOnslaughtAIShip does it by hand), parked [uu] (default
+// 4000) ahead of the first human ship's nose and facing it, so a headless
+// client can screenshot its nameplate/damage colour and try a missile lock.
+// Each call replaces the previous dummy; /dummy off only removes it.
+// Held (2026-10-24, sweep on Onslaught) at its spot (K2_TeleportTo every 250 ms, /host dummyhold 0 stops it) since
+// an uncontrolled pawn still drifts after spawning.
+static struct { void *pawn; void *cls; float loc[3], yaw; } g_dummy = {};
+static bool g_dummyHold = true;
+static void DummyHoldTick() {
+  static DWORD s_at = 0;
+  if (!g_dummyHold || !g_dummy.pawn || GetTickCount() - s_at < 250)
+    return;
+  s_at = GetTickCount();
+  if (!IsReadable(g_dummy.pawn, sizeof(UObjectMin)) || ((UObjectMin *)g_dummy.pawn)->Class != g_dummy.cls)
+    return (void)(g_dummy = {});
+  TeleportActor(g_dummy.pawn, g_dummy.loc, g_dummy.yaw);
+}
+static void CommandDummy(uint8_t *gm, const char *teamArg, const char *ship, int dist) {
+  if (g_dummy.pawn && IsReadable(g_dummy.pawn, sizeof(UObjectMin)) && ((UObjectMin *)g_dummy.pawn)->Class == g_dummy.cls)
+    CallFilled(g_dummy.pawn, L"K2_DestroyActor", nullptr, nullptr);
+  g_dummy = {};
+  if (!_stricmp(teamArg, "off"))
+    return Logf("dummy: removed");
+  int team = std::min(255, std::max(0, atoi(teamArg)));
+  if (!ship[0])
+    ship = "AssaultHeavyT4";
+  void *cls = ShipIdPawnClass(ship, false);
+  if (!cls)
+    return Logf("dummy: no pawn class for %s", ship);
+  uint8_t *pcs[64];
+  int n = CollectHumanPCs(gm, pcs, 64);
+  void *human = nullptr;
+  uint8_t *hpc = nullptr;
+  for (int i = 0; i < n && !human; ++i)
+    if ((human = IsReadable(pcs[i] + OFF_CONTROLLER_PAWN, 8) ? *(void **)(pcs[i] + OFF_CONTROLLER_PAWN) : nullptr))
+      hpc = pcs[i];
+  float at[3], rot[3];
+  if (!human || !ActorLocation(human, at) || !ActorRotation(human, rot))
+    return Logf("dummy: no human ship to park in front of");
+  float nose[2] = {rot[0], rot[1]};
+  int cr = PropOffset((UObjectMin *)hpc, "ControlRotation");
+  // ControlRotation read pitch 0 / yaw -90 on a remote player's controller
+  // (cycle 20261024-190133-ffa-ons, nose yaw 65): never updated for a remote
+  // ship, so the aim is the nose, which the chase camera follows; logged only.
+  const float *crv = cr > 0 && IsReadable(hpc + cr, 12) ? (const float *)(hpc + cr) : nullptr;
+  const float d2r = 3.14159265f / 180.f, uu = (float)(dist > 0 ? dist : 4000);
+  float loc[3] = {at[0] + uu * cosf(rot[0] * d2r) * cosf(rot[1] * d2r), at[1] + uu * cosf(rot[0] * d2r) * sinf(rot[1] * d2r),
+                  at[2] + uu * sinf(rot[0] * d2r)};
+  float face[3] = {-rot[0], rot[1] + 180.f, 0};
+  void *world = ((tGetWorld)(*(void ***)gm)[VT_ACTOR_GET_WORLD / 8])(gm);
+  if (!world)
+    return Logf("dummy: no world");
+  alignas(16) uint8_t params[0x80] = {};
+  ((tSpawnParamsCtor)(g_base + RVA_SPAWN_PARAMS_CTOR))(params);
+  params[0x28] = SPAWN_ADJUST_BUT_ALWAYS;
+  void *pawn = nullptr;
+  __try {
+    pawn = ((tSpawnActor)(g_base + RVA_WORLD_SPAWN_ACTOR))(world, cls, loc, face, params);
+    if (pawn) {
+      uint8_t t = (uint8_t)team;
+      ((tPawnSetTeam)(g_base + RVA_PAWN_SET_TEAM))(pawn, &t);
+      // Without a controller the client drew a hitbox (red reticle) and no ship
+      // (cycle 20261024-190133-ffa-ons, 6000 uu ahead), the half-made actor of
+      // SpawnOnslaughtAIShip's comment. Possessed as it does, behaviour tree off,
+      // plus the NPC player state for the nameplate.
+      void *ctrlCls = *(void **)((uint8_t *)pawn + OFF_PAWN_AI_CONTROLLER_CLASS);
+      if (!ctrlCls) { // the AI pawn Blueprints name none (19:23 same cycle); /spawn's lookup
+        char cw[32] = {};
+        static const char *cs[] = {"Assault", "Dreadnought", "Scout", "Sniper", "Support"}, *ws[] = {"Heavy", "Medium", "Light"};
+        for (const char *c : cs)
+          for (const char *w : ws)
+            if (!cw[0] && !strncmp(ship, c, strlen(c)) && !strncmp(ship + strlen(c), w, strlen(w)))
+              snprintf(cw, sizeof cw, "%s%s", c, w);
+        ctrlCls = cw[0] ? ShipIdControllerClass(cw) : nullptr;
+      }
+      void *ctrl = *(void **)((uint8_t *)pawn + OFF_PAWN_CONTROLLER);
+      if (!ctrl && ctrlCls) {
+        alignas(16) uint8_t cparams[0x80] = {};
+        ((tSpawnParamsCtor)(g_base + RVA_SPAWN_PARAMS_CTOR))(cparams);
+        ctrl = ((tSpawnActor)(g_base + RVA_WORLD_SPAWN_ACTOR))(world, ctrlCls, loc, face, cparams);
+      }
+      if (ctrl) {
+        if (ClassIsA(((UObjectMin *)ctrl)->Class, *(void **)(g_base + OFF_CLASSPTR_NPC_AI_CONTROLLER))) {
+          ((uint8_t *)ctrl)[OFF_NPC_BEHAVIOUR_STATE] = YCSB_NONE;
+          ((uint8_t *)ctrl)[OFF_NPC_RUN_BEHAVIOUR_TREE] = 0;
+        }
+        void **cvt = *(void ***)ctrl;
+        ((tPossess)cvt[VT_CONTROLLER_POSSESS / 8])(ctrl, pawn);
+        ((tPossess)cvt[VT_CONTROLLER_POSSESS2 / 8])(ctrl, pawn);
+        static wchar_t s_name[32];
+        swprintf(s_name, 32, L"Team %d", team);
+        GiveNpcPlayerState(world, pawn, ctrl, s_name);
+      }
+      ((tActorVoidFn)(*(void ***)pawn)[0x580 / 8])(pawn); // ForceNetUpdate
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return Logf("dummy: spawn faulted");
+  }
+  if (!pawn)
+    return Logf("dummy: SpawnActor %s refused at %.0f %.0f %.0f", ship, loc[0], loc[1], loc[2]);
+  g_dummy = {pawn, ((UObjectMin *)pawn)->Class, {loc[0], loc[1], loc[2]}, face[1]};
+  Logf("dummy: team %d %s %p at %.0f %.0f %.0f (%.0f uu ahead of %p at %.0f %.0f %.0f, nose pitch %.1f yaw %.1f, "
+       "ControlRotation %.1f %.1f), controller %p",
+       team, ship, pawn, loc[0], loc[1], loc[2], uu, human, at[0], at[1], at[2], nose[0], nose[1], crv ? crv[0] : 0.f,
+       crv ? crv[1] : 0.f,
+       *(void **)((uint8_t *)pawn + OFF_PAWN_CONTROLLER));
+}
+
 static void CommandsTick(uint8_t *gm) {
   ZONE("PreloadTick", PreloadTick(gm));
   ZONE("NpcFireAbilitiesTick", NpcFireAbilitiesTick());
@@ -17495,6 +18335,7 @@ static void CommandsTick(uint8_t *gm) {
   ZONE("SkyMeteorTick", SkyMeteorTick(gm));
   ZONE("SquadWatchTick", SquadWatchTick());
   ZONE("HeraldTick", HeraldTick());
+  ZONE("DummyHoldTick", DummyHoldTick());
   // Commands are polled every other tick; while a batch still has commands
   // waiting (s_more), every tick, one spawning command per tick: a /wave ran
   // bossdef+squad+swarm+hunters in one tick, 761 ms (2026-10-23).
@@ -17650,6 +18491,35 @@ static void CommandsTick(uint8_t *gm) {
       CommandHunters(gm, 1, 0, true, atoi(arg));
     else if (!strcmp(cmd, "bossdef") && atoi(arg) > 0)
       CommandBossDef(gm, atoi(arg), std::min(10, std::max(1, atoi(arg2))));
+    else if (!strcmp(cmd, "dummy"))
+      CommandDummy(gm, arg, arg2, atoi(arg3));
+    else if (!strcmp(cmd, "dummyhold"))
+      g_dummyHold = atoi(arg) != 0, Logf("dummy: hold %d", (int)g_dummyHold);
+    else if (!strcmp(cmd, "bosshere")) { // test: the last /boss parked in front of the first human, marked again
+      void *b = g_lastBoss.pawn;
+      uint8_t *pcs[64];
+      int n = CollectHumanPCs(gm, pcs, 64);
+      void *human = nullptr;
+      for (int i = 0; i < n && !human; ++i)
+        human = IsReadable(pcs[i] + OFF_CONTROLLER_PAWN, 8) ? *(void **)(pcs[i] + OFF_CONTROLLER_PAWN) : nullptr;
+      float at[3], rot[3];
+      if (!b || !ObjectLive((UObjectMin *)b) || !human || !ActorLocation(human, at) || !ActorRotation(human, rot))
+        Logf("boss marker: bosshere -- no live boss or human");
+      else {
+        const float d2r = 3.14159265f / 180.f, uu = (float)(atoi(arg) > 0 ? atoi(arg) : 4000);
+        float loc[3] = {at[0] + uu * cosf(rot[0] * d2r) * cosf(rot[1] * d2r), at[1] + uu * cosf(rot[0] * d2r) * sinf(rot[1] * d2r),
+                        at[2] + uu * sinf(rot[0] * d2r) + (float)atoi(arg3)}; // arg3: lift, uu (clear of walls)
+        bool tp = TeleportActor(b, loc, rot[1] + 180.f);
+        Logf("boss marker: bosshere %s -> %.0f %.0f %.0f teleport %d", ClassNameOf(b), loc[0], loc[1], loc[2], tp);
+        if (atoi(arg2)) // 0 / absent: park only
+          BossMarker(gm, b, atoi(arg2));
+      }
+    } else if (!strcmp(cmd, "dummymark")) { // test: the boss marker on the /dummy ship (in view, unlike a /boss)
+      if (g_dummy.pawn && IsReadable(g_dummy.pawn, sizeof(UObjectMin)) && ((UObjectMin *)g_dummy.pawn)->Class == g_dummy.cls)
+        BossMarker(gm, g_dummy.pawn, arg[0] ? atoi(arg) : MARKER_DEFAULT);
+      else
+        Logf("boss marker: no /dummy to mark");
+    }
     else if (!strcmp(cmd, "spawn"))
       CommandSpawn(gm, arg, atoi(arg2) < 1 ? 1 : atoi(arg2) > 8 ? 8 : atoi(arg2), std::min(10, std::max(1, atoi(arg3))));
     else if (!strcmp(cmd, "enemy")) {

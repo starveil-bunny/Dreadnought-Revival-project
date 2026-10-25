@@ -218,7 +218,7 @@ func makeGatewayHandler(log *logrus.Logger, secret []byte, fn func(w http.Respon
 			// Say WHICH failure it is. An expired launcher token and a wrong
 			// JWT_SECRET both surfaced as a bare "invalid token", and the client
 			// only reports "Could not create session. Error Code: 401" -- so a
-			// token that simply aged out of its 24h window looked identical to a
+			// token that simply aged out (auth-server AUTH_TOKEN_TTL, 24h before 2026-10-24) looked identical to a
 			// broken server. Costing an operator that diagnosis is not worth the
 			// two lines it takes to distinguish them; neither message reveals
 			// anything a caller holding the token does not already know.

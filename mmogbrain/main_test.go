@@ -2292,26 +2292,11 @@ func TestPlayerGetPayloadUsesSquadObjectShape(t *testing.T) {
 	if bytes.Contains(shipXps, appendFieldMarker("ShipID", 0x56)) {
 		t.Fatal("ShipXps should not fabricate ship XP entries")
 	}
-	customRoom := extractNamedMmogObject(t, payload, "CustomRoom")
-	for _, field := range []struct {
-		name  string
-		value string
-	}{
-		{name: "roomId", value: ""},
-		{name: "hostPid", value: ""},
-		{name: "gameMode", value: ""},
-		{name: "mapName", value: ""},
-		{name: "chatRoomId", value: ""},
-	} {
-		if !bytes.Contains(customRoom, protocol.AppendStringField(nil, field.name, field.value)) {
-			t.Fatalf("CustomRoom missing %s=%q", field.name, field.value)
-		}
-	}
-	for _, field := range []string{"teams", "settings", "supportedModes", "supportedMaps"} {
-		container := extractNamedMmogArray(t, customRoom, field)
-		if bytes.Contains(container, appendFieldMarker("PID", 0x09)) {
-			t.Fatalf("CustomRoom.%s should not fabricate entries", field)
-		}
+	// No CustomRoom object at all: its presence alone sets the client's
+	// in-room flag (YMmogbrain +0x3B08, 0x2A28DCC), which sends PvE end of
+	// match to the null custom-room EOM class (black screen, 2026-10-24).
+	if bytes.Contains(payload, appendFieldMarker("CustomRoom", 0x0c)) || bytes.Contains(payload, []byte("CustomRoom")) {
+		t.Fatal("YA_PlayerGet must not carry a CustomRoom object")
 	}
 }
 

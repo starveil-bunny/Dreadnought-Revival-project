@@ -100,6 +100,7 @@ func init() {
 			f, err := strconv.ParseFloat(a, 64)
 			return err == nil && f >= 0.2 && f <= 1
 		})},
+		{name: "dummy", args: "<team 0-255>|off [ShipId] [uu]", help: "test: one uncontrolled ship of that team in front of the first player (replaces the last one)", admin: true, run: cmdDummy},
 		{name: "kill", args: "me|all|boss|<player>", help: "destroy ships (players respawn)", admin: true, run: cmdKill},
 		{name: "meteor", args: "[1-40] [distance] [team]", help: "Onslaught: a Comet per player ship fires n Warp Missile nukes from [distance] uu (default 1, 80000); elsewhere torpedoes rain from overhead (default 12)", admin: true, run: cmdMeteor},
 		{name: "swarm", args: "[1-60] [team]", help: "a swarm of Onslaught fighters (default and cap set in the admin Waves tab) near a random player, team 3 (purple, fights everyone) unless given", admin: true, run: cmdSwarm("swarm", 60)},
@@ -352,12 +353,18 @@ func cmdXP(c *chatCommandCtx) string {
 var chatMatchModes = map[string]string{
 	"havoc": "Havoc", "tdm": "TDM", "pod": "PodTDM", "turbo": "TurboTDM", "turbotdm": "TurboTDM",
 	"onslaught": "Onslaught", "conquest": "TER", "te": "TE", "pve": "PVE", "pg": "BC", "bc": "BC",
+	"podtdm": "PodTDM", "ter": "TER", "tm": "TM",
+}
+
+func chatMatchUsage() string {
+	modes := append([]string{"havoc", "tdm", "pod", "turbo", "onslaught", "conquest", "te", "pve", "pg"}, customModeIDs()...)
+	return "Usage: /match " + strings.Join(modes, " | ") + " [map] | pve <" + strings.Join(pveEventIDs(), " | ") + "> | off"
 }
 
 func cmdMatch(c *chatCommandCtx) string {
 	f := strings.TrimSpace(os.Getenv("DN_MATCH_PIN_FILE"))
 	if len(c.args) == 0 {
-		return "Usage: /match <havoc|tdm|pod|turbo|onslaught|conquest|te|pve|pg|" + strings.Join(customModeIDs(), "|") + "> [map] | off"
+		return chatMatchUsage()
 	}
 	if strings.EqualFold(c.args[0], "off") {
 		if f != "" {
@@ -365,13 +372,18 @@ func cmdMatch(c *chatCommandCtx) string {
 		}
 		return "Match pin cleared."
 	}
+	// "/match s1e1": an episode name alone means PvE on it (it used to pass
+	// through as an unknown mode and the match silently ran TDM, 2026-10-24).
+	if _, isEpisode := pveEventByID(c.args[0]); isEpisode && len(c.args) == 1 {
+		c.args = []string{"pve", c.args[0]}
+	}
 	custom, isCustom := customModeByID(c.args[0])
 	mode, ok := chatMatchModes[strings.ToLower(c.args[0])]
 	if isCustom {
 		mode, ok = custom.Base, true
 	}
 	if !ok {
-		mode = c.args[0]
+		return "Unknown mode " + c.args[0] + ". " + chatMatchUsage()
 	}
 	if f == "" {
 		f = "match-pin.json"
@@ -380,6 +392,17 @@ func cmdMatch(c *chatCommandCtx) string {
 	mapName := ""
 	if len(c.args) > 1 {
 		mapName = c.args[1]
+	}
+	if mode == matchmaker.PvEGameMode {
+		if mapName == "" {
+			if _, ok := activePvEEvent(); !ok {
+				return "No PvE event is running; name one: /match pve <" + strings.Join(pveEventIDs(), "|") + ">"
+			}
+		} else if ev, ok := pveEventByID(mapName); ok {
+			mapName = ev.ID
+		} else {
+			return "Unknown PvE episode " + mapName + "; one of " + strings.Join(pveEventIDs(), ", ") + "."
+		}
 	}
 	data, _ := json.Marshal(map[string]string{"mode": mode, "map": mapName, "custom": custom.ID})
 	if err := os.WriteFile(f, data, 0o644); err != nil { //nolint:gosec // local pin file
@@ -1071,6 +1094,18 @@ func cmdHost(c *chatCommandCtx) string {
 
 // cmdKill: /kill me|all|<player> destroys ships through the game's own
 // ServerKillMe debug RPC; the player respawns as after any death.
+func cmdDummy(c *chatCommandCtx) string {
+	if len(c.args) < 1 || len(c.args) > 3 {
+		return "Usage: /dummy <team 0-255>|off [ShipId] [uu]"
+	}
+	target, where, ok := matchCommandTarget(c)
+	if !ok {
+		return noLiveBattleReply("/dummy " + c.args[0])
+	}
+	queueHostCommand(target, "dummy "+strings.Join(c.args, " "))
+	return "Dummy " + c.args[0] + " queued in " + where + "."
+}
+
 func cmdKill(c *chatCommandCtx) string {
 	if len(c.args) != 1 {
 		return "Usage: /kill me|all|boss|<player>"

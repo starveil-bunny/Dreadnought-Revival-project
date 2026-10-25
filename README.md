@@ -367,6 +367,7 @@ Set in `run/secrets.env` unless noted.
 | Variable | Services | Default | Description |
 |---|---|---|---|
 | `JWT_SECRET` | auth, legacy, mmog | — | **Required.** HMAC key for JWTs; must be identical across services |
+| `AUTH_TOKEN_TTL` | auth | `720h` | Lifetime of a sign-in token (Go duration). The game reads it from the registry at every start, so direct launches keep working this long after the last launcher sign-in |
 | `ADMIN_KEY` | all | — | Key for `/admin` endpoints and `admin-cli` |
 | `INTERNAL_API_KEY` | mmog, game-mgr, master, legacy | `ADMIN_KEY` | Service-to-service authentication |
 | `DB_PATH` | auth, legacy, mmog, master | pinned by the start script | SQLite file path |

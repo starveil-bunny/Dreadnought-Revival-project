@@ -351,8 +351,21 @@ func activePvEEvent() (matchmaker.PvEEvent, bool) {
 	if active < 0 {
 		return matchmaker.PvEEvent{}, false
 	}
-	id := events[active].id
-	row := loadPVETables().events[id]
+	return pveEventByID(events[active].id)
+}
+
+// pveEventByID is any episode of DN_Events_DT, running or not -- "/match pve
+// S1E4" plays it whatever the schedule says. Accepts the row name with or
+// without the PVE_ prefix, any case.
+func pveEventByID(id string) (matchmaker.PvEEvent, bool) {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	if !strings.HasPrefix(id, "PVE_") {
+		id = "PVE_" + id
+	}
+	row, found := loadPVETables().events[id]
+	if !found {
+		return matchmaker.PvEEvent{}, false
+	}
 	mode, ok := pveHostMode(row.GameMode)
 	if !ok || row.Map == "" {
 		return matchmaker.PvEEvent{}, false
@@ -367,7 +380,22 @@ func activePvEEvent() (matchmaker.PvEEvent, bool) {
 	return matchmaker.PvEEvent{ID: id, MapPath: path, HostMode: mode}, true
 }
 
-func init() { matchmaker.PvEEventSource = activePvEEvent }
+// pveEventIDs lists the playable episodes (short form, S1E1 ...), sorted.
+func pveEventIDs() []string {
+	var out []string
+	for id := range loadPVETables().events {
+		if _, ok := pveEventByID(id); ok {
+			out = append(out, strings.TrimPrefix(id, "PVE_"))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func init() {
+	matchmaker.PvEEventSource = activePvEEvent
+	matchmaker.PvEEventByID = pveEventByID
+}
 
 const pveDateFormat = "2006.01.02-15.04.05"
 

@@ -122,11 +122,19 @@ def cmd_start(a):
     cycle.ensure_display()
     if not cycle.ensure_token(a.account, force=a.remint):
         sys.exit(3)
+    if a.fresh:
+        cycle.ensure_fresh_match()
+    cycle.sweep_switches("startup")
+    made = cycle.set_switches(list(a.switch or []) + (list(cycle.NO_NPC_SWITCHES) if a.no_npcs else []),
+                              a.switch_off or [])
     d = cycle.begin(a.label, a.expect, a.reject, a.note, mode="live",
                     extra={"account": a.account, "onboarding": a.onboarding})
+    if a.pin:
+        cycle.write_pin(a.pin, d)
     log = open(d / "client.log", "wb")
     proc = cycle.launch_client(a, d, log)
-    st = {"cycle": d.name, "dir": d, "t0": time.time(), "pid": proc.pid, "shot_n": 0}
+    st = {"cycle": d.name, "dir": d, "t0": time.time(), "pid": proc.pid, "shot_n": 0,
+          "switches": [str(f) for f in made]}
     save(st)
     print(f"live: {d.name} client pid {proc.pid}")
     disp = xdrive.Display(cycle.DISPLAY)
@@ -165,6 +173,9 @@ def act(a, st, argv, label):
 def cmd_stop(_a):
     st = load()
     cycle.stop_client(None)
+    for f in st.get("switches", []):
+        cycle.undo_switch(Path(f))
+    cycle.PIN_FILE.unlink(missing_ok=True)
     cycle.contact_sheet(st["dir"])
     acts = st["dir"] / "actions.txt"
     if acts.exists():
@@ -188,6 +199,11 @@ def main():
     s.add_argument("--expect", action="append", default=[], metavar="RX")
     s.add_argument("--reject", action="append", default=[], metavar="RX")
     s.add_argument("--note", default="")
+    s.add_argument("--fresh", action="store_true", help="clear a stale battle first (dn headless --fresh)")
+    s.add_argument("--no-npcs", action="store_true", help="no Onslaught creeps, no fill bots (undone at stop)")
+    s.add_argument("--switch", action="append", metavar="NAME")
+    s.add_argument("--switch-off", action="append", metavar="NAME")
+    s.add_argument("--pin", help="next match MODE[:MAP] (dn headless --pin)")
     s.add_argument("--account", default="claude-headless-01")
     s.add_argument("--remint", action="store_true")
     s.add_argument("--onboarding", action="store_true")
@@ -196,7 +212,7 @@ def main():
     s.add_argument("--drop-arg", action="append", default=[])
     s.add_argument("--raw-wine", action="store_true")
     s.add_argument("--dxvk", action="store_true")
-    for name, nargs in (("click", "+"), ("key", "+"), ("move", "+"), ("hold", "+"), ("down", "+"), ("up", "+"), ("scroll", "+")):
+    for name, nargs in (("click", "+"), ("key", "+"), ("move", "+"), ("hold", "+"), ("down", "+"), ("up", "+"), ("scroll", "+"), ("fire", "+")):
         p = sub.add_parser(name)
         p.add_argument("args", nargs=nargs)
         p.add_argument("--no-shot", action="store_true")
@@ -207,6 +223,7 @@ def main():
     w = sub.add_parser("wait")
     w.add_argument("rx")
     w.add_argument("secs", nargs="?", type=float, default=120)
+    w.add_argument("--new", action="store_true", help="only lines written after this call")
     se = sub.add_parser("settle")
     se.add_argument("secs", nargs="?", type=float, default=60)
     lg = sub.add_parser("log")
@@ -221,16 +238,24 @@ def main():
         return cmd_stop(a)
     st = load()
     try:
-        if a.cmd in ("click", "key", "move", "hold", "down", "up", "scroll"):
+        if a.cmd in ("click", "key", "move", "hold", "down", "up", "scroll", "fire"):
             act(a, st, [a.cmd] + a.args, f"{a.cmd}-{'-'.join(a.args)}")
         elif a.cmd == "shot":
             record(st, f"shot {a.name}")
             report(st, snap(st, a.name))
         elif a.cmd == "wait":
             rx, end_t = re.compile(a.rx), time.time() + a.secs
-            hit = []
+            hit, log = [], st["dir"] / "client.log"
+            # --new: only lines written after the call (a match-to-match loop
+            # otherwise hits the previous match's line at once)
+            off = log.stat().st_size if a.new and log.exists() else 0
             while time.time() < end_t and alive():
-                hit = cycle.grep_lines(st["dir"] / "client.log", rx, limit=1)
+                if a.new:
+                    with open(log, "rb") as f:
+                        f.seek(off)
+                        hit = [l for l in f.read().decode("utf-8", "replace").splitlines() if rx.search(l)][:1]
+                else:
+                    hit = cycle.grep_lines(log, rx, limit=1)
                 if hit:
                     break
                 time.sleep(2)

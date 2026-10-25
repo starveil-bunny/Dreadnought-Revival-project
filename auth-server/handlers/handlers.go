@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -246,11 +247,25 @@ func (h *Handler) loginPassword(w http.ResponseWriter, identifier, password stri
 	h.issueAndReturnJWT(w, user, nil, "dreadnought")
 }
 
+// tokenTTL is how long a minted JWT lives: AUTH_TOKEN_TTL (a Go duration,
+// "720h"), default 30 days. It was a fixed 24 h, and the token outlives the
+// launcher run that minted it -- the game reads it from the registry at every
+// start, so a direct launch (run/launch-client.sh, the "Dreadnought" desktop
+// entry) a day later failed with "Could not create session. Error Code: 401"
+// (gateway: "launcher token has EXPIRED", 2026-10-24 20:07) until the
+// launcher was run again.
+func tokenTTL() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("AUTH_TOKEN_TTL"))); err == nil && d > 0 {
+		return d
+	}
+	return 30 * 24 * time.Hour
+}
+
 // issueAndReturnJWT mints a JWT and writes the Greybox-compatible auth response.
 // If rpcID is non-nil the response is wrapped in a JSON-RPC 2.0 envelope.
 // audience should be "launcher" for launcher auth, "dreadnought" for game auth.
 func (h *Handler) issueAndReturnJWT(w http.ResponseWriter, user models.User, rpcID interface{}, audience string) {
-	tokenStr, err := jwt.Issue(h.Secret, user.ID, user.Username, audience, 24*time.Hour)
+	tokenStr, err := jwt.Issue(h.Secret, user.ID, user.Username, audience, tokenTTL())
 	if err != nil {
 		h.Log.WithError(err).Error("jwt issue")
 		writeGreyboxError(w, http.StatusInternalServerError, -32603, "Could not issue token")
@@ -261,7 +276,7 @@ func (h *Handler) issueAndReturnJWT(w http.ResponseWriter, user models.User, rpc
 	sum := sha256.Sum256([]byte(tokenStr))
 	tokenHash := fmt.Sprintf("%x", sum[:])
 	sessionID := uuid.New().String()
-	expiresAt := time.Now().Add(24 * time.Hour).UTC()
+	expiresAt := time.Now().Add(tokenTTL()).UTC()
 	if _, err := h.DB.Exec(
 		`INSERT INTO sessions(id,user_id,token_hash,expires_at) VALUES(?,?,?,?)`,
 		sessionID, user.ID, tokenHash, expiresAt.Format(time.RFC3339),

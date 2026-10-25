@@ -115,7 +115,7 @@ func battleDefaultLoadoutFor(pid string) (string, mmogShipLoadoutSeed, bool) {
 	if len(loadouts) == 0 {
 		return "", mmogShipLoadoutSeed{}, false
 	}
-	fleet := state.activeFleet()
+	fleet := battleFleetFor(state, pid)
 	if fleet.flagshipLoadoutID != 0 || fleet.flagshipShipID != 0 {
 		for _, loadout := range loadouts {
 			if loadout.loadoutID() == fleet.flagshipLoadoutID || loadout.precastLoadoutID == fleet.flagshipShipID {
@@ -124,6 +124,38 @@ func battleDefaultLoadoutFor(pid string) (string, mmogShipLoadoutSeed, bool) {
 		}
 	}
 	return loadouts[0].entryID(), loadouts[0], true
+}
+
+// battleFleetFor is the fleet the player is in this match with: the one of
+// the match's tier (matches.fleet_type via the live match_slots row), the
+// active one of that tier first. activeFleet() alone is wrong here -- every
+// tier has a fleet and the recruit one is "active" on every account, so a
+// legendary S1E1/TDM player who let the orbit timer run out was given the
+// recruit flagship, an Agosta T1 (operator, 2026-10-24 20:20, match fleet_type
+// 3). No live match row: activeFleet() as before.
+func battleFleetFor(state mmogPlayerState, pid string) mmogFleetSeed {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		return state.activeFleet()
+	}
+	var fleetType int32
+	if err := database.QueryRow(`SELECT m.fleet_type FROM match_slots s JOIN matches m ON m.id=s.match_id
+		WHERE REPLACE(s.user_id,'-','')=? ORDER BY m.created_at DESC LIMIT 1`, strings.ReplaceAll(pid, "-", "")).Scan(&fleetType); err != nil {
+		return state.activeFleet()
+	}
+	var match *mmogFleetSeed
+	for i := range state.fleets {
+		if state.fleets[i].fleetType != fleetType {
+			continue
+		}
+		if match == nil || (state.fleets[i].active && !match.active) {
+			match = &state.fleets[i]
+		}
+	}
+	if match == nil {
+		return state.activeFleet()
+	}
+	return *match
 }
 
 // battleLoadoutFor finds the player's loadout whose client-facing id (the

@@ -860,7 +860,13 @@ Two of these have a trap attached, both of which cost real time to find:
 - **Type 2, not 4.** The validity gate at `0x33C680` rejects loadouts recorded
   as type 4.
 
-## End-of-match stack probe (diagnostic; `dn_host_no_stack_probe.txt` turns it off)
+## End-of-match stack probe (diagnostic; opt-in via `dn_host_stack_probe.txt`)
+
+**Off by default since 2026-10-24.** While armed it suspends/resumes the game
+thread back to back, which under Wine froze every match end for 5 s. The
+overflow it hunted was found and fixed (ClientApplyRespawnFilter guard).
+`dn_host_stack_probe.txt` / `DN_HOST_STACK_PROBE=1` arms it again; the crash
+handler that shares its output file stays on unless `dn_host_no_stack_probe.txt`.
 
 The host overflows its stack in about 40% of matches, ~3 ms after `EndMatch`
 starts ("Match over event" -> music reset -> `EXCEPTION_STACK_OVERFLOW`). No
@@ -951,6 +957,24 @@ engine's own `FlushNetDormancy` (body `0x171C000`) and `ForceNetUpdate`
 (virtual at vtable `+0x580`, from its exec thunk `0x1E70010`) on the PRI.
 Log: `eom rewards: ... written ...; PRI pushed 1`. `dn_host_no_eom_push.txt`
 (or `DN_HOST_NO_EOM_PUSH=1`) turns the push off.
+
+**PvE episodes: the rewards rep** (2026-10-24). After a Horde/Escort match the
+client's end-of-match graph waits in `SetupUIWidgets` until
+`YPlayerReplicationInfo_PvE.m_pveRewardsDataRep` (+0x9D0) replicates
+(`OnRep_PveRewardsData`, body `0x5BD550`, sets the gate byte +0xA10). Every
+PvE end path (`PveEndMatch`) now writes pid, event id (`PVE_SxEy`, the map's
+`DN_Events_DT` row), season (`PVE_Season<x>`) and goal reached, then pushes
+the PRI. The reward byte arrays stay empty (GUESS: they were backend
+progress). Log: `pve rewards: PRI ... rep -- pid ... event PVE_S1E1 ...`.
+Verified headless (cycle 20261024-221314-pve-eomfix3): VICTORY, Team /
+Result / Rewards tabs. `/host props pri <filter>` lists the player's PRI.
+
+**Client end-of-match probe** (`DN_CLIENT_EOM_PROBE=1`, headless runs only;
+the mod stays inert on a player's client). Logs the client's custom-room
+bytes (mmog client +0x3B08..0B), the mmog dispatcher calls that change them,
+and `InitializeEndOfMatchStagingManager` to `dn_client_probe.log` next to the
+exe. It found the empty `CustomRoom` in `YA_PlayerGet` behind the PvE black
+screen.
 
 The first build also pushed the "XP actor" at PRI+0x930. It is not an actor:
 it is a `UYXPManager : UActorComponent`, so neither function exists on it and

@@ -61,6 +61,17 @@ var availableMaps = []GameMap{
 	{Name: "Space02", Path: "/Game/Maps/MP/Space02/MP_Space02_P"},
 	{Name: "Amirani", Path: "/Game/Maps/MP/Amirani/MP_Amirani_P"},
 	{Name: "Derelict", Path: "/Game/Maps/MP/Derelict/MP_Derelict_P"},
+	// The PvE season maps, in the PvP rotation on the operator's word
+	// (2026-10-24: "we can deff use it for normal play"). Their Streaming_DTs
+	// carry no mode filter. TDM on PVE_S1E1_P verified headless (cycle
+	// 20261024-213431-tdm-pvemap: spawn, flight, bots fought, end-of-match
+	// screen) although the map has only team-1 player starts ("No Available
+	// PlayerStart Found!" in the host log, harmless there). S1E2-S1E4 reuse
+	// S1E1's Escort_02 sublevels, so one entry covers them. GUESS: S3E1
+	// (Horde_EuropaSpace_01) and S3E4 (Horde_BossSpace_01) are untested.
+	{Name: "PVE_S1E1", Path: "/Game/Maps/PVE/Season1/Episode1/PVE_S1E1_P"},
+	{Name: "PVE_S3E1", Path: "/Game/Maps/PVE/Season3/Episode1/PVE_S3E1_P"},
+	{Name: "PVE_S3E4", Path: "/Game/Maps/PVE/Season3/Episode4/PVE_S3E4_P"},
 }
 
 // GameModeConfig is the mmogbrain game-mode row shape consumed by the client.
@@ -177,8 +188,19 @@ var conquestMaps = []GameMap{
 // update 1.9.0). GUESS: which maps the original Onslaught queue used is not
 // in the client; Derelict is left out on the tester's word.
 // Since 2026-10-17 the rotation itself carries Amirani (and every other MP
-// map, Derelict included), so Onslaught is the rotation.
-var onslaughtMaps = availableMaps
+// map, Derelict included), so Onslaught is the rotation -- minus the PvE
+// season maps, which ship no <Map>_Onslaught sublevel.
+var onslaughtMaps = withoutPveSeasonMaps(availableMaps)
+
+func withoutPveSeasonMaps(maps []GameMap) []GameMap {
+	out := make([]GameMap, 0, len(maps))
+	for _, m := range maps {
+		if !strings.HasPrefix(m.Path, "/Game/Maps/PVE/") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 var mapsByGameMode = map[string][]GameMap{
 	"Onslaught": onslaughtMaps,
@@ -274,6 +296,10 @@ type PvEEvent struct {
 
 // PvEEventSource reports the running event; set by main. Nil = none.
 var PvEEventSource func() (PvEEvent, bool)
+
+// PvEEventByID looks up any episode by its event id, running or not (a
+// "/match pve S1E4" pin); set by main. Nil = pins can only use the running one.
+var PvEEventByID func(id string) (PvEEvent, bool)
 
 // ActivePvEEvent is the running PvE event, if any.
 func ActivePvEEvent() (PvEEvent, bool) {
@@ -1059,6 +1085,10 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	var pveMap *GameMap
 	if gameMode == PvEGameMode {
 		ev, ok := ActivePvEEvent()
+		if pinned && pin.Map != "" && PvEEventByID != nil {
+			ev, ok = PvEEventByID(pin.Map)
+			pin.Path = "" // the event's own path, not a map-list lookup
+		}
 		if !ok {
 			for _, e := range entries {
 				_, _ = m.DB.Exec(`UPDATE queue_entries SET status='waiting' WHERE id=?`, e.ID)

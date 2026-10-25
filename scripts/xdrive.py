@@ -217,6 +217,23 @@ def run_cmd(disp, argv):
     if cmd in ("down", "up"):  # down KEY ... up KEY -- shots in between
         disp.press(args[0], cmd == "down")
         return 0
+    if cmd == "button":  # button N SECONDS -- hold a mouse button where the pointer is (fire / lock)
+        disp.focus_game()
+        xtst.XTestFakeButtonEvent(disp.d, int(args[0]), 1, 0)
+        x11.XFlush(disp.d)
+        time.sleep(float(args[1]) if len(args) > 1 else 1)
+        xtst.XTestFakeButtonEvent(disp.d, int(args[0]), 0, 0)
+        x11.XFlush(disp.d)
+        return 0
+    if cmd == "fire":  # fire SECS [BUTTON] -- hold a mouse button where the pointer is (no motion: mouse-look)
+        disp.focus_game()
+        b = int(args[1]) if len(args) > 1 else 1
+        xtst.XTestFakeButtonEvent(disp.d, b, 1, 0)
+        x11.XFlush(disp.d)
+        time.sleep(float(args[0]) if args else 1)
+        xtst.XTestFakeButtonEvent(disp.d, b, 0, 0)
+        x11.XFlush(disp.d)
+        return 0
     if cmd == "click":
         disp.click(args[0], args[1], args[2] if len(args) > 2 else 1)
         return 0

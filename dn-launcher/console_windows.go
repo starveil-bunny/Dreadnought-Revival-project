@@ -26,6 +26,16 @@ func ensureConsole() {
 	if consoleReady {
 		return
 	}
+	// DN_LOG_FILE: output goes to that file and no console opens. Under Proton
+	// a GUI program gets no standard handles even when the Unix side
+	// redirected them, so the check below can't see the redirect there.
+	if path := os.Getenv("DN_LOG_FILE"); path != "" {
+		if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644); err == nil {
+			os.Stdout, os.Stderr = f, f
+			consoleReady = true
+			return
+		}
+	}
 	// Output that already goes somewhere stays there: a pipe or file, or --
 	// under Wine, where dn-launcher-linux.sh runs this launcher -- the Unix
 	// terminal. Allocating a console there opened a separate Wine console
