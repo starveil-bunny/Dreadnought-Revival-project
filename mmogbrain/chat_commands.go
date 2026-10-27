@@ -100,6 +100,9 @@ func init() {
 			f, err := strconv.ParseFloat(a, 64)
 			return err == nil && f >= 0.2 && f <= 1
 		})},
+		{name: "ailevel", args: "max|game", help: "bot skill: every AI at Legendary (max, default) or the game's own level (game)", admin: true, run: hostCmd("ailevel", "max", "game")},
+		{name: "legendaryt5", args: "on|off", help: "Legendary matches: bots are T5 only (on, default) or the game's own T4-5 mix (off)", admin: true, run: hostCmd("legendaryt5", "on", "off")},
+		{name: "bounds", args: "0.5-8 [height]", help: "scale the map's play area about its centre; 1 = as built. The height limit stays as built unless \"height\" is given: players' own games still push down at the old ceiling, so ships wiggle there", admin: true, run: cmdBounds},
 		{name: "dummy", args: "<team 0-255>|off [ShipId] [uu]", help: "test: one uncontrolled ship of that team in front of the first player (replaces the last one)", admin: true, run: cmdDummy},
 		{name: "kill", args: "me|all|boss|<player>", help: "destroy ships (players respawn)", admin: true, run: cmdKill},
 		{name: "meteor", args: "[1-40] [distance] [team]", help: "Onslaught: a Comet per player ship fires n Warp Missile nukes from [distance] uu (default 1, 80000); elsewhere torpedoes rain from overhead (default 12)", admin: true, run: cmdMeteor},
@@ -537,6 +540,22 @@ func noLiveBattleReply(command string) string {
 }
 
 // hostCmdCheck queues "<name> <arg>" for the host mod when valid(arg).
+func cmdBounds(c *chatCommandCtx) string {
+	if len(c.args) == 0 || len(c.args) > 2 || (len(c.args) == 2 && strings.ToLower(c.args[1]) != "height") {
+		return "Usage: /bounds 0.5-8 [height]"
+	}
+	if f, err := strconv.ParseFloat(c.args[0], 64); err != nil || f < 0.5 || f > 8 {
+		return "Usage: /bounds 0.5-8 [height]"
+	}
+	arg := strings.ToLower(strings.Join(c.args, " "))
+	target, where, ok := matchCommandTarget(c)
+	if !ok {
+		return noLiveBattleReply("/bounds " + arg)
+	}
+	queueHostCommand(target, "bounds "+arg)
+	return "/bounds " + arg + " sent to " + where + "."
+}
+
 func hostCmdCheck(name, usage string, valid func(string) bool) func(c *chatCommandCtx) string {
 	return func(c *chatCommandCtx) string {
 		if len(c.args) == 0 || !valid(strings.ToLower(c.args[0])) {

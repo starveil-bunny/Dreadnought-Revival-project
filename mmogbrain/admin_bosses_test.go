@@ -53,9 +53,9 @@ func TestBossValidation(t *testing.T) {
 }
 
 func TestBossChatAndHost(t *testing.T) {
-	t.Setenv("DN_ADMINS", "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4")
+	t.Setenv("DN_ADMINS", "4d26d94bc4ba49f98f655c15b1ec1d27")
 	withBosses(t, gorgon())
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	for _, tc := range []struct{ in, want string }{
 		{"/boss 1", " bossdef 1 3"},
 		{"/boss 1 5", " bossdef 1 5"},

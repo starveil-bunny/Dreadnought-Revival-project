@@ -131,7 +131,7 @@ func authBaseURL(authURL string) string {
 // against ~87 ms on a reused connection (measured 2026-10-17; see the ping note
 // in skins_windows.go Live).
 func launcherHTTPClient() *http.Client {
-	key := fmt.Sprintf("%s|%s|%p", serverDialIP, serverWebPort, serverCAPool)
+	key := fmt.Sprintf("%s|%v|%s|%p", dialIP(), serverConfigured, serverWebPort, serverCAPool)
 	launcherClientMu.Lock()
 	defer launcherClientMu.Unlock()
 	if launcherClient != nil && launcherClientKey == key {

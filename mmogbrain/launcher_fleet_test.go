@@ -126,7 +126,7 @@ func itoa64(v int64) string { b, _ := json.Marshal(v); return string(b) }
 // returns "Evil <name>" on an AI base.
 func TestCloneChat(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
-	admin := "a0a0a0a0b1b1c2c2d3d3e4e4e4e4e4e4"
+	admin := "4d26d94bc4ba49f98f655c15b1ec1d27"
 	t.Setenv("DN_ADMINS", admin)
 	if err := seedMmogPlayerState(database, admin); err != nil {
 		t.Fatal(err)

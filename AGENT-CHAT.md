@@ -8700,7 +8700,7 @@ no XP after wave 2, respawn ship change ignored, in-wave timer stuck 00:00.
   started outside matchmaking) or an empty roster.
 - "player_efabfe96" in /online and the analytics events is the OPERATOR
   account, not a friend: every headless run today (sweep included) reports it,
-  and auth.db has it as a username beside cute-bunny/racer_norway. A headless
+  and auth.db has it as a username beside the other players' names. A headless
   client therefore shows as "1 player online", which is what blocks a deploy or
   sweep under the /online-is-0 gate.
 - Rounds 4-8 index (each item already has its own entry above unless noted):

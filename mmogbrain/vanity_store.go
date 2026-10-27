@@ -116,7 +116,7 @@ func vanityCatalogSeeds(owned map[int32]struct{}) []gatewayCatalogEntitySeed {
 	var seeds []gatewayCatalogEntitySeed
 	for _, v := range dreadconfig.VanityItems() {
 		_, sold, price := vanityOffer(v.ItemID)
-		if !sold {
+		if !sold || isHiddenShipVanity(v.ItemID) {
 			continue
 		}
 		_, have := owned[v.ItemID]

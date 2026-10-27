@@ -51,14 +51,24 @@ func marketImageFile(name string) string {
 }
 
 // gatewayAbsoluteImageURLs makes the catalog's picture paths absolute on the
-// host and scheme the client fetched the catalog from -- the one origin it is
-// known to reach and to trust.
+// scheme and port the client fetched the catalog from, under the server's
+// public NAME (PUBLIC_HOST) when it has one, else the host the client used.
+//
+// CHANGED 2026-10-21: the host was always the request's, i.e. the outside IP
+// the launcher passes in -GatewayAddress. After that IP changed, the Market's
+// pictures stopped loading while login and the catalogs on the same address
+// kept working: a picture request was still "Processing" when the game closed
+// a minute later (operator log, 21:52 run), and none were outstanding on the
+// old IP (19 Oct run). GUESS: the picture downloader (DreadAsyncTaskDownloadImage
+// via the image loader) checks the certificate's name where the web-services
+// requests do not; the certificates name the old IP but carry PUBLIC_HOST as a
+// DNS name, which also follows every IP change.
 func gatewayAbsoluteImageURLs(payload map[string]any, r *http.Request) map[string]any {
 	scheme := "https"
 	if r.TLS == nil {
 		scheme = "http"
 	}
-	base := scheme + "://" + marketImageHost(r.Host)
+	base := scheme + "://" + marketImageHost(r)
 	for _, list := range payload {
 		entities, ok := list.([]any)
 		if !ok {
@@ -79,22 +89,17 @@ func gatewayAbsoluteImageURLs(payload map[string]any, r *http.Request) map[strin
 	return payload
 }
 
-// marketImageHost: the catalog's Host, except a public IP (a relayed friend's
-// client reaches the gateway at the relay's edge IP, from -GatewayAddress)
-// becomes SERVER_IP (PUBLIC_HOST) on the same port. The server certificate
-// names the DNS name but not the relay IP, so picture fetches by IP failed
-// TLS (2026-10-23: shop bunnies did not load for a relayed friend; the API
-// itself is reached the same way, so it does not check the name).
-// GUESS: the picture loader verifies the name while the API client does not.
-func marketImageHost(host string) string {
-	h, port, err := net.SplitHostPort(host)
+// marketImageHost is host[:port] for picture URLs: PUBLIC_HOST with the
+// request's port, or the request's host when PUBLIC_HOST is unset or the
+// client came in over loopback (local tools and tests).
+func marketImageHost(r *http.Request) string {
+	name := strings.TrimSpace(getenv("PUBLIC_HOST", ""))
+	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
-		h, port = host, ""
+		host, port = r.Host, ""
 	}
-	ip := net.ParseIP(h)
-	name := os.Getenv("SERVER_IP")
-	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || name == "" || net.ParseIP(name) != nil {
-		return host
+	if ip := net.ParseIP(host); name == "" || ip != nil && ip.IsLoopback() || host == "localhost" {
+		return r.Host
 	}
 	if port == "" {
 		return name

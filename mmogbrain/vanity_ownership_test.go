@@ -40,7 +40,7 @@ func TestShipVanityClasses(t *testing.T) {
 	}
 	// Every hull-specific one resolves: of the ship cosmetics only the
 	// emblems, paints, decals, shared patterns and the NPC Titan's three
-	// parts fit "every ship".
+	// parts fit "every ship" -- the Titan's are hidden (isHiddenShipVanity).
 	for _, v := range dreadconfig.VanityItems() {
 		if v.Category() == 20 && shipVanityClasses(v) == nil && !strings.Contains(v.File, "/Titan/") {
 			t.Errorf("mesh part %s fits no class", v.Name)
@@ -78,9 +78,16 @@ func TestNewPlayerOwnsTheFreeCosmetics(t *testing.T) {
 		if fits == nil {
 			fits = classes
 		}
+		// The hull lines' "_Default" parts (shown "None") are hidden since
+		// 2026-10-25 (isHiddenShipVanity): never sent.
+		want := 1
+		if isHiddenShipVanity(id) {
+			want = 0
+		}
 		for _, c := range fits {
-			if countWireStringField(items, "ItemID", strconv.Itoa(int(shipVanityClientID(id, c)))) != 1 {
-				t.Errorf("default %s for class %d not owned in its per-ship form", v.Name, c)
+			if countWireStringField(items, "ItemID", strconv.Itoa(int(shipVanityClientID(id, c)))) != want {
+				t.Errorf("default %s for class %d: per-ship form sent %d times, want %d", v.Name, c,
+					countWireStringField(items, "ItemID", strconv.Itoa(int(shipVanityClientID(id, c)))), want)
 			}
 			checked++
 		}
@@ -120,11 +127,12 @@ func TestOwnedShipBringsItsLookPerShip(t *testing.T) {
 			t.Errorf("Onager's own hull part %d is for sale", id)
 		}
 	}
-	// Its line's free default hull stays owned.
+	// Its line's free default hull ("None", the T1 look) is hidden since
+	// 2026-10-25 (isHiddenShipVanity, operator: "a fake none").
 	for _, v := range dreadconfig.VanityItems() {
 		if v.Category() == 20 && dreadconfig.VanityItemIsFree(v) && strings.Contains(v.Name, "SniperH_") {
-			if countWireStringField(items, "ItemID", strconv.Itoa(int(shipVanityClientID(v.ItemID, eyShipClassByKey["SniperHeavy"])))) != 1 {
-				t.Errorf("free default %s not owned for SniperHeavy", v.Name)
+			if countWireStringField(items, "ItemID", strconv.Itoa(int(shipVanityClientID(v.ItemID, eyShipClassByKey["SniperHeavy"])))) != 0 {
+				t.Errorf("hidden default %s still owned for SniperHeavy", v.Name)
 			}
 			return
 		}
@@ -278,8 +286,9 @@ func TestOnlyWearableCaptainItems(t *testing.T) {
 
 // An owned hero lends its parts -- figurehead, forecastle, bridge, hull,
 // stern -- to the player's other ships of its line ("You can also use the
-// Trident's parts on any of your Jupiter Arms dreadnoughts", Grey Box), but a
-// hero of another manufacturer than its line's has no ship to lend them to.
+// Trident's parts on any of your Jupiter Arms dreadnoughts", Grey Box). Every
+// hero is its line's manufacturer's: until 2026-10-25 Kore (Jupiter Arms) and
+// Outis (Oberon) were given the other maker, and so lent nothing.
 func TestHeroShipLendsItsPartsToItsLine(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
 	const pid = "00000000000000000000000000000002"
@@ -293,9 +302,16 @@ func TestHeroShipLendsItsPartsToItsLine(t *testing.T) {
 		t.Fatalf("no hero %s", name)
 		return heroShipLoadout{}
 	}
-	trident, kore := hero("Trident"), hero("Kore")
-	if n := len(heroShipPartIDs()[kore.loadoutID]); n != 0 {
-		t.Errorf("Kore (Oberon, on the Jupiter Arms SniperHeavy line) lends %d parts", n)
+	for _, h := range heroShipLoadouts {
+		if want := baseShipManufacturerByClassSize[h.hullLine]; h.manufacturer != want {
+			t.Errorf("hero %s is %s, its %s line is %s's", h.name, h.manufacturer, h.hullLine, want)
+		}
+	}
+	trident := hero("Trident")
+	for _, name := range []string{"Kore", "Outis"} {
+		if n := len(heroShipPartIDs()[hero(name).loadoutID]); n == 0 {
+			t.Errorf("%s lends no parts to its line", name)
+		}
 	}
 	parts := heroShipPartIDs()[trident.loadoutID]
 	if len(parts) < 5 {
@@ -350,6 +366,25 @@ func TestUncustomisedBaseShipWearsItsOwnLook(t *testing.T) {
 		if !strings.Contains(payload, strconv.Itoa(int(id))) {
 			v, _ := dreadconfig.VanityItemByID(sharedGearID(id))
 			t.Errorf("Trafalgar is not sent its own part %s", v.Name)
+		}
+	}
+}
+
+// The Titan's parts and the "None" Default hull parts are never offered or
+// owned (operator report 2026-10-25).
+func TestHiddenShipVanity(t *testing.T) {
+	for _, id := range []int32{335544517, 335544518, 335544519, 336003113, 335609908} {
+		if !isHiddenShipVanity(id) {
+			t.Errorf("%d not hidden", id)
+		}
+	}
+	if isHiddenShipVanity(386334752) { // DreadH pattern "None": not reported
+		t.Error("pattern default hidden")
+	}
+	useTempMmogPlayerStateDB(t)
+	for _, id := range ownedVanityItemIDs("00000000000000000000000000000001") {
+		if isHiddenShipVanity(id) {
+			t.Errorf("new player owns hidden %d", id)
 		}
 	}
 }

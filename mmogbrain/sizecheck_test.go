@@ -215,14 +215,21 @@ var targetSizes = map[string]int{
 	// all 20 on every tier III-V ship (~700 entries); corrected the same day
 	// to the game's rule -- each of 16 briefings is in the tree of the ONE
 	// ship that unlocks it (officer_briefings.go), 16 entries.
-	// 14502 -> 13580 (2026-10-05, re-anchored): 14502 NEVER matched this
-	// tree. Measured at 3f795df -- the commit that set the pin -- and at
-	// every commit since (through upstream master dd5944c): the payload is
-	// 13580 on this clone's data/ every time, so the original number came
-	// from a different data extraction, not from code that later shrank the
-	// tree. The guard's job is regression/bloat against the 32KB ring, so
-	// the pin is re-anchored to this tree's own measured value.
-	"YA_GetTechTree": 13580,
+	// 14502 -> 15872 (+1370): ship pages (2026-10-25). Every hull with a parent
+	// gains a second UI child keyed with that parent (and ProxyType -1), and
+	// the 16 briefings go out in the full form with a UI child keyed with
+	// their ship and NumTechTreeItemsRequired -- what a ship page's
+	// progression row needs (techTreeShipPageLinks): +1359. The other +11 is
+	// the heroes' maker fix -- Kore and Outis move to other manufacturer groups,
+	// and the reordered document compresses a little differently (14513 with
+	// DN_TECHTREE_NO_SHIP_PAGE=1).
+	// 15872 -> 17160 (+1288): the 127 fitted weapons/modules that were in no
+	// tree (every line's first ship's fit, and each later ship's own primary),
+	// filed under their line's anchor (techTreeFittedAnchorItems). Without them
+	// an owned ship's module details showed the "99999" placeholder (2026-10-25).
+	// 17160 -> 16240 (merge 2026-10-27): the same +2660 from those two changes,
+	// measured on this clone's data/ (13580 before them, see the 2026-10-05 re-anchor).
+	"YA_GetTechTree": 16240,
 	// Was 1035, +185 after fixing int32-blindness (CurrentXP/CurrentRank/
 	// RankXP/XPToNextRank/NumUnlockedShips and per-ship shipID/xp/tier now
 	// numeric strings, matching the rest of this payload family).
@@ -258,7 +265,9 @@ var targetSizes = map[string]int{
 	// cannot otherwise read as owned -- per-ship forms of shared modules, shared
 	// forms of fitted inflated ids, owned hulls' prerequisite loadouts. 24 ids
 	// on this account. GetTechTreeItemState (0x543890) matches this array exactly.
-	"YA_GetPlayerPurchases": 3311,
+	// 3311 -> 2411 (-900): the hidden ship cosmetics (isHiddenShipVanity) are
+	// no longer among the owned ids.
+	"YA_GetPlayerPurchases": 2411,
 	// Was 305, then 233 after removing fabricated Eligible/isEligible bool
 	// fields (issue #51 — zero footprint in the client binary). Now 953: the
 	// body is the FleetTypes/Maintenance shape FUN_142a78790 actually parses,
@@ -393,7 +402,10 @@ var targetSizes = map[string]int{
 	// (daily_contracts.go). The test player has no database, so no contracts.
 	// 21968 -> 21790 (-178): the empty CustomRoom object is gone; its presence
 	// put the client in a custom room and broke PvE end of match.
-	"YA_PlayerGet": 21790,
+	// 21790 -> 16270 (-5520): the hull lines' "_Default" parts (shown "None")
+	// and the Titan's parts are no longer owned/sent (isHiddenShipVanity),
+	// with their per-ship forms.
+	"YA_PlayerGet": 16270,
 	// +56 on 2026-08-04: each of the four fleet loadout entries gained m_shipId
 	// (14 bytes x 4). Without it the hangar loaded the LIGHT bay for every owned
 	// ship -- all four starters are Mediums -- while tech tree ships, which

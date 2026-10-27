@@ -147,6 +147,25 @@ func isUnwearableCaptainItem(id int32) bool {
 	return ok && v.IsCaptain() && !dreadconfig.VanityItemIsPlayerFacing(v)
 }
 
+// isHiddenShipVanity reports a ship cosmetic never shown, owned or sold:
+//   - the NPC Titan's three parts (Heroships/Titan/Default): no hull line, so
+//     shipVanityClasses called them "fits every ship" and every ship listed
+//     "Titan's Bridge/Hull/Stern" (operator report 2026-10-25, broken in use);
+//   - each hull line's "_Default" parts (VAN_H_DreadH_Hull_Default_DA ...),
+//     all displayed "None" (ItemIDConversionTable): on a higher-tier ship of the line "None" put the T1 hull back on
+//     (operator report 2026-10-25, "a fake none").
+// GUESS: hiding the Default parts from the T1 ship too (Jutland etc. wear
+// them) -- not verified that its customizer still shows the stock look as
+// equipped; ownership is per class, so it cannot be kept for that ship alone.
+func isHiddenShipVanity(id int32) bool {
+	v, ok := dreadconfig.VanityItemByID(sharedGearID(id))
+	if !ok || !isShipVanityItemID(v.ItemID) {
+		return false
+	}
+	return strings.Contains(v.File, "/Heroships/Titan/") ||
+		(v.Category() == 20 && strings.HasSuffix(v.Name, "_Default_DA") && strings.Contains(v.File, "/Default/"))
+}
+
 // shipOwnHullParts is every hull part (category 20) that some ship's
 // blueprint wears as its own hull, base or hero: within one hull line each
 // ship has its own set (DreadnoughtHeavy: Jutland the hull line's
@@ -193,9 +212,10 @@ var shipOwnHullParts = sync.OnceValue(func() map[int32]bool {
 // hull LINE (the EYShipClass byte, see ownedVanityItemIDs), and a base line
 // is built by one manufacturer (baseShipManufacturerByClassSize), so a hero
 // of the line's manufacturer lends to the whole line. A hero of another
-// manufacturer (Kore, Oberon, on the Jupiter Arms SniperHeavy line; Outis,
-// Jupiter Arms, on the Oberon ScoutMedium line) has no ship to lend to: hero
-// ships themselves cannot be customised.
+// manufacturer would have no ship to lend to (hero ships themselves cannot be
+// customised); since 2026-10-25 there is none -- Kore (Jupiter Arms) and
+// Outis (Oberon) had been given the wrong maker, which is also what kept
+// their parts off their lines.
 var heroShipPartIDs = sync.OnceValue(func() map[int32][]int32 {
 	dir := func(v dreadconfig.VanityItem) string {
 		if i := strings.LastIndex(v.File, "/"); i >= 0 {
@@ -278,7 +298,7 @@ func ownedVanityItemIDs(playerPID string) []int32 {
 	var out []int32
 	add := func(id int32) {
 		id = sharedGearID(id)
-		if id > 0 && isVanityItemID(id) && !seen[id] && !isUnwearableCaptainItem(id) {
+		if id > 0 && isVanityItemID(id) && !seen[id] && !isUnwearableCaptainItem(id) && !isHiddenShipVanity(id) {
 			seen[id] = true
 			out = append(out, id)
 		}

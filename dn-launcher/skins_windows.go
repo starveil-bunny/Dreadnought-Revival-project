@@ -6,7 +6,8 @@ package main
 // "dreadnought" (default) is the compact game-launcher page in
 // skin_dreadnought.html, dressed in the game's own art (the loading screens,
 // logo, icons and font, read from the player's own paks: gamemedia.go);
-// "classic" is the original page (desktopPageHTML).
+// "original" is the original Dreadnought launcher's look (launcher.html,
+// originalPageHTML), which replaced the first "classic" page.
 //
 // Media goes to the page through the API as data: URIs rather than inline in
 // the HTML: the desktop window loads its page with NavigateToString, which
@@ -31,9 +32,12 @@ import (
 //go:embed skin_dreadnought.html
 var dreadnoughtPageHTML string
 
-var skins = []string{"dreadnought", "classic"}
+var skins = []string{"dreadnought", "original"}
 
 func skinName(s launcherSettings) string {
+	if s.Skin == "classic" { // the page "original" replaced
+		return "original"
+	}
 	for _, k := range skins {
 		if s.Skin == k {
 			return k
@@ -43,8 +47,8 @@ func skinName(s launcherSettings) string {
 }
 
 func pageFor(skin string) string {
-	if skin == "classic" {
-		return desktopPageHTML
+	if skin == "original" {
+		return originalPageHTML
 	}
 	return dreadnoughtPageHTML
 }

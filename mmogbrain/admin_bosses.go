@@ -942,6 +942,43 @@ func registerAdminBosses(api *mux.Router) {
 	api.HandleFunc("/bosses/{id:[0-9]+}", adminAPIBossPut).Methods(http.MethodPost, http.MethodPut)
 	api.HandleFunc("/bosses/{id:[0-9]+}", adminAPIBossDelete).Methods(http.MethodDelete)
 	api.HandleFunc("/bosses/{id:[0-9]+}/spawn", adminAPIBossSpawn).Methods(http.MethodPost)
+	api.HandleFunc("/bosses/clone", adminAPIBossClone).Methods(http.MethodGet)
+}
+
+// GET /bosses/clone?pid=<pid>&loadout=<ship name>&slot=<0 A|1 B|...>: the
+// def /clone would build from that loadout, not saved (`dn boss clone` saves
+// it). Without loadout it lists the player's loadouts and slots.
+func adminAPIBossClone(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	pid := normalizedPlayerStatePID(q.Get("pid"))
+	if pid == "" {
+		adminBossError(w, http.StatusBadRequest, "pid required")
+		return
+	}
+	slot, _ := strconv.Atoi(q.Get("slot"))
+	want := q.Get("loadout")
+	all := withLoadoutVariants(pid, ownedShipLoadoutsForPlayerData(mmogPlayerStateForPID(pid), pid))
+	if want == "" {
+		var list []map[string]any
+		for _, x := range all {
+			list = append(list, map[string]any{"loadout": x.loadoutName, "slot": x.variant})
+		}
+		writeAdminJSON(w, map[string]any{"loadouts": list})
+		return
+	}
+	for _, x := range all {
+		if int(x.variant) == slot && strings.EqualFold(x.loadoutName, want) {
+			name := adminPlayerName(pid)
+			d, err := cloneBossDef(name, x)
+			if err != nil {
+				adminBossError(w, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			writeAdminJSON(w, d)
+			return
+		}
+	}
+	adminBossError(w, http.StatusNotFound, "no such loadout/slot")
 }
 
 func adminBossError(w http.ResponseWriter, code int, msg string) {

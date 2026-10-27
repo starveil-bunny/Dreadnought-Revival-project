@@ -8,12 +8,12 @@ import (
 )
 
 func TestSkins(t *testing.T) {
-	for in, want := range map[string]string{"": "dreadnought", "classic": "classic", "bunny": "dreadnought"} {
+	for in, want := range map[string]string{"": "dreadnought", "classic": "original", "original": "original", "bunny": "dreadnought"} {
 		if got := skinName(launcherSettings{Skin: in}); got != want {
 			t.Errorf("skinName(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if pageFor("classic") != desktopPageHTML || !strings.Contains(pageFor("dreadnought"), "dnLiveResult") {
+	if pageFor("original") != originalPageHTML || !strings.Contains(pageFor("dreadnought"), "dnLiveResult") {
 		t.Fatal("pageFor picks the wrong page")
 	}
 	for _, id := range []string{"dnfont", "ptitle", "ico-cr", "ico-gold"} {

@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -111,19 +112,25 @@ func (g *gameMedia) Get(name string) ([]byte, error) {
 	if b, err := os.ReadFile(dst); err == nil && len(b) > 0 {
 		return b, nil
 	}
+	// The lock covers the index only, so ExtractAll's workers decode at once.
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if err := g.loadIndex(); err != nil {
+	err := g.loadIndex()
+	idx := g.index
+	g.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
-	b, err := g.extract(name, item)
+	b, err := extractItem(idx, name, item)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if err := os.MkdirAll(g.cache, 0o700); err == nil {
-		tmp := dst + ".tmp"
-		if os.WriteFile(tmp, b, 0o600) == nil {
-			_ = os.Rename(tmp, dst)
+		if f, err := os.CreateTemp(g.cache, name+".*.tmp"); err == nil {
+			_, werr := f.Write(b)
+			if cerr := f.Close(); werr == nil && cerr == nil {
+				_ = os.Rename(f.Name(), dst)
+			}
+			_ = os.Remove(f.Name())
 		}
 	}
 	return b, nil
@@ -147,18 +154,32 @@ func (g *gameMedia) Available(name string) bool {
 }
 
 // ExtractAll fills the cache; the installer's step. Returns how many files
-// were written and the first error.
+// were written and the first error. Up to 4 files decode at once: each
+// loading screen is a 2048x2048 texture taking ~200 MB to scale, and one at a
+// time they took ~6 s on a fast desktop, minutes on a slow laptop.
 func (g *gameMedia) ExtractAll() (int, error) {
+	names := mediaNames()
+	errs := make([]error, len(names))
+	sem := make(chan struct{}, min(4, max(1, runtime.NumCPU())))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, name string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			_, errs[i] = g.Get(name)
+		}(i, name)
+	}
+	wg.Wait()
 	n := 0
 	var first error
-	for _, name := range mediaNames() {
-		if _, err := g.Get(name); err != nil {
-			if first == nil {
-				first = err
-			}
-			continue
+	for _, err := range errs {
+		if err == nil {
+			n++
+		} else if first == nil {
+			first = err
 		}
-		n++
 	}
 	return n, first
 }
@@ -179,8 +200,8 @@ func (g *gameMedia) loadIndex() error {
 	return nil
 }
 
-func (g *gameMedia) extract(name string, item mediaItem) ([]byte, error) {
-	e, ok := g.index[item.asset]
+func extractItem(index map[string]pakEntry, name string, item mediaItem) ([]byte, error) {
+	e, ok := index[item.asset]
 	if !ok {
 		return nil, errors.New("not in the game files")
 	}
@@ -583,9 +604,16 @@ func resample(src image.Image, w, h int) image.Image {
 		return src
 	}
 	in := make([]float32, sw*sh*4)
+	nrgba, _ := src.(*image.NRGBA) // decodeTexture's own type: read Pix directly
 	for y := 0; y < sh; y++ {
 		for x := 0; x < sw; x++ {
-			c := color.NRGBAModel.Convert(src.At(sb.Min.X+x, sb.Min.Y+y)).(color.NRGBA)
+			var c color.NRGBA
+			if nrgba != nil {
+				p := nrgba.Pix[nrgba.PixOffset(sb.Min.X+x, sb.Min.Y+y):]
+				c = color.NRGBA{p[0], p[1], p[2], p[3]}
+			} else {
+				c = color.NRGBAModel.Convert(src.At(sb.Min.X+x, sb.Min.Y+y)).(color.NRGBA)
+			}
 			a := float32(c.A) / 255
 			i := (y*sw + x) * 4
 			in[i], in[i+1], in[i+2], in[i+3] = float32(c.R)*a, float32(c.G)*a, float32(c.B)*a, float32(c.A)

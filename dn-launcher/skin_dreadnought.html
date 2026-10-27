@@ -19,6 +19,14 @@
     linear-gradient(0deg, rgba(3,5,8,.92) 0, rgba(3,5,8,.35) 42%, rgba(3,5,8,0) 65%),
     linear-gradient(270deg, rgba(3,5,8,.75) 0, rgba(3,5,8,0) 45%); }
   main { position:fixed; inset:0; display:flex; flex-direction:column; }
+  /* The window is borderless (desktop_windows.go): the page minimizes and
+     closes it, and a press on the background moves it. */
+  #winbtns { position:fixed; top:0; right:0; z-index:100; display:flex; }
+  #winbtns button { width:38px; height:26px; padding:0; border:0; background:transparent; color:var(--dim); font-size:13px; cursor:pointer; }
+  #winbtns button:hover { color:#fff; background:rgba(255,255,255,.1); }
+  #winbtns button.cl:hover { background:#c42b1c; }
+  body.browser #winbtns { display:none; }
+  #set { padding-top:34px !important; }
   header { display:flex; align-items:center; gap:12px; padding:14px 20px; }
   /* The art's own composition sits the wordmark in the window corner; the
      operator asked for air around it, 10% of the viewport off the top and
@@ -167,6 +175,7 @@
   .tog input { width:auto; margin:0; accent-color:var(--acc); }
 </style>
 <div class="bg" id="bg0"></div><div class="bg" id="bg1"></div><div class="shade"></div>
+<div id="winbtns"><button title="Minimize" onclick="dnWindow('minimize')">&#8212;</button><button class="cl" title="Close" onclick="dnWindow('close')">&#10005;</button></div>
 <main>
   <header>
     <div id="lgw" title="" onclick="cycleLogoFx()"><div id="lgfx" hidden><i></i></div><svg width="0" height="0" style="position:absolute"><filter id="lgf" x="-5%" y="-30%" width="110%" height="160%" color-interpolation-filters="sRGB"></filter><filter id="lgk" x="-5%" y="-30%" width="110%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="1"/></filter></svg><img id="logo" alt="Dreadnought"></div>
@@ -290,6 +299,22 @@
 
 <script>
   const $ = id => document.getElementById(id);
+  // The Linux window (run/dn-launcher-window.py) is borderless too and gives
+  // the page dnHostWindow for move/minimize/close.
+  if (window.dnHostWindow) window.dnWindow = window.dnHostWindow;
+  const desktop = typeof window.dnWindow === 'function' && (!window.dnBrowser || !!window.dnHostWindow);
+  if (!desktop) { document.body.classList.add('browser'); window.dnWindow = () => {}; }
+  // dnCanDrag also tells the Linux window what is under the pointer: it has to
+  // start the move inside the press itself (run/dn-launcher-window.py).
+  window.dnCanDrag = el => el.matches('main, header, .body, .left, .right, .sp, .shade, .bg');
+  document.addEventListener('mousedown', e => {
+    if (desktop && e.button === 0 && !window.dnHostWindow && dnCanDrag(e.target)) dnWindow('move');
+  });
+  // Moved to a display with another scale: the launcher refits the window.
+  (function watchScale() {
+    if (!desktop) return;
+    matchMedia('(resolution: ' + devicePixelRatio + 'dppx)').addEventListener('change', () => { dnWindow('fit'); watchScale(); }, { once: true });
+  })();
   let state = {}, mode = 'login', serverBusy = false, playing = false;
   const err = (id, t, good) => { $(id).textContent = t || ''; $(id).className = 'err' + (good ? ' good' : ''); };
   const say = (t, kind) => { $('msg').textContent = t || ''; $('msg').className = kind || ''; };

@@ -4,7 +4,7 @@ package main
 
 // The launcher in the default web browser: used when the WebView2 runtime is
 // missing (including under Wine, where dn-launcher-linux.sh runs it) or with
-// --console. It serves the desktop window's page (desktopPageHTML) with a
+// --console. It serves the desktop window's page (pageFor, the chosen skin) with a
 // small bridge in front of it, so the browser gets the same screens -- sign-in,
 // the certificate, the game folder, the options, news and Play -- through the
 // same launcherAPI.
@@ -56,6 +56,8 @@ const browserBridgeJS = `<script>
   window.dnUseServer = (id) => { dnCall('useServer', [id]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
   window.dnAddServer = (n, a) => { dnCall('addServer', [n, a]).then(dnServerResult, e => dnServerResult({ ok: false, error: String(e) })); };
   window.dnSetServerCA = (id, t) => { dnCall('setServerCA', [id, t]).then(dnServerResult, e => dnServerResult({ ok: false, needs_ca: true, id, error: String(e) })); };
+  window.dnAssets = () => dnCall('assets');
+  window.dnOpenURL = (url) => dnCall('openURL', [url]);
   window.dnSubmit = (m, u, i, p) => { dnCall('submit', [m, u, i, p]).then(dnAuthResult, e => dnAuthResult({ ok: false, error: String(e) })); };
   window.dnNews = () => { dnCall('news').then(dnNewsResult, e => dnNewsResult({ online: false, error: String(e) })); };
   window.dnMedia = (n) => dnCall('media', [n]);
@@ -72,8 +74,7 @@ const browserBridgeJS = `<script>
   window.dnPlay = () => {
     dnCall('play').then(r => {
       dnPlayResult(r);
-      if (r.ok) setTimeout(() => { document.querySelector('main').innerHTML =
-        '<p style="margin:auto;color:#8fe0a8">Dreadnought is starting. You can close this tab.</p>'; }, 2500);
+      if (r.ok) setTimeout(dnBrowserStarted, 2500);
     }, e => dnPlayResult({ ok: false, error: String(e) }));
   };
   // Tells the launcher the page is still open; it exits once nobody is.
@@ -182,6 +183,10 @@ func runBrowserLauncher(exeDir string, cfg Config) error {
 			out = api.News()
 		case "openLogs":
 			out = api.OpenLogs()
+		case "assets":
+			out = api.Assets()
+		case "openURL":
+			out = api.OpenURL(str(0))
 		case "play":
 			res := api.Play()
 			if res["ok"] == true {

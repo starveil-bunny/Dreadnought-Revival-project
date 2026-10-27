@@ -2201,6 +2201,11 @@ static void ClassTimeTick(uint8_t *gm);
 #define OFF_GM_TEAM_SIZE 0x97C
 static bool g_botsBCOnly = false;
 static int g_botTier = 0; // /host bottier N (1-5), 0 = the game's own tier rules
+// Legendary matches roll bots T4-5; T4 ships are a good bit weaker than T5 and
+// players rarely fly T4 there, so by default a Legendary match's bots are all
+// T5 (operator, 2026-10-25). /host legendaryt5 on|off; off by default with
+// DN_HOST_LEGENDARY_ALLOW_T4=1 or dn_host_legendary_allow_t4.txt. -1 = unread.
+static int g_legendaryT5 = -1;
 static FNameMin g_botShip[3] = {}; // /host botship <0 all|1|2> <ShipId|off>; zero = the game's own pick
 static char g_botShipStr[3][64] = {}; // the ShipIds as typed, resolved per game mode (NpcIdResolve)
 static void *g_botShipGm = nullptr;   // game mode g_botShip was last resolved for
@@ -2330,7 +2335,7 @@ static bool g_extraUsed[128] = {};
 // /boss and /spawn xN as game bots: per bot list entry, the elite multiplier
 // for every pawn that entry's bot flies (GameBotEliteTick).
 struct BossDef;
-struct GameBotElite { int mult; const BossDef *def; void *last; DWORD since; bool told; };
+struct GameBotElite { int mult; const BossDef *def; void *last; DWORD since; bool told; void *seen; DWORD seenAt; };
 static GameBotElite g_gbElite[128] = {};
 static int g_lastGameBotIdx = -1;
 static bool g_extraOnly = false;
@@ -2341,6 +2346,8 @@ static void FfaCountKill(uint8_t *gm, void *killer, void *victimCtrl); // after 
 static bool FfaLeader(void *gm, uint8_t *gs, bool final);              // after FfaTick
 static void CustomTick(uint8_t *gm);                                        // custom modes, after CommandKill
 static void BossPingTick(uint8_t *gm);                                      // boss attack pings, resent
+static float g_boundsApplied = 1.f, g_boxesK = 1.f; // /bounds scale now / when g_boxes were read
+static void BoundsTick(uint8_t *gm);                                        // default /bounds scale, once a match
 static uint8_t *g_tickGm = nullptr;                                          // game mode of the last timer tick
 static int CustomKillLimit(uint8_t *gm);                                    // custom modes
 static void CustomCountKill(uint8_t *gm, void *killer, void *victimCtrl);   // custom modes
@@ -2384,18 +2391,53 @@ extern tSpawnGate g_origSpawnGate;
 static bool HavocRespawnBlockOn();
 static bool HavocShipUpgradesOn();
 static void ConquestTick(uint8_t *gm);
+static void TeTick(uint8_t *gm, uint8_t *gs);
+static bool TeOneLifeOn();
 static void ReportFarAway(uint8_t *pawn, const char *what);
 static void NpcAiStartTick(uint8_t *gm);
 
 static bool ClassChainContains(UObjectMin *obj, const char *needle);
 static bool ClassChainIs(UObjectMin *obj, const char *name);
 
-#define READY_UP_SECS 20
+#define READY_UP_SECS 30
 static int PropOffset(UObjectMin *obj, const char *name);
 static UObjectMin *FindPropObj(UObjectMin *obj, const char *name);
 static const char *PropNameAt(UObjectMin *obj, uint32_t off);
+static void NoStartTick(uint8_t *gm);
+static bool SetBoolProp(void *obj, const char *name, bool v);
+// Bots missing from the in-game map (operator 2026-10-25). AYGameState::
+// m_showAIonMinimap (bool, reflection; registered between m_gameModeHUDType
+// +0x501 and m_matchStartHUDState +0x503) is set once per game state; the
+// flags are logged. GUESS: CPF_Net, so the client's map follows the server's
+// value. dn_host_hide_ai_minimap.txt / DN_HOST_HIDE_AI_MINIMAP=1 leaves it.
+static void ShowAIOnMinimap(uint8_t *gm) {
+  static void *s_done = nullptr;
+  uint8_t *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+  if (!gs || gs == s_done)
+    return;
+  s_done = gs;
+  if (SwitchOn("DN_HOST_HIDE_AI_MINIMAP", "dn_host_hide_ai_minimap.txt"))
+    return;
+  int off = PropOffset((UObjectMin *)gs, "m_showAIonMinimap");
+  UObjectMin *pr = FindPropObj((UObjectMin *)gs, "m_showAIonMinimap");
+  bool was = off > 0 && (gs[off] & 0xFF);
+  bool ok = SetBoolProp(gs, "m_showAIonMinimap", true);
+  Logf("minimap: m_showAIonMinimap +0x%x (flags %llx) was %d -> %s", off,
+       pr ? (unsigned long long)*(uint64_t *)((uint8_t *)pr + 0x38) : 0ull, was, ok ? "on" : "NOT SET");
+}
+// Team Elimination rounds, defined with the Havoc code (they use its helpers).
+static void TeRoundsTick(uint8_t *gm);
+static void TeOnShipKilled(void *gameMode, void *victimCtrl, int victimClass);
+static void TeFixLeader(uint8_t *gm);
+static bool TeRoundsOn();
+
 static void __fastcall HookGameModeTimer(void *gameMode) {
   uint8_t *gm = (uint8_t *)gameMode;
+  __try {
+    NoStartTick(gm);
+    ShowAIOnMinimap(gm);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
   if (g_bcAIArmed && IsReadable(gm + OFF_GM_ENABLE_SPAWN_AI, 1) &&
       IsReadable(gm + OFF_GM_GAMESTATE, sizeof(void *))) {
     uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
@@ -2431,6 +2473,14 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
       // /spawn'd ship's. With fill bots too it is left alone (their tier would
       // change): there a /spawn needs a matching /host bottier.
       int tier = g_botTier > 0 ? g_botTier : g_extraBotsGm == gm && g_extraOnly ? g_extraTier : 0;
+      if (g_legendaryT5 < 0)
+        g_legendaryT5 = SwitchOn("DN_HOST_LEGENDARY_ALLOW_T4", "dn_host_legendary_allow_t4.txt") ? 0 : 1;
+      if (!tier && g_legendaryT5 && IsReadable(gs + 0x1D48, 1) && gs[0x1D48] == 3) {
+        tier = 5;
+        static void *s_legLogged = nullptr;
+        if (s_legLogged != gameMode)
+          s_legLogged = gameMode, Logf("bots: Legendary match, bots T5 only (legendaryt5 on)");
+      }
       if (tier > 0 && IsReadable(gs + 0x1D48, 1))
         gs[0x1D48] = tier <= 2 ? 1 : tier == 3 ? 2 : 3;
       if (tier > 0 && IsReadable(gm + 0x9C0, 16)) {
@@ -2488,6 +2538,8 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
       static void *s_teFilled = nullptr;
       static DWORD s_teFilledAt = 0;
       static void *s_teStopped = nullptr;
+      if (type == YGMT_TEAM_ELIMINATION)
+        TeTick(gm, gs);
       if (type == YGMT_TEAM_ELIMINATION && s_teStopped != gameMode &&
           IsReadable(gm + OFF_GM_AI_TARGET_T1, 8)) {
         bool filled = *(int32_t *)(gm + OFF_GM_AI_TARGET_T1) > 0 ||
@@ -2559,7 +2611,7 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
               *(float *)at = (float)READY_UP_SECS;
             else if (set)
               *(int32_t *)at = READY_UP_SECS;
-            Logf("ready time: %s.%s (%s) = %.1f%s", ClassNameOf(o), nm, fc, was, set ? " -> 20" : " (left)");
+            Logf("ready time: %s.%s (%s) = %.1f%s", ClassNameOf(o), nm, fc, was, set ? " -> ready time" : " (left)");
           }
         DescribeProps("ready time", (UObjectMin *)gameMode, "rbit");
         DescribeProps("ready time", gs, "rbit");
@@ -2610,6 +2662,11 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("boss marker: EXCEPTION in the ping tick");
   }
+  __try {
+    BoundsTick(gm);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("bounds: EXCEPTION in the tick");
+  }
   g_origGameModeTimer(gameMode);
   // Our ticks run at most every TICK_MIN_MS of wall time. This timer loops
   // (~0.1 s: viewer snapshots arrive ~9.4/s) and the engine re-fires a
@@ -2630,7 +2687,7 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
     void (*fn)(uint8_t *);
   };
   static const Sec secs[] = {{"onslaught", OnslaughtCreepTick}, {"havoc", HavocDirectorTick},
-                             {"escort", EscortDirectorTick},    {"commands", CommandsTick},
+                             {"te-rounds", TeRoundsTick},  {"escort", EscortDirectorTick},    {"commands", CommandsTick},
                              {"conquest", ConquestTick},        {"npc-ai", NpcAiStartTick},
                              {"players", PlayersTick},          {"class-time", ClassTimeTick}};
   g_vqWhere = 5;
@@ -2712,6 +2769,9 @@ static tTdmKilled g_origTdmKilled = nullptr;
 static void BossKillShake(uint8_t *gm, void *pawn); // after CommandShake
 typedef void(__fastcall *tDetermineLeader)(void *gm);
 static tDetermineLeader g_origDetermineLeader = nullptr;
+// The Onslaught points rule's switch: its kill hook is also installed for Team
+// Elimination rounds, so it checks this before acting.
+static bool g_onsPointsOn = true;
 
 struct OnslaughtMatch {
   void *gm;
@@ -3026,7 +3086,7 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
   uint8_t *gm = (uint8_t *)gameMode;
   uint8_t *gs = nullptr;
   __try {
-    gs = InvasionGameState(gm);
+    gs = g_onsPointsOn ? InvasionGameState(gm) : nullptr;
     if (gs) {
       if (g_ons.gm != gameMode) {
         memset(&g_ons, 0, sizeof(g_ons));
@@ -3065,8 +3125,26 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
     ((uint8_t *)victimPawn)[OFF_PAWN_IS_AI_TARGET] = 1;
     flagged = true;
   }
+  static volatile LONG s_creepKillLogs = 0;
+  if (victimSize >= 0 && InterlockedIncrement(&s_creepKillLogs) <= 12) {
+    __try {
+      void **mgr = IsReadable(gm + 0x740, 8) ? *(void ***)(gm + 0x740) : nullptr;
+      uintptr_t slot = mgr && IsReadable(*mgr, 0x210) ? (uintptr_t)((void **)*mgr)[0x208 / 8] - g_base : 0;
+      Logf("onslaught kill: victim %s size %d ai byte %d (flagged %d) killer %s scoring mgr %s +0x208 RVA 0x%llX",
+           ClassNameOf(victimPawn), victimSize, ((uint8_t *)victimPawn)[OFF_PAWN_IS_AI_TARGET], flagged,
+           killer ? ClassNameOf(killer) : "none", mgr ? ClassNameOf(mgr) : "none", (unsigned long long)slot);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+  }
   // The destroyed ship's class, read before the original runs (it may
   // destroy the pawn). Kill detail for daily contracts, see RecordKill.
+  // Team Elimination: the class of the ship lost, for TeOnShipKilled.
+  int teVictimClass = -1;
+  __try {
+    if (victimPawn && IsReadable((uint8_t *)victimPawn + OFF_PAWN_SHIP_CLASS, 1))
+      teVictimClass = ((uint8_t *)victimPawn)[OFF_PAWN_SHIP_CLASS];
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
   int victimClass = -1;
   if (KillDetailEnabled() && killer && killer != victimCtrl && victimPawn &&
       IsReadable((uint8_t *)victimPawn + OFF_PAWN_SHIP_CLASS, 1))
@@ -3128,6 +3206,11 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
   }
   if (flagged)
     ((uint8_t *)victimPawn)[OFF_PAWN_IS_AI_TARGET] = 0;
+  __try {
+    TeOnShipKilled(gameMode, victimCtrl, teVictimClass);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("te: EXCEPTION handling a lost ship");
+  }
 
   if (!gs)
     return;
@@ -3186,6 +3269,10 @@ static bool FfaMatchOver(uint8_t *gs) {
 }
 static void __fastcall HookDetermineLeader(void *gameMode) {
   g_origDetermineLeader(gameMode);
+  __try {
+    TeFixLeader((uint8_t *)gameMode);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
   __try {
     if (g_ffaGm == gameMode && IsReadable((uint8_t *)gameMode + OFF_GM_GAMESTATE, 8) &&
         FfaLeader(gameMode, *(uint8_t **)((uint8_t *)gameMode + OFF_GM_GAMESTATE),
@@ -3925,6 +4012,99 @@ static void LogTargetLists() {
        states[3], n[2]);
 }
 
+// Command ships that stall on their route (Space04, 2026-10-25: T1 sat at
+// (12160,-16350) and T2 near (14000,19100) for 10+ min, behaviour 16).
+// Every 15 s: a ship that moved under ONS_STALL_DIST in ONS_STALL_MS is
+// teleported ONS_NUDGE_DIST toward the route node after the one nearest it
+// (route = its m_spawnActor and the first next point of each node). The route
+// is logged once per ship. Off: dn_host_no_ons_unstick.txt / DN_HOST_NO_ONS_UNSTICK.
+#define ONS_STALL_MS 60000
+#define ONS_STALL_DIST 800.0f
+#define ONS_NUDGE_DIST 4000.0f
+static bool TeleportActor(void *actor, const float loc[3], float yawDeg);
+static bool CompLoc(void *actor, float out[3]) {
+  uint8_t *comp = IsReadable((uint8_t *)actor + 0x198, 8) ? *(uint8_t **)((uint8_t *)actor + 0x198) : nullptr;
+  if (!comp || !IsReadable(comp + 0x160, 12))
+    return false;
+  memcpy(out, comp + 0x160, 12);
+  return true;
+}
+static void OnsUnstick(int t, void *ship, DWORD now) {
+  static struct { void *ship; float at[3]; DWORD since; bool logged; } s[2];
+  if (SwitchOn("DN_HOST_NO_ONS_UNSTICK", "dn_host_no_ons_unstick.txt"))
+    return;
+  float me[3];
+  if (!ship || !ObjectLive(ship) || !CompLoc(ship, me))
+    return;
+  if (s[t].ship != ship) {
+    s[t].ship = ship, s[t].since = now, s[t].logged = false;
+    memcpy(s[t].at, me, 12);
+    return;
+  }
+  float dx = me[0] - s[t].at[0], dy = me[1] - s[t].at[1], dz = me[2] - s[t].at[2];
+  if (dx * dx + dy * dy + dz * dz > ONS_STALL_DIST * ONS_STALL_DIST) {
+    s[t].since = now;
+    memcpy(s[t].at, me, 12);
+    return;
+  }
+  if (now - s[t].since < ONS_STALL_MS)
+    return;
+  uint8_t *ctrl = *(uint8_t **)((uint8_t *)ship + OFF_PAWN_CONTROLLER);
+  if (!ctrl || !IsReadable(ctrl + OFF_NPC_SPAWN_ACTOR, 8))
+    return;
+  tWeakGet wget = (tWeakGet)(g_base + RVA_WEAK_PTR_GET);
+  void *route[32];
+  float pos[32][3];
+  int n = 0;
+  __try {
+    void *node = wget(ctrl + OFF_NPC_SPAWN_ACTOR);
+    while (node && n < 32 && CompLoc(node, pos[n])) {
+      bool seen = false;
+      for (int i = 0; i < n; ++i)
+        seen |= route[i] == node;
+      if (seen)
+        break;
+      route[n++] = node;
+      int cnt = *(int32_t *)((uint8_t *)node + OFF_NAV_NEXT_COUNT);
+      void *data = *(void **)((uint8_t *)node + OFF_NAV_NEXT_ARRAY);
+      node = cnt > 0 && data ? wget(data) : nullptr;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  if (!s[t].logged) {
+    s[t].logged = true;
+    for (int i = 0; i < n; ++i) {
+      const char *nn = NameText(((UObjectMin *)route[i])->Name);
+      Logf("onslaught unstick: T%d route %d %s at (%.0f, %.0f, %.0f)", t + 1, i, nn ? nn : "?", pos[i][0], pos[i][1],
+           pos[i][2]);
+    }
+  }
+  if (n < 2)
+    return Logf("onslaught unstick: T%d command ship stalled at (%.0f, %.0f, %.0f); route has %d node(s), no nudge",
+                t + 1, me[0], me[1], me[2], n), (void)(s[t].since = now);
+  int best = 0;
+  float bd = 1e30f;
+  for (int i = 0; i < n; ++i) {
+    float ex = pos[i][0] - me[0], ey = pos[i][1] - me[1], ez = pos[i][2] - me[2], d = ex * ex + ey * ey + ez * ez;
+    if (d < bd)
+      bd = d, best = i;
+  }
+  int tgt = best + 1 < n ? best + 1 : best;
+  float vx = pos[tgt][0] - me[0], vy = pos[tgt][1] - me[1], vz = pos[tgt][2] - me[2];
+  float len = sqrtf(vx * vx + vy * vy + vz * vz);
+  if (len < 1.0f)
+    return (void)(s[t].since = now);
+  float step = len < ONS_NUDGE_DIST ? len : ONS_NUDGE_DIST;
+  float to[3] = {me[0] + vx / len * step, me[1] + vy / len * step, me[2] + vz / len * step};
+  float yaw = atan2f(vy, vx) * 57.29578f;
+  bool ok = TeleportActor(ship, to, yaw);
+  const char *tn = NameText(((UObjectMin *)route[tgt])->Name);
+  Logf("onslaught unstick: T%d command ship stalled %lus at (%.0f, %.0f, %.0f); nudged %.0f toward route %d %s -> %s",
+       t + 1, (now - s[t].since) / 1000, me[0], me[1], me[2], step, tgt, tn ? tn : "?", ok ? "ok" : "FAILED");
+  s[t].since = now;
+  memcpy(s[t].at, ok ? to : me, 12);
+}
+
 static void OnslaughtCreepTick(uint8_t *gm) {
   static int s_enabled = -1;
   if (s_enabled < 0)
@@ -3997,6 +4177,8 @@ static void OnslaughtCreepTick(uint8_t *gm) {
                "controller %p", big ? "command ship" : "assault ship", t + 1, ship,
                *(float *)(comp + 0x160), *(float *)(comp + 0x164), *(float *)(comp + 0x168), behaviour,
                ship[OFF_PAWN_STATE], ship[OFF_PAWN_IS_AI_TARGET], ship[OFF_SHIP_TEAM], ctrl);
+        if (big && comp)
+          __try { OnsUnstick(t, ship, now); } __except (EXCEPTION_EXECUTE_HANDLER) {}
       }
       LogTargetLists();
     }
@@ -4133,8 +4315,51 @@ struct ConquestMatch {
   void *gm;
   DWORD lastScore, lastLog, lastPointScan;
   bool ended, pointsReady;
+  uint8_t *cps[16];
+  int ncp;
 };
 static ConquestMatch g_ter = {};
+// The Territory scoring manager the mode scoring hook built for this match
+// (see SemCreateOwn), or null.
+static void *volatile g_terScoringMgr = nullptr;
+static void *volatile g_terScoringGm = nullptr;
+
+// TERRITORY HELD (TerritoryContribution, row 0x34). The Territory manager's
+// handler 0x416D30 (bound to its +0x670 delegate by its init 0x422980) reads
+// the player from a payload's weak pointer at +8, works out the share of
+// territory that player's ship holds (0x41FC80: pawn +0x854 over the area of
+// the ship class's influence circle, GameState +0x2020 radii / +0x2030 grid,
+// x the row's second value 0.75 per ally inside that circle) and awards when
+// it is over the row's first value (0.6).
+// Nothing in this exe broadcasts +0x670: like the territory score, the caller
+// was server-build code. GUESS: it ran on each score tick
+// (m_scoringTerritorySecuredUpdateTime, 10 s) for every player.
+#define RVA_TER_CONTRIBUTION_HANDLER 0x416D30
+typedef void(__fastcall *tTerHandler)(void *mgr, void *payload);
+static void AwardTerritoryContribution(uint8_t *gm, uint8_t *gs) {
+  void *mgr = g_terScoringMgr;
+  if (!mgr || g_terScoringGm != gm || SwitchOn("DN_HOST_NO_TER_CONTRIBUTION", "dn_host_no_ter_contribution.txt"))
+    return;
+  __try {
+    if (!IsReadable(gm + 0x740, 8) || *(void **)(gm + 0x740) != mgr || !IsReadable(gs + 0x470, 16))
+      return;
+    uint8_t **arr = *(uint8_t ***)(gs + 0x470); // AGameState::PlayerArray
+    int count = *(int32_t *)(gs + 0x478);
+    if (!arr || count <= 0 || count > 64 || !IsReadable(arr, count * 8))
+      return;
+    for (int i = 0; i < count; ++i) {
+      if (!arr[i])
+        continue;
+      alignas(16) uint8_t payload[0x20] = {};
+      ((tWeakSet)(g_base + RVA_WEAK_PTR_SET))(payload + 8, arr[i]);
+      ((tTerHandler)(g_base + RVA_TER_CONTRIBUTION_HANDLER))(mgr, payload);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    static volatile LONG s_logged = 0;
+    if (InterlockedExchange(&s_logged, 1) == 0)
+      Logf("conquest: TERRITORY HELD awards: EXCEPTION (logged once)");
+  }
+}
 
 // The capture points (verified 2026-10-08 in the exe and MP_Gorge_Territory;
 // not yet verified live). Operator test 10:24: "no capture indicator, and I
@@ -4221,6 +4446,36 @@ static bool SetUpCapturePoints(uint8_t *gs) {
          *(int32_t *)(cp + OFF_CP_STATION_INDEX), cp[OFF_CP_OWNER], initial, cp[OFF_CP_LOCKED], cp[OFF_CP_ACTIVE]);
   }
   ((tGsSetupCapturePoints)(g_base + RVA_GS_TER_SETUP_CAPTURE_POINTS))(gs);
+  // The client shows no zones and no A/B/C minimap circles although the
+  // points capture on the server (Skybridge 2026-10-25 20:30). GUESS: the
+  // stripped server setup also filled the GameState's m_capturePoints list,
+  // which replicates and drives the client's markers (OnSetUpCapturePoints);
+  // fill it when it is empty. The dump shows its flags (CPF_Net or not).
+  DescribeProps("conquest: gs prop", (UObjectMin *)gs, "apture");
+  int cpOff = PropOffset((UObjectMin *)gs, "m_capturePoints");
+  if (cpOff > 0 && IsReadable(gs + cpOff, 16)) {
+    uint8_t *arr = gs + cpOff;
+    int had = *(int32_t *)(arr + 8);
+    __try {
+      for (int i = 0; had == 0 && i < n; ++i) {
+        int old = *(int32_t *)(arr + 8);
+        *(int32_t *)(arr + 8) = old + 1;
+        if (old + 1 > *(int32_t *)(arr + 12))
+          ((void(__fastcall *)(void *, int))(g_base + 0x260590 /* RVA_TARRAY_RESIZE_GROW */))(arr, old);
+        (*(void ***)arr)[old] = cps[i];
+      }
+      Logf("conquest: gs m_capturePoints +0x%X had %d, now %d", cpOff, had, *(int32_t *)(arr + 8));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      Logf("conquest: filling gs m_capturePoints faulted");
+    }
+  } else
+    Logf("conquest: gs has no m_capturePoints property (%d)", cpOff);
+  g_ter.ncp = n;
+  memcpy(g_ter.cps, cps, sizeof(uint8_t *) * n);
+  static const uint32_t s_offs[] = {0x400, 0x401, 0x440, 0x450, 0x458, 0x459, 0x460, 0x478, 0x480, 0x494, 0x498,
+                                    0x49C, 0x4A0, 0x4A1, 0x4A4, 0x4A8, 0x4AC, 0x4C4};
+  for (uint32_t o : s_offs)
+    Logf("conquest: capture point field +0x%X = %s", o, PropNameAt((UObjectMin *)cps[0], o));
   Logf("conquest: %d capture points set up; influence sources %d, tile map %d tiles", n,
        *(int32_t *)(gs + 0x1FF0), *(int32_t *)(gs + OFF_GS_TER_TILE_MAP + 8));
   return true;
@@ -4329,6 +4584,27 @@ static void ConquestTick(uint8_t *gm) {
       Logf("conquest: territory T1 %d%% T2 %d%% (%d/%d tiles of %.0f: %d in the point map, ships %d/%d from %d) "
            "-> score T1 %d T2 %d / %d",
            pct1, pct2, t1, t2, total, mapTiles, s1, s2, ships, score[0], score[1], target);
+      AwardTerritoryContribution(gm, gs);
+      // Capture tick 0x5583F0: with exactly one team present (+0x440 floats,
+      // per team) progress +0x4A4 grows by (presence * +0x49C + +0x460) * dt;
+      // past +0x4A8 (neutral) or +0x4AC it calls vtable +0x5F8 (captured).
+      for (int i = 0; i < g_ter.ncp; ++i) {
+        uint8_t *cp = g_ter.cps[i];
+        if (!IsReadable(cp + 0x400, 0xD0))
+          continue;
+        float *pr = *(float **)(cp + 0x440);
+        float p[5] = {};
+        if (pr && IsReadable(pr, 20))
+          memcpy(p, pr, 20);
+        uint8_t *tl = *(uint8_t **)(cp + 0x478);
+        int tn = *(int32_t *)(cp + 0x480);
+        Logf("conquest:   point %d owner %u cap %u/%u flags %u/%u contested %u presence %.2f/%.2f/%.2f base %.3f "
+             "mult %.3f progress %.2f need %.2f/%.2f teams[%d]=%u,%u",
+             i, cp[0x450], cp[0x458], cp[0x459], cp[0x4A0], cp[0x4C4], cp[0x4A1], p[0], p[1], p[2],
+             *(float *)(cp + 0x460), *(float *)(cp + 0x49C), *(float *)(cp + 0x4A4), *(float *)(cp + 0x4A8),
+             *(float *)(cp + 0x4AC), tn, tl && tn > 0 && IsReadable(tl, 2) ? tl[0] : 255,
+             tl && tn > 1 && IsReadable(tl, 2) ? tl[1] : 255);
+      }
     } else if (now - g_ter.lastLog > 30000) {
       g_ter.lastLog = now;
       Logf("conquest: territory T1 %d%% T2 %d%% (%d/%d tiles of %.0f, %d in the map%s)", pct1, pct2, t1, t2,
@@ -5385,10 +5661,18 @@ static bool RibbonPopupEnabled() {
   return s_on == 1;
 }
 
+static bool g_scoreProbeOn = false;
 static void __fastcall HookAssignScoringReward(void *pri, int32_t *reward) {
   bool tracked = false, ribbon = false;
   uint32_t event = SCORING_EVENT_COUNT;
   __try {
+    // Probe only: first award of each event id, bots included.
+    static volatile LONG s_seen[SCORING_EVENT_COUNT];
+    uint32_t id = IsReadable(reward, 4) ? (uint32_t)reward[0] & 0xff : SCORING_EVENT_COUNT;
+    if (g_scoreProbeOn && id < SCORING_EVENT_COUNT && InterlockedExchange(&s_seen[id], 1) == 0)
+      Logf("score probe: first award of event %u to %s (player kind %d)", id,
+           pri ? NameText(((UObjectMin *)pri)->Class->Name) : "null",
+           pri && IsReadable((uint8_t *)pri + 0x148, 1) ? ((uint8_t *)pri)[0x148] : -1);
     if (pri && IsReadable(reward, 0x2C) && IsReadable((uint8_t *)pri + 0x148, 1) &&
         ((uint8_t *)pri)[0x148] == 3) {
       tracked = true;
@@ -6775,6 +7059,113 @@ static void __fastcall HookScoringInitData(void *mgr) {
   g_origScoringInitData(mgr);
 }
 
+// The mode's own scoring manager (2026-10-25). Every game mode's
+// CreateScoringEventManager in this exe (vtable +0x8D8: 0x369A20 and
+// 0x369AF0) constructs UYScoringEventManager_MP (StaticClass 0x6149F0) as
+// "ScoringEventManager" into gm +0x740, then calls its vtable +0x1E0 (init)
+// with (gm vtable +0x108 (gm), gm). The Invasion and Territory managers exist
+// but nothing builds them -- the server build's game modes did:
+//   - UYScoringEventManager_Invasion (StaticClass 0x614950, vtable 0x2F10AA8)
+//     init 0x422930: base init 0x3FD6C0, then rebinds the AI-kill delegate
+//     (+0x180, broadcast by vtable +0x208 = 0x427120) from 0x3F1D30
+//     (Suppression only) to 0x415AF0, which scores AITargetL/M/H (ids
+//     15/16/17) by the victim's class against gm +0xA58/+0xA68/+0xA78.. .
+//     Measured on the MP manager (host log 2026-10-25 18:02): Onslaught creep
+//     kills reached +0x208 with the AI byte set, 0x415AF0 was never called,
+//     and no match ever had an AITarget event.
+//   - UYScoringEventManager_Territory (StaticClass 0x614A90, vtable
+//     0x2F10D18) init 0x422980: base init, sets +0x5E0, binds 0x416D30
+//     (TerritoryContribution 52) to +0x670, 0x416A30 (54) and 0x416430 (73)
+//     to +0xA0, 0x4168C0 (55) to +0x750. Conquest never had a Territory event.
+// So for Onslaught / Conquest this builds that class instead of MP, the same
+// way. Opt out: dn_host_no_mode_scoring.txt / DN_HOST_NO_MODE_SCORING.
+#define RVA_SEM_CREATE_A 0x369A20
+#define RVA_SEM_CREATE_B 0x369AF0
+#define RVA_SEM_INVASION_CLASS 0x614950
+#define RVA_SEM_TERRITORY_CLASS 0x614A90
+#define OFF_GM_SCORING_MANAGER 0x740
+typedef void(__fastcall *tSemCreate)(void *gm);
+typedef void *(__fastcall *tSemStaticClass)(void *pkg);
+typedef void *(__fastcall *tGmVoid)(void *gm);
+typedef void(__fastcall *tSemInit)(void *mgr, void *arg, void *gm);
+static tSemCreate g_origSemCreateA = nullptr, g_origSemCreateB = nullptr;
+
+// Which manager the mode wants: 1 Invasion, 2 Territory, 0 the stock MP one.
+static int SemModeFor(uint8_t *gm) {
+  uint8_t *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+  if (gs && IsReadable(gs + OFF_GS_GAME_MODE_TYPE, 1)) {
+    if (gs[OFF_GS_GAME_MODE_TYPE] == YGMT_INVASION)
+      return 1;
+    if (gs[OFF_GS_GAME_MODE_TYPE] == YGMT_TER)
+      return 2;
+    return 0;
+  }
+  // No GameState yet: by the game mode's class.
+  // GUESS: the Conquest game mode's class name contains "Territory" or "TER".
+  for (UObjectMin *cls = ((UObjectMin *)gm)->Class; cls && IsReadable(cls, OFF_USTRUCT_SUPER + 8);
+       cls = *(UObjectMin **)((uint8_t *)cls + OFF_USTRUCT_SUPER)) {
+    const char *n = NameText(cls->Name);
+    if (!n)
+      continue;
+    if (strstr(n, "Onslaught") || strstr(n, "Invasion"))
+      return 1;
+    if (strstr(n, "Territory") || strstr(n, "_TER"))
+      return 2;
+  }
+  return 0;
+}
+
+static bool SemCreateOwn(void *gameMode, tSemCreate orig, const char *which) {
+  uint8_t *gm = (uint8_t *)gameMode;
+  int mode = 0;
+  __try {
+    mode = SemModeFor(gm);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    mode = 0;
+  }
+  uint8_t *gs = IsReadable(gm + OFF_GM_GAMESTATE, 8) ? *(uint8_t **)(gm + OFF_GM_GAMESTATE) : nullptr;
+  Logf("scoring manager: %s for %s (GameState %p) -> %s", which, ClassNameOf(gm), gs,
+       mode == 1 ? "Invasion" : mode == 2 ? "Territory" : "stock MP");
+  if (!mode)
+    return false;
+  __try {
+    void *cls = ((tSemStaticClass)(g_base + (mode == 1 ? RVA_SEM_INVASION_CLASS : RVA_SEM_TERRITORY_CLASS)))(nullptr);
+    FNameMin name = {};
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&name, L"ScoringEventManager", 1 /* FNAME_Add */);
+    uint64_t nameBits;
+    memcpy(&nameBits, &name, 8);
+    void *mgr = cls ? ((tStaticConstructObject)(g_base + RVA_STATIC_CONSTRUCT_OBJECT))(
+                          cls, gm, nameBits, 0, 0, nullptr, false, nullptr)
+                    : nullptr;
+    if (!mgr) {
+      Logf("scoring manager: construct FAILED, stock MP instead");
+      return false;
+    }
+    *(void **)(gm + OFF_GM_SCORING_MANAGER) = mgr;
+    void *arg = ((tGmVoid)(*(void ***)gm)[0x108 / 8])(gm);
+    ((tSemInit)(*(void ***)mgr)[0x1E0 / 8])(mgr, arg, gm);
+    if (mode == 2) {
+      g_terScoringMgr = mgr;
+      g_terScoringGm = gm;
+    }
+    Logf("scoring manager: %s %p built and initialised", ClassNameOf(mgr), mgr);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("scoring manager: EXCEPTION building the mode's manager");
+    *(void **)(gm + OFF_GM_SCORING_MANAGER) = nullptr;
+    return false;
+  }
+}
+
+static void __fastcall HookSemCreateA(void *gm) {
+  if (!SemCreateOwn(gm, g_origSemCreateA, "0x369A20"))
+    g_origSemCreateA(gm);
+}
+static void __fastcall HookSemCreateB(void *gm) {
+  if (!SemCreateOwn(gm, g_origSemCreateB, "0x369AF0"))
+    g_origSemCreateB(gm);
+}
+
 // Logs the mode name the table is filtered by: a row counts only when its
 // GameModes lists it (0x424190). mmogbrain lists every alias; this line shows
 // which one the host actually uses.
@@ -6805,7 +7196,11 @@ static void __fastcall HookScoringCopy(void *table, void *modeName) {
   // they overflowed the host at EndMatch) and reads through the missing row.
   // Until the crash handler below names the function, TE gets no table.
   bool isTE = mode[0] == L'T' && mode[1] == L'E' && mode[2] == 0;
-  if (!mode[0] || isTE) {
+  // dn_host_te_scoring.txt / DN_HOST_TE_SCORING=1: build it for TE anyway, to
+  // catch the crash with the crash handler (dn_host_stack_probe.txt) on.
+  if (isTE && SwitchOn("DN_HOST_TE_SCORING", "dn_host_te_scoring.txt")) {
+    Logf("scoring: mode \"TE\" -- table built on request (dn_host_te_scoring); this crashed every TE host before");
+  } else if (!mode[0] || isTE) {
     Logf("scoring: mode \"%ls\" is Team Elimination -- table not built, scores stay 0 "
          "in this mode (every TE match crashed the host with the table)", mode);
     return;
@@ -7221,6 +7616,30 @@ static void __fastcall HookSearchManagerTeardown(void *mgr) {
     Logf("search manager: AI teardown faulted");
   }
 }
+// AI skill (operator 2026-10-25: "all AIs should be the best, players are just
+// too skilled"). The AI controller's GetAIDifficultyLevel (exec thunk 0x74CA90
+// -> body 0x28AA40, its only caller; natives registered by 0x626F60 beside
+// GetClosestPerceptedEnemy etc.) returns EYAILevel: the PvE difficulty
+// (0x396C50, 1/2/3) on a YGameState_PVE-type state, else 0 -- so every PvP
+// bot ran YAIL_SHELTERED. 1/2/3 match the PvE Recruit/Veteran/Legendary, so 3
+// is YAIL_LEGENDARY. By default it always returns 3; /host ailevel game gives
+// the game's own value back (DN_HOST_AI_LEVEL_GAME=1 or
+// dn_host_ai_level_game.txt: off by default). GUESS: that the behaviour trees
+// read the level through this UFunction (native code may read it elsewhere).
+#define RVA_AI_GET_DIFFICULTY_LEVEL 0x28AA40
+#define YAIL_LEGENDARY 3
+typedef uint8_t(__fastcall *tAiLevel)(void *ctrl);
+static tAiLevel g_origAiLevel = nullptr;
+static int g_aiLevelMax = -1; // -1 unread
+static uint8_t __fastcall HookAiLevel(void *ctrl) {
+  uint8_t was = g_origAiLevel(ctrl);
+  if (g_aiLevelMax < 0)
+    g_aiLevelMax = SwitchOn("DN_HOST_AI_LEVEL_GAME", "dn_host_ai_level_game.txt") ? 0 : 1;
+  static bool s_told;
+  if (!s_told)
+    s_told = true, Logf("bots: AI level asked first: game %d, given %d", was, g_aiLevelMax ? YAIL_LEGENDARY : was);
+  return g_aiLevelMax ? (uint8_t)YAIL_LEGENDARY : was;
+}
 static void InstallSwitchedHook(const char *what, uintptr_t rva, void *detour,
                                 void **orig) {
   void *target = (void *)(g_base + rva);
@@ -7230,6 +7649,90 @@ static void InstallSwitchedHook(const char *what, uintptr_t rva, void *detour,
   else
     Logf("installed: %s hooked at RVA 0x%X (%p)", what, (unsigned)rva, target);
 }
+// Scoring detector probe (dn_host_score_probe.txt / DN_HOST_SCORE_PROBE=1,
+// 2026-10-25). The damage-taken events (IncomingRawDamage* 64-67) and
+// Vanguard (27) never paid a ribbon; Desolator (25) does. Their detectors are
+// bound by UYScoringEventManager's init (0x3FD6FA): Desolator to the list at
+// +0x3B0, Vanguard and 64-67 to the list at +0x500. Logs whether each
+// detector is ever called and what its second argument's weak object is.
+typedef void(__fastcall *tScoreDetector)(void *, void *, void *, void *, void *);
+struct ScoreProbe {
+  const char *name;
+  uintptr_t rva;
+  tScoreDetector orig;
+  volatile LONG calls;
+};
+static ScoreProbe g_scoreProbe[] = {
+    {"Desolator(25)", 0x3ECE40}, {"Vanguard(27)", 0x3F1E80}, {"IncomingRawDamage(64)", 0x3EDD70},
+    {"ThisLife wrapper A", 0x3EDFB0}, {"ThisLife wrapper B", 0x3EDF60}, {"RecentXClose(67)", 0x3F03B0},
+    {"Invasion AI kill", 0x415AF0}, {"Suppression path", 0x3F1D30},
+    {"Territory +0x670", 0x416D30}, {"Territory +0xA0 a", 0x416A30}, {"Territory +0xA0 b", 0x416430},
+    {"Territory +0x750", 0x4168C0},
+};
+static void ScoreProbeHit(int i, void *a, void *b) {
+  LONG n = InterlockedIncrement(&g_scoreProbe[i].calls);
+  if (n > 3 && n != 50 && n != 500 && n != 5000)
+    return;
+  const char *cn = "?";
+  __try {
+    void *o = IsReadable((uint8_t *)b + 8, 8) ? ((tWeakGet)(g_base + RVA_WEAK_PTR_GET))((uint8_t *)b + 8) : nullptr;
+    if (o)
+      cn = NameText(((UObjectMin *)o)->Class->Name);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  Logf("score probe: %s call #%ld (mgr %p, arg %p, weak object class %s)", g_scoreProbe[i].name, n, a, b,
+       cn ? cn : "?");
+}
+// The detectors read their stat through an interface on the weak object:
+// 0x610900 -> its UClass, 0xD6BD50 GetInterfaceAddress; Desolator +0x98,
+// Vanguard +0xA8, IncomingRawDamage +0xB0, ThisLife +0xB8, Warfare
+// +0x60..+0x78. Dumps every float slot for a player's object.
+typedef void *(__fastcall *tStaticClassArg)(void *);
+typedef void *(__fastcall *tGetIfaceAddr)(void *, void *);
+typedef float(__fastcall *tStatF)(void *);
+static void ScoreProbeStats(void *b) {
+  static volatile LONG s_n = 0;
+  __try {
+    void *o = IsReadable((uint8_t *)b + 8, 8) ? ((tWeakGet)(g_base + RVA_WEAK_PTR_GET))((uint8_t *)b + 8) : nullptr;
+    if (!o)
+      return;
+    const char *cn = NameText(((UObjectMin *)o)->Class->Name);
+    if (!cn || strstr(cn, "NPC"))
+      return;
+    LONG n = InterlockedIncrement(&s_n);
+    if (n % 300 != 1)
+      return;
+    void *cls = ((tStaticClassArg)(g_base + 0x610900))((void *)(g_base + 0x2DF5BC8));
+    void **itf = (void **)((tGetIfaceAddr)(g_base + 0xD6BD50))(o, cls);
+    if (!itf)
+      return Logf("score probe stats: %s has no interface", cn);
+    char line[512];
+    int len = 0;
+    static const int offs[] = {0x98, 0xA8, 0xB0, 0xB8}; // the slots the detectors call
+    for (int off : offs)
+      len += snprintf(line + len, sizeof(line) - len, " +0x%X=%.0f", off, ((tStatF)((void **)*itf)[off / 8])(itf));
+    Logf("score probe stats: %s %p:%s", cn, o, line);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("score probe stats: EXCEPTION");
+  }
+}
+#define SCORE_PROBE_FN(i)                                                                                         \
+  static void __fastcall ScoreProbe##i(void *a, void *b, void *c, void *d, void *e) {                            \
+    ScoreProbeHit(i, a, b);                                                                                       \
+    if (i == 1)                                                                                                   \
+      ScoreProbeStats(b);                                                                                         \
+    g_scoreProbe[i].orig(a, b, c, d, e);                                                                          \
+  }
+SCORE_PROBE_FN(0) SCORE_PROBE_FN(1) SCORE_PROBE_FN(2) SCORE_PROBE_FN(3) SCORE_PROBE_FN(4) SCORE_PROBE_FN(5)
+SCORE_PROBE_FN(6) SCORE_PROBE_FN(7) SCORE_PROBE_FN(8) SCORE_PROBE_FN(9) SCORE_PROBE_FN(10) SCORE_PROBE_FN(11)
+static void InstallScoreProbe() {
+  void *fns[] = {(void *)&ScoreProbe0, (void *)&ScoreProbe1, (void *)&ScoreProbe2, (void *)&ScoreProbe3,
+                 (void *)&ScoreProbe4, (void *)&ScoreProbe5, (void *)&ScoreProbe6, (void *)&ScoreProbe7,
+                 (void *)&ScoreProbe8, (void *)&ScoreProbe9, (void *)&ScoreProbe10, (void *)&ScoreProbe11};
+  for (int i = 0; i < (int)(sizeof(fns) / sizeof(fns[0])); ++i)
+    InstallSwitchedHook(g_scoreProbe[i].name, g_scoreProbe[i].rva, fns[i], (void **)&g_scoreProbe[i].orig);
+}
+
 
 // The install runs on its own thread and WAITS, because GObjects is not
 // populated when this DLL is attached.
@@ -7608,12 +8111,25 @@ static DWORD WINAPI Startup(LPVOID) {
                       (void *)&HookClientSetPlayerRestrictionsRPC,
                       (void **)&g_origClientSetPlayerRestrictionsRPC);
 
+  InstallSwitchedHook("AI level (GetAIDifficultyLevel, /host ailevel)", RVA_AI_GET_DIFFICULTY_LEVEL,
+                      (void *)&HookAiLevel, (void **)&g_origAiLevel);
   InstallSwitchedHook("respawn filter (ClientApplyRespawnFilter RPC, re-entrancy guard)",
                       RVA_CLIENT_APPLY_RESPAWN_FILTER_RPC,
                       (void *)&HookClientApplyRespawnFilter,
                       (void **)&g_origClientApplyRespawnFilter);
 
   // On by default: without it every score is 0. Opt out to diagnose.
+  if (SwitchOn("DN_HOST_SCORE_PROBE", "dn_host_score_probe.txt")) {
+    g_scoreProbeOn = true;
+    InstallScoreProbe();
+  }
+  if (!SwitchOn("DN_HOST_NO_SCORING", "dn_host_no_scoring.txt") &&
+      !SwitchOn("DN_HOST_NO_MODE_SCORING", "dn_host_no_mode_scoring.txt")) {
+    InstallSwitchedHook("mode scoring manager A (CreateScoringEventManager)", RVA_SEM_CREATE_A,
+                        (void *)&HookSemCreateA, (void **)&g_origSemCreateA);
+    InstallSwitchedHook("mode scoring manager B (CreateScoringEventManager)", RVA_SEM_CREATE_B,
+                        (void *)&HookSemCreateB, (void **)&g_origSemCreateB);
+  }
   if (!SwitchOn("DN_HOST_NO_SCORING", "dn_host_no_scoring.txt")) {
     InstallSwitchedHook("scoring table (UYScoringEventManager::InitializeData)",
                         RVA_SCORING_INIT_DATA, (void *)&HookScoringInitData,
@@ -7664,12 +8180,18 @@ static DWORD WINAPI Startup(LPVOID) {
 
   Logf("onslaught creeps: %s", OnslaughtCreepsEnabled() ? "ON (game-mode timer; Onslaught hosts only)"
        : "OFF (dn_host_no_onslaught_creeps.txt / DN_HOST_NO_ONSLAUGHT_CREEPS=1)");
-  if (!SwitchOn("DN_HOST_NO_ONSLAUGHT_POINTS", "dn_host_no_onslaught_points.txt")) {
-    InstallSwitchedHook("onslaught points (TDM Killed)", RVA_TDM_KILLED,
+  bool onsPoints = !SwitchOn("DN_HOST_NO_ONSLAUGHT_POINTS", "dn_host_no_onslaught_points.txt");
+  g_onsPointsOn = onsPoints;
+  Logf("te rounds: %s", TeRoundsOn() ? "ON (Team Elimination hosts: best of 3, fighters after a lost ship)"
+       : "OFF (dn_host_no_te_rounds.txt / DN_HOST_NO_TE_ROUNDS=1): Team Elimination plays as a deathmatch");
+  // Both modes ride on the same two hooks; each acts only on its own mode.
+  if (onsPoints || TeRoundsOn()) {
+    InstallSwitchedHook("onslaught points + te ships lost (TDM Killed)", RVA_TDM_KILLED,
                         (void *)&HookTdmKilled, (void **)&g_origTdmKilled);
-    InstallSwitchedHook("onslaught winner by points (TDM leader)", RVA_TDM_DETERMINE_LEADER,
+    InstallSwitchedHook("winner by points / rounds (TDM leader)", RVA_TDM_DETERMINE_LEADER,
                         (void *)&HookDetermineLeader, (void **)&g_origDetermineLeader);
-  } else
+  }
+  if (!onsPoints)
     Logf("onslaught points: OFF (dn_host_no_onslaught_points.txt / "
          "DN_HOST_NO_ONSLAUGHT_POINTS=1). Onslaught ends at 30 kills.");
   InstallSwitchedHook("search manager null guard", 0x28CD20, (void *)&HookSearchNearest, (void **)&g_origSearchNearest);
@@ -7719,8 +8241,8 @@ static DWORD WINAPI Startup(LPVOID) {
                         (void **)&g_origHvcSelectedUpgrade);
     InstallSwitchedHook("havoc wave over (compiled-out bool-parm exec thunk)", RVA_BOOL_PARM_EXEC_THUNK,
                         (void *)&HookBoolParmExecThunk, (void **)&g_origBoolParmExecThunk);
-    if (HavocRespawnBlockOn())
-      InstallSwitchedHook("havoc respawn block (game mode spawn gate, SpawnPlayer)", RVA_GM_SPAWN_GATE,
+    if (HavocRespawnBlockOn() || TeOneLifeOn())
+      InstallSwitchedHook("havoc / team elimination respawn block (game mode spawn gate, SpawnPlayer)", RVA_GM_SPAWN_GATE,
                           (void *)&HookSpawnGate, (void **)&g_origSpawnGate);
     else
       Logf("havoc respawn block: OFF (dn_host_no_havoc_respawn_block.txt / DN_HOST_NO_HAVOC_RESPAWN_BLOCK=1)");
@@ -10186,7 +10708,115 @@ static bool HavocIsEliminated(void *pc) {
   return false;
 }
 
+// Team Elimination, one ship each (operator 2026-10-25: "team elimination
+// seems to not prevent respawning ... for the players. bots don't seem to
+// respawn"). The server build's round flow is gone (see YGMT_TEAM_ELIMINATION);
+// bots already stay dead once the fill is done. Here: a player whose ship
+// was seen up and is now gone is out -- the spawn gate (0x368380, the base
+// game mode's, shared by every mode's vtable) says no for them -- and once
+// every PlayerArray entry of a team (bots included) has no live ship for 5 s
+// while the other team has one, the other team wins through the game's
+// EndMatch. dn_host_te_respawn.txt / DN_HOST_TE_RESPAWN=1 turns it off.
+// Upstream's best-of-3 rounds (TeRoundsTick) supersede this: it only runs
+// when those are off (dn_host_no_te_rounds.txt).
+// GUESS: the client's respawn screen just waits when the gate refuses.
+static struct {
+  void *gm;
+  void *seen[64], *out[64];
+  int nSeen, nOut;
+  bool hadShip[3], ended, gateSeen;
+  DWORD wipedSince[3];
+} g_te1 = {};
+static bool TeOneLifeOn() {
+  static int s_on = -1;
+  if (s_on < 0)
+    s_on = SwitchOn("DN_HOST_TE_RESPAWN", "dn_host_te_respawn.txt") || TeRoundsOn() ? 0 : 1;
+  return s_on == 1;
+}
+static bool TeIsOut(void *gm, void *pc) {
+  if (!pc || g_te1.gm != gm)
+    return false;
+  for (int i = 0; i < g_te1.nOut; ++i)
+    if (g_te1.out[i] == pc)
+      return true;
+  return false;
+}
+static void CommandEndMatch(uint8_t *gm, int team);
+static void TeTick(uint8_t *gm, uint8_t *gs) {
+  if (!TeOneLifeOn())
+    return;
+  if (g_te1.gm != gm)
+    g_te1 = {}, g_te1.gm = gm;
+  if (g_te1.ended || !IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16))
+    return;
+  uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
+  int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
+  if (count <= 0 || count > 256 || !IsReadable(arr, (size_t)count * 8))
+    return;
+  int alive[3] = {}, waiting[3] = {};
+  for (int i = 0; i < count; ++i) {
+    uint8_t *pri = arr[i];
+    if (!IsReadable(pri, OFF_PRI_TEAM + 1))
+      continue;
+    int team = pri[OFF_PRI_TEAM];
+    uint8_t *ctrl = *(uint8_t **)(pri + OFF_ACTOR_OWNER);
+    if (team < 1 || team > 2 || !IsReadable(ctrl, OFF_CONTROLLER_PAWN + 8))
+      continue;
+    uint8_t *pawn = *(uint8_t **)(ctrl + OFF_CONTROLLER_PAWN);
+    bool up = pawn && IsReadable(pawn + OFF_PAWN_STATE, 1) && pawn[OFF_PAWN_STATE] != 2 && pawn[OFF_PAWN_STATE] != 3;
+    bool human = IsReadable(ctrl, OFF_PC_NETCONNECTION + 8) && ClassChainContains((UObjectMin *)ctrl, "PlayerController") &&
+                 *(void **)(ctrl + OFF_PC_NETCONNECTION);
+    if (up) {
+      ++alive[team], g_te1.hadShip[team] = true;
+      bool known = false;
+      for (int k = 0; k < g_te1.nSeen && !known; ++k)
+        known = g_te1.seen[k] == ctrl;
+      if (human && !known && g_te1.nSeen < 64)
+        g_te1.seen[g_te1.nSeen++] = ctrl;
+      continue;
+    }
+    if (!human)
+      continue;
+    bool known = false;
+    for (int k = 0; k < g_te1.nSeen && !known; ++k)
+      known = g_te1.seen[k] == ctrl;
+    if (!known) {
+      ++waiting[team]; // not in a ship yet: still picking one
+      continue;
+    }
+    if (!TeIsOut(gm, ctrl) && g_te1.nOut < 64) {
+      g_te1.out[g_te1.nOut++] = ctrl;
+      Logf("team elimination: %p (team %d) is out -- ship lost, no respawn", ctrl, team);
+    }
+  }
+  for (int t = 1; t <= 2; ++t) {
+    bool wiped = g_te1.hadShip[t] && !alive[t] && !waiting[t];
+    if (!wiped) {
+      g_te1.wipedSince[t] = 0;
+      continue;
+    }
+    if (!g_te1.wipedSince[t])
+      g_te1.wipedSince[t] = GetTickCount() | 1;
+    if (GetTickCount() - g_te1.wipedSince[t] > 5000 && alive[3 - t]) {
+      g_te1.ended = true;
+      Logf("team elimination: team %d has no ships left -- team %d wins (%d alive)", t, 3 - t, alive[3 - t]);
+      CommandEndMatch(gm, 3 - t);
+      return;
+    }
+  }
+}
+
 static uint32_t __fastcall HookSpawnGate(void *gm, void *pc) {
+  if (g_te1.gm == gm && !g_te1.gateSeen) // shows TE's spawns pass through this gate
+    g_te1.gateSeen = true, Logf("team elimination: spawn gate reached for %p", pc);
+  if (pc && TeIsOut(gm, pc)) {
+    static void *s_lastLogged = nullptr;
+    if (s_lastLogged != pc) {
+      s_lastLogged = pc;
+      Logf("team elimination: respawn of %p refused -- out until the match ends", pc);
+    }
+    return 0;
+  }
   if (pc && HavocIsEliminated(pc)) {
     static void *s_lastLogged = nullptr;
     if (s_lastLogged != pc) {
@@ -10242,6 +10872,403 @@ static void HavocReleaseEliminated() {
     Logf("havoc: %p back in -- %s (ship %p -> %p)", pc,
          pending ? "held respawn released" : "no respawn was requested yet", pawn, now);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Team Elimination rounds (on; dn_host_no_te_rounds.txt / DN_HOST_NO_TE_ROUNDS=1
+// turns it off). Added 2026-10-25.
+//
+// The rules, from the game's own text (en DreadGame.locres): "Team Elimination
+// is played in rounds. The first team to win 2 rounds wins the match." and "The
+// team that won the previous round keeps the same ships." A destroyed ship is
+// out until the next round; its captain flies a fighter meanwhile -- the game
+// state's m_respawnFighterLoadoutFilter is the jets filter
+// (GameState_TE_BP: VH_LoadoutFilter_Jets_DA), and the 2015 previews describe
+// the same.
+//
+// Why the mod has to run them (verified in the exe, 2026-10-25):
+//   - YGameMode_TeamElimination (ctor 0x362790, vtable 0x2E9FBE8, parent TDM
+//     0x362560) overrides NOTHING it inherits but the destructor; its 29 new
+//     virtuals (+0x9D8..+0xAB8) are stubs and getters of at most 120 bytes,
+//     and nothing calls them. Its settings m_numberOfRoundsToWin +0xA50,
+//     m_maxRoundTime +0xA54, m_postRoundInitialDelay +0xA58,
+//     m_postRoundDuration +0xA5C, m_preRoundStartDuration +0xA60 (registration
+//     offsets) are read by no code; GameInfo_TE_BP sets only m_maxRoundTime 11.
+//     So a TE match was a 20-minute deathmatch (measured: 41 matches averaging
+//     9.9 min, the long ones ending at ~22).
+//   - YGameState_TE (ctor 0x389300, vtable 0x2EC2F08) and the client side ARE
+//     here: m_rounds +0x1E28 (TArray of 0x18-byte rounds: +0 number, +4 winner
+//     team, +8 an array -- read by 0x3A08C0 and 0x369BB0),
+//     m_IsPerformingRoundTransition +0x1E90 (0x3A2440 reads it),
+//     m_respawnFighterLoadoutFilter +0x1E98, and the controller RPCs
+//     ClientPostRoundEnd (impl 0x574BA0), ClientPreRoundStart (0x573B40: clears
+//     the loadout filter, shows the last round's result from m_rounds against
+//     the player's team), ClientNewRoundStarts (0x573CD0: round timer at
+//     pc+0xC3C), ClientRespawnTeamElimination (0x573860).
+//   - The fighter switch is native: SetLoadoutsFilter 0x35B090 (manager,
+//     filter) adds the filter's loadouts and activates the first allowed one
+//     when the active loadout is not; a null filter clears it (0x33CF50). The
+//     game state applies TE's jets filter itself only to late joiners
+//     (0x3A2440, vtable +0x798, from AYPlayerController::ReadyForJoining).
+//   - New round: AYPlayerController::ReplaceShipWithActiveLoadoutForNewRound,
+//     body 0x590B80, puts the player back in a ship of their active loadout.
+//
+// What runs here, on the game-mode timer: a round ends when one team has no
+// capital ship left (EYShipClass 1..15 in the global ship list 0x3E0E848;
+// respawn jets are 16+), or at the round time limit; the round is recorded in
+// m_rounds, the clients get ClientPostRoundEnd, then ClientPreRoundStart, then
+// everyone is put back in a ship (bots refill through the spawner) and
+// ClientNewRoundStarts; at 2 round wins the winner is set and the match ends.
+// A human whose capital ship is destroyed during a round gets the jets filter.
+//
+// GUESSES, marked where used: m_maxRoundTime in minutes (as m_maxMatchTime 20
+// is); round timeout winner = more capital ships left, equal = draw; the post-
+// and pre-round durations (8 s, 10 s) when the game mode's are 0; surviving bots
+// stay where they are; RPC parameter meanings (times in seconds).
+// NOT verified against a live client.
+#define OFF_GS_TE_ROUNDS 0x1E28
+#define TE_ROUND_SIZE 0x18
+#define OFF_GS_TE_TRANSITION 0x1E90
+#define OFF_GS_TE_FIGHTER_FILTER 0x1E98
+#define OFF_GM_TE_ROUNDS_TO_WIN 0xA50
+#define OFF_GM_TE_MAX_ROUND_TIME 0xA54
+#define OFF_GM_TE_POST_ROUND 0xA5C
+#define OFF_GM_TE_PRE_ROUND 0xA60
+#define RVA_SET_LOADOUTS_FILTER 0x35B090
+#define RVA_REPLACE_SHIP_NEW_ROUND 0x590B80
+#define RVA_SHIP_LIST 0x3E0E848      // TArray<YPawn*> of every ship (count at +8)
+#define RVA_FMEMORY_FREE 0xBFC9C0
+#define TE_ROUNDS_TO_WIN_TEXT 2      // "The first team to win 2 rounds wins the match."
+typedef void(__fastcall *tSetLoadoutsFilter)(void *mgr, void *filter);
+typedef void(__fastcall *tPcVoid)(void *pc);
+typedef void(__fastcall *tFMemoryFree)(void *p);
+
+enum { TE_WAIT, TE_ROUND, TE_POST, TE_PRE, TE_DONE };
+struct TeElim {
+  void *pc;
+  void *capital; // the active loadout when the capital ship was lost
+};
+struct TeMatch {
+  void *gm;
+  int phase, round, wins[2], rule;
+  DWORD phaseAt, botsOffAt;
+  bool seen[2]; // each team had a capital ship this round
+  TeElim elim[16];
+};
+static TeMatch g_te = {};
+
+static bool TeRoundsOn() {
+  static int s_on = -1;
+  if (s_on < 0)
+    s_on = SwitchOn("DN_HOST_NO_TE_ROUNDS", "dn_host_no_te_rounds.txt") ? 0 : 1;
+  return s_on == 1;
+}
+
+static uint8_t *TeGameState(uint8_t *gm) {
+  if (!gm || !IsReadable(gm + OFF_GM_GAMESTATE, 8))
+    return nullptr;
+  uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
+  if (!gs || !IsReadable(gs + OFF_GS_GAME_MODE_TYPE, 1) || gs[OFF_GS_GAME_MODE_TYPE] != YGMT_TEAM_ELIMINATION ||
+      !IsReadable(gs + OFF_GS_TE_ROUNDS, OFF_GS_TE_FIGHTER_FILTER + 8 - OFF_GS_TE_ROUNDS))
+    return nullptr;
+  return gs;
+}
+
+// Capital ships alive per team, from the global ship list.
+static void TeCountShips(int alive[2]) {
+  alive[0] = alive[1] = 0;
+  uint8_t *base = (uint8_t *)g_base;
+  if (!IsReadable(base + RVA_SHIP_LIST, 16))
+    return;
+  void **arr = *(void ***)(base + RVA_SHIP_LIST);
+  int n = *(int32_t *)(base + RVA_SHIP_LIST + 8);
+  if (n <= 0 || n > 512 || !IsReadable(arr, (size_t)n * 8))
+    return;
+  for (int i = 0; i < n; ++i) {
+    uint8_t *p = (uint8_t *)arr[i];
+    if (!p || !IsReadable(p + OFF_SHIP_TEAM, 1) || !IsReadable(p + OFF_PAWN_STATE, 1))
+      continue;
+    int cls = p[OFF_PAWN_SHIP_CLASS], team = ShipTeam(p);
+    if (cls < 1 || cls > 15 || !team || p[OFF_PAWN_STATE] == 2 || p[OFF_PAWN_STATE] == 3)
+      continue;
+    alive[team - 1]++;
+  }
+}
+
+// Connected human controllers, from the game state's PlayerArray.
+static int TeHumanPCs(uint8_t *gs, uint8_t **out, int max) {
+  if (!IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16))
+    return 0;
+  uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
+  int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
+  if (count < 0 || count > 256 || (count && !IsReadable(arr, (size_t)count * 8)))
+    return 0;
+  int n = 0;
+  for (int i = 0; i < count && n < max; ++i) {
+    uint8_t *pri = arr[i];
+    if (!IsReadable(pri, OFF_ACTOR_OWNER + 8))
+      continue;
+    uint8_t *pc = *(uint8_t **)(pri + OFF_ACTOR_OWNER);
+    if (!IsReadable(pc, OFF_PC_NETCONNECTION + 8) || !ClassChainContains((UObjectMin *)pc, "PlayerController") ||
+        !*(void **)(pc + OFF_PC_NETCONNECTION) || *(uint8_t **)(pc + OFF_PC_PLAYER_STATE) != pri)
+      continue;
+    out[n++] = pc;
+  }
+  return n;
+}
+
+// RPC parameters by type, in order; the names are logged once per function.
+struct TeRpcArgs {
+  const wchar_t *fn;
+  int32_t ints[2];
+  int ni;
+  bool log;
+};
+// Logs a function's parameters the first time it is sent.
+static bool TeFirstSend(const wchar_t *fn) {
+  static const wchar_t *s_logged[8];
+  for (const wchar_t *&f : s_logged) {
+    if (f == fn)
+      return false;
+    if (!f) {
+      f = fn;
+      return true;
+    }
+  }
+  return false;
+}
+static void FillTeRpc(uint8_t *parms, const char *pc, const char *pn, uint32_t off, void *ctx) {
+  TeRpcArgs *a = (TeRpcArgs *)ctx;
+  if (a->log)
+    Logf("te: %ls parameter %s %s at +%u", a->fn, pc, pn, off);
+  int32_t v = a->ni < 2 ? a->ints[a->ni] : 0;
+  a->ni++;
+  if (!strcmp(pc, "IntProperty"))
+    *(int32_t *)(parms + off) = v;
+  else if (!strcmp(pc, "FloatProperty"))
+    *(float *)(parms + off) = (float)v;
+  else if (!strcmp(pc, "ByteProperty") || !strcmp(pc, "BoolProperty"))
+    parms[off] = (uint8_t)v;
+}
+static void TeSendAll(uint8_t *gs, const wchar_t *fn, int a0, int a1) {
+  uint8_t *pcs[16];
+  int n = TeHumanPCs(gs, pcs, 16), ok = 0;
+  for (int i = 0; i < n; ++i) {
+    TeRpcArgs a = {fn, {a0, a1}, 0, i == 0 && TeFirstSend(fn)};
+    ok += CallNamed(pcs[i], fn, FillTeRpc, &a) ? 1 : 0;
+  }
+  Logf("te: %ls(%d, %d) -> %d of %d players", fn, a0, a1, ok, n);
+}
+
+static void *TeLoadoutManager(void *pc) { return HavocLoadoutManager(pc); }
+
+// Appends the finished round to m_rounds (FMemory, as the engine's own arrays).
+static void TeRecordRound(uint8_t *gs, int number, int winner) {
+  uint8_t **data = (uint8_t **)(gs + OFF_GS_TE_ROUNDS);
+  int32_t *num = (int32_t *)(gs + OFF_GS_TE_ROUNDS + 8), *max = num + 1;
+  int n = *num;
+  if (n < 0 || n > 32)
+    return;
+  uint8_t *nb = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)(n + 1) * TE_ROUND_SIZE, 0);
+  if (!nb)
+    return;
+  memset(nb, 0, (size_t)(n + 1) * TE_ROUND_SIZE);
+  if (n && *data && IsReadable(*data, (size_t)n * TE_ROUND_SIZE))
+    memcpy(nb, *data, (size_t)n * TE_ROUND_SIZE);
+  uint8_t *e = nb + (size_t)n * TE_ROUND_SIZE;
+  *(int32_t *)e = number;
+  e[4] = (uint8_t)winner;
+  uint8_t *old = *data;
+  *data = nb;
+  *num = n + 1;
+  *max = n + 1;
+  if (old)
+    ((tFMemoryFree)(g_base + RVA_FMEMORY_FREE))(old);
+}
+
+static void TeForceNetUpdate(uint8_t *actor) {
+  void **vt = *(void ***)actor;
+  ((tActorVoidFn)vt[0x580 / 8])(actor); // AActor::ForceNetUpdate
+}
+
+static int TeSeconds(uint8_t *gm, int off, int def) {
+  float v = IsReadable(gm + off, 4) ? *(float *)(gm + off) : 0.f;
+  return v > 0.5f && v < 120.f ? (int)v : def;
+}
+static int TeRoundTimeSecs(uint8_t *gm) {
+  // GUESS: minutes, as GameInfo_TE_BP's m_maxMatchTime 20 is (TE hosts end at ~20 min).
+  float v = IsReadable(gm + OFF_GM_TE_MAX_ROUND_TIME, 4) ? *(float *)(gm + OFF_GM_TE_MAX_ROUND_TIME) : 0.f;
+  return v > 0.5f && v < 60.f ? (int)(v * 60.f) : 11 * 60;
+}
+
+// A human's capital ship was destroyed during a round: fighters until the next.
+static void TeOnShipKilled(void *gameMode, void *victimCtrl, int victimClass) {
+  if (!TeRoundsOn() || g_te.gm != gameMode || g_te.phase != TE_ROUND || victimClass < 1 || victimClass > 15)
+    return;
+  uint8_t *gs = TeGameState((uint8_t *)gameMode);
+  uint8_t *pc = (uint8_t *)victimCtrl;
+  if (!gs || !pc || !IsReadable(pc + OFF_PC_NETCONNECTION, 8) || !ClassChainContains((UObjectMin *)pc, "PlayerController") ||
+      !*(void **)(pc + OFF_PC_NETCONNECTION))
+    return;
+  uint8_t *mgr = (uint8_t *)TeLoadoutManager(pc);
+  void *filter = *(void **)(gs + OFF_GS_TE_FIGHTER_FILTER);
+  if (!mgr || !filter || !IsReadable(mgr + OFF_LOADOUT_MGR_ACTIVE, 8))
+    return;
+  TeElim *slot = nullptr;
+  for (auto &e : g_te.elim)
+    if (e.pc == pc || (!slot && !e.pc))
+      slot = &e;
+  if (slot && slot->pc != pc) {
+    slot->pc = pc;
+    slot->capital = *(void **)(mgr + OFF_LOADOUT_MGR_ACTIVE);
+  }
+  ((tSetLoadoutsFilter)(g_base + RVA_SET_LOADOUTS_FILTER))(mgr, filter);
+  TeRpcArgs a = {L"ClientRespawnTeamElimination", {0, 0}, 0, TeFirstSend(L"ClientRespawnTeamElimination")};
+  bool sent = CallNamed(pc, a.fn, FillTeRpc, &a); // GUESS: the original sent it here
+  Logf("te: round %d -- %p lost its ship (class %d): fighters until the next round (filter %p%s)", g_te.round, pc,
+       victimClass, filter, sent ? ", ClientRespawnTeamElimination sent" : "");
+}
+
+static void TeRestoreShips(uint8_t *gs) {
+  for (auto &e : g_te.elim) {
+    if (!e.pc)
+      continue;
+    uint8_t *mgr = (uint8_t *)TeLoadoutManager(e.pc);
+    if (mgr && IsReadable(mgr + OFF_LOADOUT_MGR_ACTIVE, 8)) {
+      ((tSetLoadoutsFilter)(g_base + RVA_SET_LOADOUTS_FILTER))(mgr, nullptr);
+      if (e.capital && *(void **)(mgr + OFF_LOADOUT_MGR_ACTIVE) != e.capital)
+        ((tActivateLoadout)(g_base + RVA_ACTIVATE_LOADOUT))(mgr, e.capital, 1);
+    }
+    e.pc = nullptr;
+    e.capital = nullptr;
+  }
+  (void)gs;
+}
+
+static void TeStartRound(uint8_t *gm, uint8_t *gs, DWORD now) {
+  g_te.round++;
+  g_te.phase = TE_ROUND;
+  g_te.phaseAt = now;
+  g_te.seen[0] = g_te.seen[1] = false;
+  gs[OFF_GS_TE_TRANSITION] = 0;
+  TeForceNetUpdate(gs);
+  TeSendAll(gs, L"ClientNewRoundStarts", TeRoundTimeSecs(gm), g_te.round);
+  Logf("te: round %d started (score %d-%d, %d s limit)", g_te.round, g_te.wins[0], g_te.wins[1], TeRoundTimeSecs(gm));
+}
+
+// Every second, from the game-mode timer.
+static void TeRoundsTick(uint8_t *gm) {
+  if (!TeRoundsOn())
+    return;
+  __try {
+    uint8_t *gs = TeGameState(gm);
+    if (!gs)
+      return;
+    DWORD now = GetTickCount();
+    if (g_te.gm != gm) {
+      memset(&g_te, 0, sizeof g_te);
+      g_te.gm = gm;
+      int r = IsReadable(gm + OFF_GM_TE_ROUNDS_TO_WIN, 4) ? *(int32_t *)(gm + OFF_GM_TE_ROUNDS_TO_WIN) : 0;
+      g_te.rule = r >= 1 && r <= 5 ? r : TE_ROUNDS_TO_WIN_TEXT;
+      Logf("te: match %p -- rounds armed: %d to win (game mode says %d), round limit %d s, post-round %d s, "
+           "pre-round %d s, kill limit %d lifted", gm, g_te.rule, r, TeRoundTimeSecs(gm),
+           TeSeconds(gm, OFF_GM_TE_POST_ROUND, 8), TeSeconds(gm, OFF_GM_TE_PRE_ROUND, 10),
+           *(int32_t *)(gm + OFF_GM_KILLS_FOR_WINNING));
+      *(int32_t *)(gm + OFF_GM_KILLS_FOR_WINNING) = ONS_KILL_LIMIT_OFF;
+    }
+    int alive[2];
+    TeCountShips(alive);
+    switch (g_te.phase) {
+    case TE_WAIT:
+      if (gs[OFF_GS_MATCH_RUNNING] && alive[0] > 0 && alive[1] > 0)
+        TeStartRound(gm, gs, now);
+      break;
+    case TE_ROUND: {
+      for (int t = 0; t < 2; ++t)
+        g_te.seen[t] |= alive[t] > 0;
+      if (g_te.botsOffAt && now - g_te.botsOffAt < 0x80000000u) {
+        gm[OFF_GM_ENABLE_SPAWN_AI] = 0;
+        g_te.botsOffAt = 0;
+        Logf("te: round %d -- bots refilled, spawner off again", g_te.round);
+      }
+      int winner = -1;
+      const char *why = nullptr;
+      bool settled = now - g_te.phaseAt > 15000 && g_te.seen[0] && g_te.seen[1];
+      if (settled && (alive[0] == 0 || alive[1] == 0)) {
+        winner = alive[0] ? 1 : alive[1] ? 2 : 0;
+        why = "eliminated";
+      } else if (now - g_te.phaseAt > (DWORD)TeRoundTimeSecs(gm) * 1000) {
+        winner = alive[0] > alive[1] ? 1 : alive[1] > alive[0] ? 2 : 0; // GUESS
+        why = "time";
+      }
+      if (winner < 0)
+        break;
+      TeRecordRound(gs, g_te.round, winner);
+      if (winner)
+        g_te.wins[winner - 1]++;
+      gs[OFF_GS_TE_TRANSITION] = 1;
+      TeForceNetUpdate(gs);
+      g_te.phase = TE_POST;
+      g_te.phaseAt = now;
+      Logf("te: round %d over (%s) -- %s; ships left %d-%d; score %d-%d", g_te.round, why,
+           winner ? (winner == 1 ? "team 1 wins it" : "team 2 wins it") : "draw", alive[0], alive[1], g_te.wins[0],
+           g_te.wins[1]);
+      TeSendAll(gs, L"ClientPostRoundEnd", TeSeconds(gm, OFF_GM_TE_POST_ROUND, 8), 0);
+      int champ = g_te.wins[0] >= g_te.rule ? 1 : g_te.wins[1] >= g_te.rule ? 2 : 0;
+      if (champ) {
+        g_te.phase = TE_DONE;
+        gs[OFF_GS_WINNING_TEAM] = (uint8_t)champ;
+        Logf("te: team %d wins the match %d-%d -- ending it", champ, g_te.wins[0], g_te.wins[1]);
+        void **vt = *(void ***)gm;
+        ((void(__fastcall *)(void *))vt[VT_GM_END_MATCH / 8])(gm);
+      }
+      break;
+    }
+    case TE_POST:
+      if (now - g_te.phaseAt >= (DWORD)TeSeconds(gm, OFF_GM_TE_POST_ROUND, 8) * 1000) {
+        g_te.phase = TE_PRE;
+        g_te.phaseAt = now;
+        TeRestoreShips(gs);
+        gm[OFF_GM_ENABLE_SPAWN_AI] = 1; // refill the bots destroyed this round
+        TeSendAll(gs, L"ClientPreRoundStart", TeSeconds(gm, OFF_GM_TE_PRE_ROUND, 10), 0);
+      }
+      break;
+    case TE_PRE:
+      if (now - g_te.phaseAt >= (DWORD)TeSeconds(gm, OFF_GM_TE_PRE_ROUND, 10) * 1000) {
+        uint8_t *pcs[16];
+        int n = TeHumanPCs(gs, pcs, 16);
+        for (int i = 0; i < n; ++i) {
+          __try {
+            ((tPcVoid)(g_base + RVA_REPLACE_SHIP_NEW_ROUND))(pcs[i]);
+          } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Logf("te: EXCEPTION putting %p back in a ship", pcs[i]);
+          }
+        }
+        Logf("te: %d players put back in a ship for round %d", n, g_te.round + 1);
+        g_te.botsOffAt = now + 15000;
+        TeStartRound(gm, gs, now);
+      }
+      break;
+    default:
+      break;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("te: EXCEPTION in the round tick");
+  }
+}
+
+// The winner by rounds won (EndMatch and the match timer recompute it from kills).
+static void TeFixLeader(uint8_t *gm) {
+  if (!TeRoundsOn() || g_te.gm != gm || (!g_te.wins[0] && !g_te.wins[1]))
+    return;
+  uint8_t *gs = TeGameState(gm);
+  if (!gs)
+    return;
+  uint8_t byKills = gs[OFF_GS_WINNING_TEAM];
+  gs[OFF_GS_WINNING_TEAM] = g_te.wins[0] > g_te.wins[1] ? 1 : g_te.wins[1] > g_te.wins[0] ? 2 : 3;
+  if (gs[OFF_GS_WINNING_TEAM] != byKills)
+    Logf("te: leader by rounds %d (%d-%d), was %d by kills", gs[OFF_GS_WINNING_TEAM], g_te.wins[0], g_te.wins[1],
+         byKills);
 }
 
 // ---------------------------------------------------------------------------
@@ -12725,21 +13752,69 @@ static CmSlot *CmSlotNew(void *ctrl, uint8_t side) {
 }
 
 // Scatter: every new ship (each respawn is a new pawn) is moved once to a
-// random player start, up to 3 km off it so they don't stack.
-// GUESS: a ship teleported on its first tick stays there (nothing re-places it).
+// random spot over the whole map. It was a random player start +-3 km: on
+// PVE_Horde_EuropaSpace (FFA vs AI, 2026-10-25) all five starts sit within
+// ~6 km of each other, so the ships balled up, and a start that would not
+// resolve left the ship where the game put it -- for bots with no free start,
+// the orbit spot under the map. Now: the play area is the terrain pass's
+// warning box (shrunk 15% a side) or, before that is known, 25 km around the
+// starts' middle; the height is the starts' own +-1500 uu (GUESS: starts sit
+// at a flyable height); a spot must be clear of the boundary volumes and
+// 5000 uu from the last 16 spots handed out, best of 24 tries.
+static bool InsideWarningBox(const float p[3]);
+static int OutOfBounds(void *world, const float p[3], float radius);
+static bool WarningBoxXY(float lo[2], float hi[2]);
 static void CmScatter(uint8_t *pawn) {
   for (void *p : g_cm.placed)
     if (p == pawn)
       return;
   g_cm.placed[g_cm.placedAt++ % 256] = pawn;
-  if (!g_cm.nStarts)
-    g_cm.nStarts = FindPlayerStarts(g_cm.starts, 64);
-  float loc[3];
-  if (!g_cm.nStarts || !ActorLocation(g_cm.starts[rand() % g_cm.nStarts], loc))
-    return (void)Logf("custom: scatter -- no player start (%d)", g_cm.nStarts);
-  loc[0] += (float)CmRand(-3000, 3000), loc[1] += (float)CmRand(-3000, 3000);
-  bool ok = TeleportActor(pawn, loc, (float)CmRand(0, 359));
-  Logf("custom: scatter %s to %.0f %.0f %.0f %s", ClassNameOf((UObjectMin *)pawn), loc[0], loc[1], loc[2], ok ? "ok" : "FAILED");
+  static float s_recent[16][3];
+  static int s_nRecent;
+  static void *s_recentGm;
+  if (s_recentGm != g_cm.gm)
+    s_recentGm = g_cm.gm, s_nRecent = 0;
+  // Starts are looked up again each time: cached ones went stale ("no
+  // player start (5)", 20:19).
+  g_cm.nStarts = FindPlayerStarts(g_cm.starts, 64);
+  float mid[3] = {0, 0, 0}, sp[3];
+  int ns = 0;
+  for (int i = 0; i < g_cm.nStarts; ++i)
+    if (ActorLocation(g_cm.starts[i], sp))
+      mid[0] += sp[0], mid[1] += sp[1], mid[2] += sp[2], ++ns;
+  if (!ns && !ActorLocation(pawn, mid))
+    return (void)Logf("custom: scatter -- no player start (%d) and no ship location", g_cm.nStarts);
+  if (ns)
+    mid[0] /= ns, mid[1] /= ns, mid[2] /= ns;
+  float lo[2], hi[2];
+  bool box = WarningBoxXY(lo, hi);
+  if (!box)
+    for (int k = 0; k < 2; ++k)
+      lo[k] = mid[k] - 25000.f, hi[k] = mid[k] + 25000.f;
+  void *world = g_cm.gm ? ((tGetWorld)(*(void ***)g_cm.gm)[VT_ACTOR_GET_WORLD / 8])(g_cm.gm) : nullptr;
+  float best[3] = {mid[0], mid[1], mid[2]}, bestGap = -1.f;
+  int tries = 0, oob = -1;
+  for (; tries < 24; ++tries) {
+    float c[3] = {lo[0] + (hi[0] - lo[0]) * (float)(rand() % 10001) / 10000.f,
+                  lo[1] + (hi[1] - lo[1]) * (float)(rand() % 10001) / 10000.f, mid[2] + (float)CmRand(-1500, 1500)};
+    int o = OutOfBounds(world, c, 3000.f);
+    if (o > 0 || (o < 0 && !InsideWarningBox(c)))
+      continue;
+    float gap = 1e9f;
+    for (int r = 0; r < s_nRecent && r < 16; ++r) {
+      float dx = c[0] - s_recent[r][0], dy = c[1] - s_recent[r][1], dz = c[2] - s_recent[r][2];
+      gap = std::min(gap, sqrtf(dx * dx + dy * dy + dz * dz));
+    }
+    if (gap > bestGap)
+      bestGap = gap, memcpy(best, c, sizeof best), oob = o;
+    if (gap >= 5000.f)
+      break;
+  }
+  memcpy(s_recent[s_nRecent++ % 16], best, sizeof best);
+  bool ok = TeleportActor(pawn, best, (float)CmRand(0, 359));
+  Logf("custom: scatter %s to %.0f %.0f %.0f %s (%s, try %d, %.0f uu from the nearest recent spot, %s)",
+       ClassNameOf((UObjectMin *)pawn), best[0], best[1], best[2], ok ? "ok" : "FAILED",
+       box ? "warning box" : "around the starts", tries + 1, bestGap, oob == 0 ? "in bounds" : bestGap < 0 ? "NO clear spot, starts' middle" : "bounds untestable");
 }
 
 // Realistic: no name over the players either. PlayerName (CPF_Net) is set to
@@ -12983,7 +14058,7 @@ static void CommandCustom(uint8_t *gm, const char *cmd, const char *arg, const c
 }
 
 static UObjectMin *FindPropObj(UObjectMin *obj, const char *name);
-static void CommandSlowmo(uint8_t *gm, float k) {
+static float CommandSlowmo(uint8_t *gm, float k) {
   __try {
     void *world = ((tGetWorld)(*(void ***)gm)[VT_ACTOR_GET_WORLD / 8])(gm);
     UObjectMin *pl = world ? FindPropObj((UObjectMin *)world, "PersistentLevel") : nullptr;
@@ -12992,14 +14067,16 @@ static void CommandSlowmo(uint8_t *gm, float k) {
     uint8_t *ws = wsp ? *(uint8_t **)(level + *(uint32_t *)((uint8_t *)wsp + 0x50)) : nullptr;
     UObjectMin *td = ws && IsReadable(ws, sizeof(UObjectMin)) ? FindPropObj((UObjectMin *)ws, "TimeDilation") : nullptr;
     if (!td || strcmp(ClassNameOf(td), "FloatProperty"))
-      return (void)Logf("commands: slowmo: TimeDilation not found (level %p ws %p)", level, ws);
+      return Logf("commands: slowmo: TimeDilation not found (level %p ws %p)", level, ws), -1.f;
     uint32_t off = *(uint32_t *)((uint8_t *)td + 0x50);
-    float *v = (float *)(ws + off);
+    float *v = (float *)(ws + off), was = *v;
     Logf("commands: slowmo %s +0x%x %.2f -> %.2f", ClassNameOf((UObjectMin *)ws), off, *v, k);
     *v = k;
+    return was;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("commands: slowmo faulted");
   }
+  return -1.f;
 }
 
 // /wave skip destroys every live wave enemy outright (no death, no XP);
@@ -13440,7 +14517,12 @@ enum { MARKER_DEFAULT = -1, MARKER_NONE = -2, MARKER_SPOTTED = 100, MARKER_ATTAC
 static BossDef g_bossDefs[32];
 static int g_bossDefNext;
 static const BossDef *g_spawnDef = nullptr; // CommandBossDef's, while it runs CommandSpawn
-struct EliteSpawn { int nid, mult; DWORD since; const BossDef *def; };
+struct EliteSpawn { int nid, mult; DWORD since; const BossDef *def; void *seen; DWORD seenAt; };
+// Elite feats go on 1 s after the pawn first shows (operator 2026-10-25, the
+// boss buffs "not on the ship"): GUESS that the feats component's possession
+// re-init (0x34BB30 -> OnPawnPossessed 0x3555F0) runs after spawn and drops
+// adds made in the same tick. BossFeatWatch still re-adds what goes missing.
+#define ELITE_APPLY_DELAY_MS 1000
 static EliteSpawn g_elite[64];
 // Boss marker (operator 10-19): a /boss behind terrain is invisible, while the
 // Onslaught command ship carries a HUD marker. Candidates from the exe's
@@ -13918,6 +15000,160 @@ static void SwapNpcController(uint8_t *gm, void *pawn, const wchar_t *path, cons
        npc ? *(int32_t *)(c + OFF_NPC_SCENE_INDEX) : -1);
 }
 
+// Boss buffs that do not stay (operator 2026-10-25: "all of them aside from
+// the base stat multiplier ... simply not on the ship", while Nerves of Steel's
+// own proc shows). Every add returned true (31/31), so they are lost after
+// ApplyElite. GUESS: the feats component re-initializes on possession
+// (0x34BB30 binds OnPawnPossessed -> 0x3555F0), after our adds. Each boss is
+// checked 3 s, 10 s and 30 s after the adds and every 30 s after that; a feat
+// no longer found (FindFeat 0x345FF0) is logged and added again.
+struct BossFeatWatch { void *pawn, *comp; const BossDef *def; int hp, dmg; DWORD at; int checks, fixes; };
+static BossFeatWatch g_bossFeatWatch[16] = {};
+static bool HasFeat(void *comp, const wchar_t *feat) {
+  FNameMin name{};
+  ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&name, feat, 1);
+  __try {
+    return ((void *(__fastcall *)(void *, uint64_t))(g_base + RVA_FEATS_FIND_FEAT))(comp, *(const uint64_t *)&name) != nullptr;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return true; // unknown: do not re-add on a fault
+  }
+}
+static void BossFeatWatchAdd(void *pawn, void *comp, const BossDef *def, int hp, int dmg) {
+  BossFeatWatch *slot = nullptr;
+  for (BossFeatWatch &w : g_bossFeatWatch)
+    if (w.pawn == pawn || !w.pawn || !ObjectLive(w.pawn)) {
+      slot = &w;
+      if (w.pawn == pawn)
+        break;
+    }
+  if (slot)
+    *slot = {pawn, comp, def, hp, dmg, GetTickCount(), 0, 0};
+}
+static void BossFeatWatchTick() {
+  static const DWORD kAt[] = {3000, 10000, 30000};
+  for (BossFeatWatch &w : g_bossFeatWatch) {
+    if (!w.pawn)
+      continue;
+    if (!ObjectLive(w.pawn) || FeatsCompOf(w.pawn) != w.comp) {
+      w = BossFeatWatch{};
+      continue;
+    }
+    DWORD due = w.checks < 3 ? kAt[w.checks] : 30000u * (DWORD)(w.checks - 1);
+    if (GetTickCount() - w.at < due)
+      continue;
+    ++w.checks;
+    int lost = 0, back = 0;
+    char which[256] = "";
+    int o = 0;
+    auto fix = [&](const wchar_t *feat, int stacks) {
+      if (stacks <= 0 || HasFeat(w.comp, feat))
+        return;
+      ++lost;
+      if (o < (int)sizeof which - 40)
+        o += snprintf(which + o, sizeof which - o, " %ls", feat);
+      bool bad = false;
+      for (int i = 0; i < stacks && !bad; ++i)
+        back += FeatOp(w.comp, feat, true, &bad);
+    };
+    fix(L"HVC_Boost_Def_HpInc_Large", w.hp);
+    fix(L"HVC_Boost_Off_DmgInc_Large", w.dmg);
+    for (int f = 0; w.def && f < w.def->nFeat; ++f)
+      fix(w.def->feat[f], w.def->stacks[f]);
+    for (int i = 0; w.def && i < w.def->nOfficer; ++i)
+      fix(w.def->officer[i], 1);
+    if (lost && w.fixes++ < 20)
+      Logf("bosses: %ls pawn %p check %d (%lu s): %d feat(s) gone --%s; %d stacks added again", w.def ? w.def->name : L"elite",
+           w.pawn, w.checks, (unsigned long)((GetTickCount() - w.at) / 1000), lost, which, back);
+    else if (!lost && w.checks <= 3)
+      Logf("bosses: %ls pawn %p check %d: all feats present", w.def ? w.def->name : L"elite", w.pawn, w.checks);
+  }
+}
+// Boss drama (operator 2026-10-25). Slowmo: a boss at 100 health or less
+// slows the world to 0.5x for 5 s (real time), then the dilation goes back
+// to what it was. Boss Rush (custom mode with waves, host "creeps off"):
+// once every boss of the wave is dead, /turbo goes on for the rest of the
+// wave; the next wave's first "bossdef" turns it off again. A /turbo the
+// operator turned on is left alone. Bosses = the BossPlace rule (custom def
+// without hunter, or x4 and up). Off: DN_HOST_NO_BOSS_DRAMA /
+// dn_host_no_boss_drama.txt.
+// GUESS: a hit from above 100 straight to a wreck still counts (health <= 0
+// on a live pawn); a pawn destroyed between polls gets no slowmo.
+#define BOSS_SLOWMO_HP 100.f
+#define BOSS_SLOWMO_K 0.5f
+#define BOSS_SLOWMO_MS 5000
+static struct { void *pawn; bool slowed, dead; } g_drama[8] = {};
+static struct { DWORD until; float was; } g_dramaSlow = {};
+static bool g_waveTurbo = false;
+static bool BossDramaOn() {
+  static int s_off = -1;
+  if (s_off < 0)
+    s_off = SwitchOn("DN_HOST_NO_BOSS_DRAMA", "dn_host_no_boss_drama.txt") ? 1 : 0;
+  return !s_off;
+}
+static void BossDramaNote(void *pawn) {
+  if (!BossDramaOn())
+    return;
+  for (auto &d : g_drama)
+    if (d.pawn == pawn)
+      return;
+  for (auto &d : g_drama)
+    if (!d.pawn || d.dead) {
+      d = {pawn, false, false};
+      return;
+    }
+  g_drama[0] = {pawn, false, false};
+}
+static void BossDramaNewWave() { // CommandsTick, "bossdef"
+  for (auto &d : g_drama)
+    if (d.dead)
+      d = {};
+  if (g_waveTurbo) {
+    g_waveTurbo = false;
+    CommandTurbo(false);
+    Logf("bosses: next wave -- turbo off");
+  }
+}
+static void BossDramaTick(uint8_t *gm) {
+  static DWORD s_last;
+  DWORD now = GetTickCount();
+  if (now - s_last < 100)
+    return;
+  s_last = now;
+  if (g_dramaSlow.until && (int)(now - g_dramaSlow.until) >= 0) {
+    g_dramaSlow.until = 0;
+    CommandSlowmo(gm, g_dramaSlow.was > 0.f ? g_dramaSlow.was : 1.f);
+  }
+  int live = 0, died = 0;
+  for (auto &d : g_drama) {
+    if (!d.pawn || d.dead)
+      continue;
+    float hp = 0.f;
+    bool gone = !ObjectLive(d.pawn);
+    if (!gone) {
+      hp = CallFloatGetter(d.pawn, "GetCurrentHealth");
+      if (hp != hp)
+        hp = CallFloatGetter(d.pawn, "GetHealth");
+    }
+    if (!gone && hp == hp && hp <= BOSS_SLOWMO_HP && !d.slowed) {
+      d.slowed = true;
+      if (!g_dramaSlow.until) {
+        float was = CommandSlowmo(gm, BOSS_SLOWMO_K);
+        g_dramaSlow = {now + BOSS_SLOWMO_MS, was};
+      } else
+        g_dramaSlow.until = now + BOSS_SLOWMO_MS;
+      Logf("bosses: pawn %p at %.0f health -- slowmo %.1fx for %d s", d.pawn, hp, BOSS_SLOWMO_K, BOSS_SLOWMO_MS / 1000);
+    }
+    if (gone || (hp == hp && hp <= 0.f))
+      d.dead = true, ++died;
+    else
+      ++live;
+  }
+  if (died && !live && CustomNoCreeps() && !g_turboOn) {
+    g_waveTurbo = true;
+    CommandTurbo(true);
+    Logf("bosses: wave boss(es) down -- turbo on for the rest of the wave");
+  }
+}
 static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char *tag, const BossDef *def = nullptr) {
   // Step times (stutter-zone EliteTick took 1269 ms, 2026-10-23): which part.
   double et[7] = {NowMs()};
@@ -13974,6 +15210,8 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
          tbl ? "listed" : "not loaded");
   }
   et[4] = NowMs();
+  if (!bad && (mult >= 2 || boss))
+    BossFeatWatchAdd(pawn, comp, def, hp, dmg);
   Logf("commands: elite x%d: %s pawn %p %s%s%ls -- %d/%d feat stacks added, GetMaxHealth %.0f -> %.0f", mult, tag, pawn,
        ClassNameOf(pawn), boss ? " boss " : def ? " hunter " : "", def ? def->name : L"", ok, want, hp0, CallFloatGetter(pawn, "GetMaxHealth"));
   // Boss arrival (any elite, /boss is x2 and up): every human gets a shake
@@ -13988,6 +15226,8 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
   et[5] = NowMs();
   if (mult >= 2 || boss)
     BossKillNote(pawn);
+  if (boss || mult >= 4)
+    BossDramaNote(pawn);
   if (mult >= 2 || boss)
     BossMarker(gm, pawn, def ? def->marker : MARKER_DEFAULT);
   et[6] = NowMs();
@@ -13996,6 +15236,7 @@ static void ApplyElite(uint8_t *gm, void *pawn, void *comp, int mult, const char
          "arrival %.0f, marker %.0f", et[6] - et[0], et[1] - et[0], et[2] - et[1], et[3] - et[2], want, et[4] - et[3],
          et[5] - et[4], et[6] - et[5]);
 }
+static void BossPlace(void *pawn, const BossDef *def, int mult);
 static void EliteTick(uint8_t *gm) {
   uint8_t *scene = nullptr;
   for (EliteSpawn &el : g_elite) {
@@ -14015,6 +15256,13 @@ static void EliteTick(uint8_t *gm) {
     void *pawn = ((tWeakGet)(g_base + RVA_WEAK_PTR_GET))(e + OFF_NPCSPAWN_PAWN);
     void *comp = pawn ? FeatsCompOf(pawn) : nullptr;
     if (!comp)
+      continue;
+    if (el.seen != pawn) {
+      el.seen = pawn, el.seenAt = GetTickCount();
+      BossPlace(pawn, el.def, el.mult);
+      continue;
+    }
+    if (GetTickCount() - el.seenAt < ELITE_APPLY_DELAY_MS)
       continue;
     char tag[32];
     snprintf(tag, sizeof tag, "scene entry %d", el.nid);
@@ -14245,6 +15493,40 @@ static void GameBotEliteTick(uint8_t *gm) {
         if (hit)
           break;
       }
+    // A boss has one life: once its ship dies (wreck at zero health, or gone)
+    // the entry is retired and the side's bot target drops by one, so the
+    // fill does not bring it back (Conquest boss respawned 2026-10-25 20:25).
+    // GUESS: the game drops this dead entry rather than another live bot.
+    if (g.def && g.last) {
+      bool gone = !ObjectLive(g.last);
+      float hp = gone ? 0.f : CallFloatGetter(g.last, "GetCurrentHealth");
+      if (hp != hp)
+        hp = CallFloatGetter(g.last, "GetHealth");
+      if (gone || hp <= 0.f) {
+        int32_t *target = (int32_t *)(gm + OFF_GM_AI_TARGET_T1 + (team - 1) * 4);
+        int was = team == 1 || team == 2 ? *target : -1;
+        if (team >= 0 && team < 3 && g_extraBots[team] > 0)
+          --g_extraBots[team];
+        int want = g_extraOnly ? (team == 1 || team == 2 ? g_extraBots[team] : 0) : std::max(0, was - 1);
+        __try {
+          if (was > 0)
+            ((tSetTeamSizeAI)(g_base + RVA_SET_TEAM_SIZE_AI))(gm, team, want);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+          Logf("bots: boss entry %d -- SetTeamSizeAI faulted", i);
+        }
+        Logf("bots: boss %ls (entry %d, team %d) died -- retired, team %d bots %d -> %d", g.def->name, i, team,
+             team, was, was > 0 ? want : was);
+        g = GameBotElite{};
+        continue;
+      }
+    }
+    if (hit && hit != g.last && hit != g.seen) {
+      g.seen = hit, g.seenAt = GetTickCount();
+      BossPlace(hit, g.def, g.mult);
+      continue;
+    }
+    if (hit && hit != g.last && GetTickCount() - g.seenAt < ELITE_APPLY_DELAY_MS)
+      continue;
     if (hit && hit != g.last) {
       char tag[64];
       snprintf(tag, sizeof tag, "game bot entry %d (%s)", i, how);
@@ -14630,6 +15912,107 @@ static int FindPlayerStarts(void **out, int max) {
 // starts, so bots parked on them leave a respawning player none. Fallback: a
 // random start of the player's team (0 or the same), else any start.
 // GUESS: spawning on an occupied start is resolved by the spawn itself.
+// PvE maps in PvP modes (TE on PVE_S1E1_P, 2026-10-25 16:31): no player
+// starts and no orbit TargetPoints. The battle log said "No Available
+// PlayerStart Found!" for the bots (one of 15 came up) and "Team1 has no
+// teleporting spawn points available in the map, ... cannot be teleported!"
+// for the players, who stayed at the orbit spot ~100 km under the map.
+// AYOrbitTransitionManager (gs+0x1CC0): SetUpSpawnPointsForTeleportingIntoLevel
+// (chunk 0x3D67ED, helper 0x3D6960) appends the editor's TargetPoint arrays
+// (+0x4B0/+0x4C0 or +0x4D0/+0x4E0, by side) to team 1's +0x500 and team 2's
+// +0x510 TArray<AActor*> and errors only when both stay empty; the teleport
+// (0x3D9393) takes element [this+0x3C0] (a per-player index) of team 1's and
+// reads its root component's location/rotation. So: once per game mode on a
+// map with no player starts, TargetPoints are spawned on two opposite sides of
+// the warp volume, 16 a team, and appended to +0x500/+0x510 (the game's own
+// TArray grow 0x260590) while both are empty; the player-start picker below
+// hands them out too. GUESS: team 2's index is +0x3C4 and runs the same way.
+#define OFF_GS_ORBIT_MANAGER 0x1CC0
+#define OFF_ORBIT_TEAM_POINTS 0x500 // team 2's at +0x510
+#define RVA_TARRAY_RESIZE_GROW 0x260590
+typedef void(__fastcall *tArrayGrow)(void *arr, int oldNum);
+enum { NOSTART_PER_TEAM = 16 };
+static struct {
+  void *gm, *gs; // a new game mode can reuse the old one's address
+  bool none, fed;
+  int n[2];
+  void *pts[2][NOSTART_PER_TEAM];
+} g_noStart = {};
+static void BoundsProbe();
+static bool WarpBox(float lo[3], float hi[3]);
+static void NoStartSetUp(void *gm) {
+  void *gs = IsReadable((uint8_t *)gm + OFF_GM_GAMESTATE, 8) ? *(void **)((uint8_t *)gm + OFF_GM_GAMESTATE) : nullptr;
+  if (g_noStart.gm == gm && g_noStart.gs == gs)
+    return;
+  g_noStart = {};
+  g_noStart.gm = gm, g_noStart.gs = gs;
+  void *starts[4];
+  if (FindPlayerStarts(starts, 4))
+    return;
+  g_noStart.none = true;
+  BoundsProbe();
+  float lo[3], hi[3];
+  UObjectMin *cls = FindObjectNamedOfClass("TargetPoint", "Class");
+  void *world = ((tGetWorld)(*(void ***)gm)[VT_ACTOR_GET_WORLD / 8])(gm);
+  if (!WarpBox(lo, hi) || !cls || !world)
+    return (void)Logf("no player starts: no warp volume / TargetPoint class / world (%p %p) -- ships keep the game's spawn", cls, world);
+  int ax = hi[0] - lo[0] >= hi[1] - lo[1] ? 0 : 1, ay = 1 - ax; // sides along the longer axis
+  float c[3];
+  for (int a = 0; a < 3; ++a)
+    c[a] = 0.5f * (lo[a] + hi[a]);
+  float half = 0.5f * (hi[ax] - lo[ax]);
+  for (int t = 0; t < 2; ++t)
+    for (int i = 0; i < NOSTART_PER_TEAM; ++i) {
+      float loc[3] = {c[0], c[1], c[2]}, rot[3] = {0, 0, 0};
+      loc[ax] += (t ? 1.f : -1.f) * 0.6f * half + (float)(i / 4) * (t ? 1500.f : -1500.f); // GUESS: 60% out keeps them well inside
+      loc[ay] += (float)(i % 4 - 1.5f) * 2500.f;
+      rot[1] = ax == 0 ? (t ? 180.f : 0.f) : (t ? 270.f : 90.f); // facing the other side
+      alignas(16) uint8_t params[0x80] = {};
+      ((tSpawnParamsCtor)(g_base + RVA_SPAWN_PARAMS_CTOR))(params);
+      params[0x28] = SPAWN_ADJUST_BUT_ALWAYS;
+      void *a = nullptr;
+      __try {
+        a = ((tSpawnActor)(g_base + RVA_WORLD_SPAWN_ACTOR))(world, cls, loc, rot, params);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+      }
+      if (a && *(void **)((uint8_t *)a + OFF_ACTOR_ROOT_COMPONENT))
+        g_noStart.pts[t][g_noStart.n[t]++] = a;
+    }
+  Logf("no player starts: %d + %d spawn points at %.0f %.0f %.0f +-%.0f on axis %c", g_noStart.n[0], g_noStart.n[1], c[0], c[1],
+       c[2], 0.6f * half, ax ? 'y' : 'x');
+}
+// Every game-mode tick until fed: the orbit manager's team lists, while empty.
+static void NoStartTick(uint8_t *gm) {
+  NoStartSetUp(gm);
+  if (!g_noStart.none || g_noStart.fed || !g_noStart.n[0] || !g_noStart.n[1] || !IsReadable(gm + OFF_GM_GAMESTATE, 8))
+    return;
+  uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
+  uint8_t *om = gs && IsReadable(gs + OFF_GS_ORBIT_MANAGER, 8) ? *(uint8_t **)(gs + OFF_GS_ORBIT_MANAGER) : nullptr;
+  if (!om || !IsReadable(om + 0x4B0, 0x70))
+    return;
+  g_noStart.fed = true;
+  int *n1 = (int *)(om + OFF_ORBIT_TEAM_POINTS + 8), *n2 = (int *)(om + OFF_ORBIT_TEAM_POINTS + 0x18);
+  int src = 0; // the editor's TargetPoint arrays, until SetUp moves them into the team lists
+  for (int k = 0; k < 4; ++k)
+    src += *(int *)(om + 0x4B0 + 0x10 * k + 8);
+  if (*n1 > 0 || *n2 > 0 || src > 0)
+    return (void)Logf("no player starts: orbit manager already has %d + %d points (%d unsorted)", *n1, *n2, src);
+  __try {
+    for (int t = 0; t < 2; ++t) {
+      uint8_t *arr = om + OFF_ORBIT_TEAM_POINTS + 0x10 * t;
+      for (int i = 0; i < g_noStart.n[t]; ++i) {
+        int old = *(int *)(arr + 8);
+        *(int *)(arr + 8) = old + 1;
+        if (old + 1 > *(int *)(arr + 12))
+          ((tArrayGrow)(g_base + RVA_TARRAY_RESIZE_GROW))(arr, old);
+        (*(void ***)arr)[old] = g_noStart.pts[t][i];
+      }
+    }
+    Logf("no player starts: orbit manager %p fed %d + %d points", om, *n1, *n2);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("no player starts: feeding orbit manager %p faulted", om);
+  }
+}
 #define RVA_CHOOSE_PLAYER_START 0x36C1A0
 #define OFF_PLAYER_START_TEAM 0x3F0
 tChoosePlayerStart g_origChoosePlayerStart = nullptr;
@@ -14640,9 +16023,12 @@ static void *__fastcall HookChoosePlayerStart(void *gm, void *ctrl) {
   __try {
     static void *starts[64];
     int ns = FindPlayerStarts(starts, 64);
-    if (!ns)
-      return r;
     int team = IsReadable((uint8_t *)ctrl + OFF_PC_TEAM, 1) ? ((uint8_t *)ctrl)[OFF_PC_TEAM] : 0;
+    if (!ns) {
+      NoStartSetUp(gm);
+      int t = team == 2 ? 1 : 0;
+      return g_noStart.n[t] ? g_noStart.pts[t][rand() % g_noStart.n[t]] : r;
+    }
     void *mine[64];
     int nm = 0;
     for (int i = 0; i < ns; ++i) {
@@ -15732,16 +17118,18 @@ static bool HeraldShotWatch(ULONGLONG now) {
       continue;
     uint8_t *own = IsReadable((uint8_t *)o + OFF_ACTOR_OWNER, 8) ? *(uint8_t **)((uint8_t *)o + OFF_ACTOR_OWNER) : nullptr;
     bool mine = own == g_herald.pawn || own == g_herald.ctrl;
+    // Only the nuke counts by proximity: a stray WP_YProjectile_BP_C 3947 uu
+    // off was taken for the salvo and the herald left before it fired (live
+    // 2026-10-24 10:38:59). Checked before the location: K2_GetActorLocation
+    // on every listed projectile was ~115 ms per herald per pass, three
+    // heralds froze the host ~370 ms each second (comet 2026-10-25 20:12).
+    if (!mine && !strstr(ClassNameOf(o), "WarpMissile"))
+      continue;
     float at[3];
     float d = ActorLocation(o, at) ? sqrtf((at[0] - me[0]) * (at[0] - me[0]) + (at[1] - me[1]) * (at[1] - me[1]) +
                                            (at[2] - me[2]) * (at[2] - me[2]))
                                    : 1e9f;
     if (!mine && d > 8000) // GUESS: a fresh salvo is still within 8000 uu of the herald
-      continue;
-    // Only the nuke counts by proximity: a stray WP_YProjectile_BP_C 3947 uu
-    // off was taken for the salvo and the herald left before it fired (live
-    // 2026-10-24 10:38:59).
-    if (!mine && !strstr(ClassNameOf(o), "WarpMissile"))
       continue;
     g_herald.seen[g_herald.nSeen++ % 64] = o;
     if (g_herald.nSeen > 64)
@@ -17339,6 +18727,18 @@ struct BoundBox {
 };
 static BoundBox g_boxes[TERRAIN_MAX_BOXES];
 static int g_nboxes;
+// The warning box's x/y shrunk 15% per side (CmScatter); false with none known yet.
+static bool WarningBoxXY(float lo[2], float hi[2]) {
+  for (int b = 0; b < g_nboxes; ++b)
+    if (!strcmp(g_boxes[b].kind, "warning")) {
+      for (int a = 0; a < 2; ++a) {
+        float m = 0.15f * (g_boxes[b].hi[a] - g_boxes[b].lo[a]);
+        lo[a] = g_boxes[b].lo[a] + m, hi[a] = g_boxes[b].hi[a] - m;
+      }
+      return hi[0] > lo[0] && hi[1] > lo[1];
+    }
+  return false;
+}
 // Inside the warning box shrunk 15% per side; true with no box known yet.
 static bool InsideWarningBox(const float p[3]) {
   for (int b = 0; b < g_nboxes; ++b)
@@ -17368,6 +18768,7 @@ static void FillBounds(uint8_t *parms, const char *, const char *pn, uint32_t of
 // which class owns GetBoundaryMin/Max, unexplored so far.
 static void BoundsProbe() {
   g_nboxes = 0;
+  g_boxesK = g_boundsApplied;
   FUObjectArrayMin *arr = GObjects();
   for (int i = 0; arr && arr->Objects && i < arr->NumElements; ++i) {
     UObjectMin *o = arr->Objects[i].Object;
@@ -17410,6 +18811,75 @@ static void BoundsProbe() {
 // Centre of the largest "other" LevelBoundaries volume BoundsProbe read (the
 // play space; warp/warning/height volumes only if nothing else), for the
 // /meteor heralds. False when the probe found none.
+// The largest warp volume BoundsProbe read. False when there is none.
+static bool WarpBox(float lo[3], float hi[3]) {
+  int best = -1;
+  float area = -1;
+  for (int b = 0; b < g_nboxes; ++b) {
+    float a = (g_boxes[b].hi[0] - g_boxes[b].lo[0]) * (g_boxes[b].hi[1] - g_boxes[b].lo[1]);
+    if (!strcmp(g_boxes[b].kind, "warp") && a > area)
+      area = a, best = b;
+  }
+  if (best < 0)
+    return false;
+  memcpy(lo, g_boxes[best].lo, sizeof(float) * 3);
+  memcpy(hi, g_boxes[best].hi, sizeof(float) * 3);
+  return true;
+}
+
+// Boss placement (operator 2026-10-25: a boss came up far out, "a chore to go
+// to", and once next to a command ship, dead at once). A boss (custom
+// non-hunter def, or x4 and up) is moved when its ship first shows to the
+// spot, on a 9x9 grid over the central half of the map's ORIGINAL warp area
+// (before /bounds), farthest from every other ship -- it fights both sides, so
+// every ship is its enemy -- with a small pull towards the centre. Height:
+// the humans' average, else its own. GUESS: K2_TeleportTo on a freshly
+// spawned AI ship is safe (the herald hold does the same every 250 ms).
+static bool TeleportActor(void *actor, const float loc[3], float yawDeg);
+static void BossPlace(void *pawn, const BossDef *def, int mult) {
+  if (!(def ? !def->hunter : mult >= 4) || SwitchOn("DN_HOST_BOSS_PLACE_OFF", "dn_host_boss_place_off.txt"))
+    return;
+  BoundsProbe();
+  float lo[3], hi[3], at[3];
+  if (!WarpBox(lo, hi) || !ActorLocation(pawn, at))
+    return (void)Logf("bosses: placement -- no warp volume or no location, left where it spawned");
+  float c[2] = {0.5f * (lo[0] + hi[0]), 0.5f * (lo[1] + hi[1])};
+  float k = g_boxesK > 0.1f ? g_boxesK : 1.f;
+  float half[2] = {0.5f * (hi[0] - lo[0]) / k, 0.5f * (hi[1] - lo[1]) / k};
+  float others[256][3];
+  int no = 0;
+  double zs = 0;
+  int nz = 0;
+  for (FeatsByPawn &d : g_featsByPawn) {
+    if (!d.pawn || d.pawn == pawn || no >= 256 || !ObjectLive(d.pawn) || !ActorLocation(d.pawn, others[no]))
+      continue;
+    if (!PawnIsNpc(d.pawn))
+      zs += others[no][2], ++nz;
+    ++no;
+  }
+  float z = nz ? (float)(zs / nz) : at[2];
+  float best[3] = {at[0], at[1], at[2]};
+  double bestScore = -1e300, bestMin = 0;
+  for (int i = 0; i < 9; ++i)
+    for (int j = 0; j < 9; ++j) {
+      float p[3] = {c[0] + (i - 4) / 4.f * 0.5f * half[0], c[1] + (j - 4) / 4.f * 0.5f * half[1], z};
+      double m = 1e30;
+      for (int o = 0; o < no; ++o) {
+        double dx = p[0] - others[o][0], dy = p[1] - others[o][1], dz = p[2] - others[o][2];
+        m = std::min(m, dx * dx + dy * dy + dz * dz);
+      }
+      m = sqrt(m);
+      double score = m - 0.25 * hypot(p[0] - c[0], p[1] - c[1]);
+      if (score > bestScore)
+        bestScore = score, bestMin = m, memcpy(best, p, sizeof best);
+    }
+  float yaw = (float)(atan2(c[1] - best[1], c[0] - best[0]) * 180.0 / 3.14159265);
+  bool ok = TeleportActor(pawn, best, yaw);
+  Logf("bosses: placement %ls %p: %.0f %.0f %.0f -> %.0f %.0f %.0f (%s), nearest of %d ships %.0f uu, map centre %.0f %.0f half %.0f x %.0f (bounds x%.2f)",
+       def ? def->name : L"boss", pawn, at[0], at[1], at[2], best[0], best[1], best[2], ok ? "moved" : "TELEPORT FAILED", no,
+       no ? bestMin : 0.0, c[0], c[1], half[0], half[1], k);
+}
+
 static bool MapCentre(float out[3]) {
   int best = -1;
   float area = -1;
@@ -17426,6 +18896,184 @@ static bool MapCentre(float out[3]) {
   for (int a = 0; a < 3; ++a)
     out[a] = 0.5f * (g_boxes[best].lo[a] + g_boxes[best].hi[a]);
   return true;
+}
+
+// /bounds k: every LevelBoundaries volume (warp, warning, height) scaled k
+// times about the warp volumes' centre, so the warp back, the warning and the
+// height push all sit k times further out. Default from DN_HOST_BOUNDS_SCALE
+// or dn_host_bounds_scale.txt (a number), applied once per match; off when
+// neither is set. The warp acts only where the pawn's Role is Authority (the
+// overlap handler 0x587C00), i.e. on this host. The height push is the
+// volume's native 0x5879E0 (pawn+0x63C = +-volume+0x3F8 * pawn+0x638 by which
+// side of the volume's centre the ship is), called from Blueprint -- GUESS:
+// on every client's own copy of the level too, which this does not move.
+// Volumes are Static; the root is set Movable first or the move is refused.
+enum { BOUNDS_MAX = 32 };
+static struct {
+  void *gm;
+  int n;
+  bool tried;
+  float centre[3], k;
+  struct { void *actor; float loc[3], scale[3]; } v[BOUNDS_MAX];
+} g_bounds = {};
+
+struct BndCall {
+  const char *name;
+  const float *vec;
+  uint8_t byteVal;
+  uint32_t ret;
+};
+static void BndFill(uint8_t *parms, const char *, const char *pn, uint32_t off, void *ctx) {
+  BndCall *c = (BndCall *)ctx;
+  if (!strcmp(pn, "ReturnValue"))
+    c->ret = off;
+  else if (c->name && !strcmp(pn, c->name)) {
+    if (c->vec)
+      memcpy(parms + off, c->vec, 12);
+    else
+      parms[off] = c->byteVal;
+  } else if (!strcmp(pn, "bTeleport"))
+    parms[off] = 1;
+}
+static bool BndCallFn(void *obj, const wchar_t *fn, const char *name, const float *vec, uint8_t b, void *retOut, int retLen) {
+  alignas(16) uint8_t parms[256];
+  BndCall c = {name, vec, b, 0xFFFFFFFF};
+  __try {
+    if (!CallNamed(obj, fn, BndFill, &c, parms))
+      return false;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+  if (retOut) {
+    if (c.ret == 0xFFFFFFFF)
+      return false;
+    memcpy(retOut, parms + c.ret, retLen);
+  }
+  return true;
+}
+
+static float BoundsDefaultScale(bool *height) {
+  char buf[16] = {};
+  if (!GetEnvironmentVariableA("DN_HOST_BOUNDS_SCALE", buf, sizeof buf)) {
+    char path[MAX_PATH];
+    char *slash = GetModuleFileNameA(NULL, path, MAX_PATH) ? strrchr(path, '\\') : nullptr;
+    if (!slash)
+      return 1.f;
+    strcpy_s(slash + 1, sizeof(path) - (slash + 1 - path), "dn_host_bounds_scale.txt");
+    FILE *f = nullptr;
+    if (fopen_s(&f, path, "r") || !f)
+      return 1.f;
+    fgets(buf, sizeof buf, f);
+    fclose(f);
+  }
+  float k = (float)atof(buf);
+  *height = strstr(buf, "height") != nullptr; // "2 height"
+  return k >= 0.5f && k <= 8.f ? k : 1.f;
+}
+
+// Originals (location, scale, centre) recorded once per match, so a second
+// /bounds is relative to the map as built, not to the last one.
+static bool BoundsRecord(uint8_t *gm) {
+  if (g_bounds.gm == gm && g_bounds.n)
+    return true;
+  memset(&g_bounds, 0, sizeof g_bounds);
+  g_bounds.gm = gm;
+  g_bounds.k = 1.f;
+  float lo[3] = {3e38f, 3e38f, 3e38f}, hi[3] = {-3e38f, -3e38f, -3e38f}, alo[3], ahi[3];
+  memcpy(alo, lo, sizeof lo), memcpy(ahi, hi, sizeof hi);
+  bool warp = false;
+  FUObjectArrayMin *arr = GObjects();
+  for (int i = 0; arr && arr->Objects && i < arr->NumElements && g_bounds.n < BOUNDS_MAX; ++i) {
+    UObjectMin *o = arr->Objects[i].Object;
+    const char *n = o && IsReadable(o, sizeof(UObjectMin)) ? NameText(o->Name) : nullptr;
+    const char *cn = n ? ClassNameOf(o) : nullptr;
+    if (!cn || !strncmp(n, "Default__", 9) || !strstr(cn, "LevelBoundaries") || !ObjectLive(o))
+      continue;
+    auto &e = g_bounds.v[g_bounds.n];
+    alignas(16) uint8_t parms[256];
+    uint32_t off[2] = {0xFFFFFFFF, 0xFFFFFFFF};
+    bool ok = false;
+    __try {
+      ok = CallNamed(o, L"GetActorBounds", FillBounds, off, parms) && off[0] != 0xFFFFFFFF && off[1] != 0xFFFFFFFF;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ok = false;
+    }
+    if (!ok || !ActorLocation(o, e.loc) || !BndCallFn(o, L"GetActorScale3D", nullptr, nullptr, 0, e.scale, 12))
+      continue;
+    e.actor = o;
+    ++g_bounds.n;
+    const float *c = (float *)(parms + off[0]), *x = (float *)(parms + off[1]);
+    bool isWarp = strstr(cn, "Warp") != nullptr;
+    warp |= isWarp;
+    for (int a = 0; a < 3; ++a) {
+      alo[a] = std::min(alo[a], c[a] - x[a]), ahi[a] = std::max(ahi[a], c[a] + x[a]);
+      if (isWarp)
+        lo[a] = std::min(lo[a], c[a] - x[a]), hi[a] = std::max(hi[a], c[a] + x[a]);
+    }
+  }
+  for (int a = 0; a < 3; ++a)
+    g_bounds.centre[a] = warp ? 0.5f * (lo[a] + hi[a]) : 0.5f * (alo[a] + ahi[a]);
+  Logf("bounds: %d volume(s), centre %.0f %.0f %.0f (%s)", g_bounds.n, g_bounds.centre[0], g_bounds.centre[1],
+       g_bounds.centre[2], warp ? "warp volumes" : "all volumes");
+  return g_bounds.n > 0;
+}
+
+// The height volumes push on each player's own copy of the map too (the
+// pawn's m_levelBoundaryHeightForce, +0x638, is not replicated): with the
+// host's ceiling raised, the client pushes down at the old one and the server
+// corrects back up, and the ship wiggles there (operator, 2026-10-25). So they
+// stay as built unless asked for (/bounds k height).
+static void CommandBounds(uint8_t *gm, float k, bool height) {
+  if (!BoundsRecord(gm))
+    return (void)Logf("bounds: no boundary volumes in this map");
+  int moved = 0;
+  for (int i = 0; i < g_bounds.n; ++i) {
+    auto &e = g_bounds.v[i];
+    if (!ObjectLive(e.actor))
+      continue;
+    void *root = nullptr;
+    // No SetMobility UFunction in this build: the reflected Mobility byte.
+    bool mob = false;
+    if (BndCallFn(e.actor, L"K2_GetRootComponent", nullptr, nullptr, 0, &root, 8) && root) {
+      UObjectMin *mp = FindPropObj((UObjectMin *)root, "Mobility");
+      uint32_t mo = mp && IsReadable((uint8_t *)mp + 0x50, 4) ? *(uint32_t *)((uint8_t *)mp + 0x50) : 0;
+      if (mo && mo < 0x400 && IsReadable((uint8_t *)root + mo, 1))
+        ((uint8_t *)root)[mo] = 2 /* EComponentMobility::Movable */, mob = true;
+    }
+    float s[3], p[3];
+    float ke = height || !strstr(ClassNameOf((UObjectMin *)e.actor), "Height") ? k : 1.f;
+    for (int a = 0; a < 3; ++a)
+      s[a] = e.scale[a] * ke, p[a] = g_bounds.centre[a] + (e.loc[a] - g_bounds.centre[a]) * ke;
+    uint8_t moveRet = 0;
+    bool ok = BndCallFn(e.actor, L"SetActorScale3D", "NewScale3D", s, 0, nullptr, 0) &&
+              BndCallFn(e.actor, L"K2_SetActorLocation", "NewLocation", p, 0, &moveRet, 1);
+    float now[3] = {};
+    ActorLocation(e.actor, now);
+    ok = ok && fabsf(now[0] - p[0]) + fabsf(now[1] - p[1]) + fabsf(now[2] - p[2]) < 4.f;
+    Logf("bounds: %s %s -> scale %.2f %.2f %.2f at %.0f %.0f %.0f (now at %.0f %.0f %.0f; root %p made movable %d, move returned %d)",
+         NameText(((UObjectMin *)e.actor)->Name), ok ? "set" : "FAILED", s[0], s[1], s[2], p[0], p[1], p[2], now[0], now[1],
+         now[2], root, (int)mob, (int)moveRet);
+    moved += ok;
+  }
+  g_bounds.k = k;
+  if (moved)
+    g_boundsApplied = k;
+  Logf("bounds: x%.2f -- %d of %d volume(s) moved", k, moved, g_bounds.n);
+  BoundsProbe(); // viewer boxes, spawn spots and MapCentre follow
+}
+
+// Once per match, the default scale as soon as the volumes are loaded.
+static void BoundsTick(uint8_t *gm) {
+  static float s_k = -1.f;
+  static bool s_height = false;
+  if (s_k < 0)
+    s_k = BoundsDefaultScale(&s_height), Logf("bounds: default scale x%.2f%s", s_k, s_height ? " with height" : "");
+  if (s_k == 1.f || (g_bounds.gm == gm && g_bounds.tried))
+    return;
+  if (!BoundsRecord(gm))
+    return; // not loaded yet: try again next tick
+  g_bounds.tried = true;
+  CommandBounds(gm, s_k, s_height);
 }
 
 // Object boxes for the viewer: every distinct actor the fine pass classified
@@ -18325,12 +19973,64 @@ static void CommandDummy(uint8_t *gm, const char *teamArg, const char *ship, int
        *(void **)((uint8_t *)pawn + OFF_PAWN_CONTROLLER));
 }
 
+// Bot aggro (operator 2026-10-25: some bots, ours especially, engage only at
+// ~5 km). The herald's controller carried m_maxFireDistance 30000 against its
+// weapon slot's 100000 (herald sweep 2026-10-18), and raising it is what made
+// the herald fire from farther; creeps' m_maxPerceptDistance is 20000. GUESS:
+// game bots' controllers share the 30000 cap and it is their ~5 km engage
+// gate. Every 5 s, each AI-controlled ship's controller gets both raised to
+// BOT_ENGAGE_RANGE (stock values logged once per class). Off with
+// DN_HOST_NO_BOT_RANGE / dn_host_no_bot_range.txt.
+#define BOT_ENGAGE_RANGE 60000.f
+static void BotRangeTick() {
+  static int s_off = -1;
+  static DWORD s_last;
+  if (s_off < 0)
+    s_off = SwitchOn("DN_HOST_NO_BOT_RANGE", "dn_host_no_bot_range.txt");
+  if (s_off || GetTickCount() - s_last < 5000)
+    return;
+  s_last = GetTickCount();
+  static struct { void *cls; int fire, percept; } s_cls[32];
+  static int s_n;
+  static const char *const kNames[2] = {"m_maxFireDistance", "m_maxPerceptDistance"};
+  for (FeatsByPawn &d : g_featsByPawn) {
+    if (!d.pawn || !ObjectLive(d.pawn) || !PawnIsNpc(d.pawn))
+      continue;
+    UObjectMin *ctrl = *(UObjectMin **)((uint8_t *)d.pawn + OFF_PAWN_CONTROLLER);
+    if (!ObjectLive(ctrl))
+      continue;
+    int k = 0;
+    while (k < s_n && s_cls[k].cls != ctrl->Class)
+      ++k;
+    if (k == s_n) {
+      if (s_n >= 32)
+        continue;
+      s_cls[s_n++] = {ctrl->Class, PropOffset(ctrl, kNames[0]), PropOffset(ctrl, kNames[1])};
+      int offs[2] = {s_cls[k].fire, s_cls[k].percept};
+      for (int w = 0; w < 2; ++w)
+        if (offs[w] >= 0)
+          Logf("bot range: %s.%s = %.0f -> %.0f", ClassNameOf(ctrl), kNames[w], *(float *)((uint8_t *)ctrl + offs[w]),
+               BOT_ENGAGE_RANGE);
+      if (offs[0] < 0 && offs[1] < 0)
+        Logf("bot range: %s has neither range field", ClassNameOf(ctrl));
+    }
+    int offs[2] = {s_cls[k].fire, s_cls[k].percept};
+    for (int w = 0; w < 2; ++w) {
+      float *p = offs[w] >= 0 ? (float *)((uint8_t *)ctrl + offs[w]) : nullptr;
+      if (p && IsReadable(p, 4) && *p < BOT_ENGAGE_RANGE)
+        *p = BOT_ENGAGE_RANGE;
+    }
+  }
+}
 static void CommandsTick(uint8_t *gm) {
   ZONE("PreloadTick", PreloadTick(gm));
   ZONE("NpcFireAbilitiesTick", NpcFireAbilitiesTick());
   ZONE("NpcTierTick", NpcTierTick());
   ZONE("BotsTick", BotsTick());
   ZONE("EliteTick", EliteTick(gm));
+  ZONE("BossFeatWatchTick", BossFeatWatchTick());
+  ZONE("BossDramaTick", BossDramaTick(gm));
+  ZONE("BotRangeTick", BotRangeTick());
   ZONE("GameBotEliteTick", GameBotEliteTick(gm));
   ZONE("SkyMeteorTick", SkyMeteorTick(gm));
   ZONE("SquadWatchTick", SquadWatchTick());
@@ -18421,6 +20121,12 @@ static void CommandsTick(uint8_t *gm) {
     else if (!strcmp(cmd, "bottier")) {
       g_botTier = std::min(5, std::max(0, atoi(arg)));
       Logf("commands: bot tier %d", g_botTier);
+    } else if (!strcmp(cmd, "ailevel") && (!strcmp(arg, "max") || !strcmp(arg, "game"))) {
+      g_aiLevelMax = !strcmp(arg, "max");
+      Logf("commands: AI level %s", arg);
+    } else if (!strcmp(cmd, "legendaryt5") && (!strcmp(arg, "on") || !strcmp(arg, "off"))) {
+      g_legendaryT5 = !strcmp(arg, "on");
+      Logf("commands: legendary bots T5 only %s", arg);
     } else if (!strcmp(cmd, "botship") && atoi(arg) >= 0 && atoi(arg) <= 2) {
       FNameMin n = {};
       if (_stricmp(arg2, "off") && ShipIdPawnClass(arg2, false)) {
@@ -18450,6 +20156,8 @@ static void CommandsTick(uint8_t *gm) {
       CommandFlash(gm, arg);
     else if (!strcmp(cmd, "slowmo"))
       CommandSlowmo(gm, std::min(1.f, std::max(0.2f, (float)atof(arg))));
+    else if (!strcmp(cmd, "bounds"))
+      CommandBounds(gm, std::min(8.f, std::max(0.5f, (float)atof(arg))), !strcmp(arg2, "height"));
     else if (!strcmp(cmd, "difficulty"))
       CommandDifficulty(gm, arg);
     else if (!strcmp(cmd, "nuke"))
@@ -18489,7 +20197,7 @@ static void CommandsTick(uint8_t *gm) {
       Logf("ffa: %s for game mode %p", g_ffaGm ? "on" : "off", gm);
     } else if (!strcmp(cmd, "hunterdef") && atoi(arg) > 0)
       CommandHunters(gm, 1, 0, true, atoi(arg));
-    else if (!strcmp(cmd, "bossdef") && atoi(arg) > 0)
+    else if (!strcmp(cmd, "bossdef") && atoi(arg) > 0 && (BossDramaNewWave(), true))
       CommandBossDef(gm, atoi(arg), std::min(10, std::max(1, atoi(arg2))));
     else if (!strcmp(cmd, "dummy"))
       CommandDummy(gm, arg, arg2, atoi(arg3));

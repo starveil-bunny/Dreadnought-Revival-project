@@ -34,6 +34,12 @@
 #   dn restart                  stop -> start -> health -> in-process DN_ switches
 #   dn rva <script> [args...]   run an RVA toolkit script with DREADGAME_EXE set
 #   dn sql "<query>" [--db mmog|auth|legacy|master]
+#   dn online                   who is online (count first)
+#   dn host-deploy [--force]    build the host DLL, install as wer.dll, dn restart;
+#                               refuses while anyone is online unless --force
+#   dn dis START [END|+N]       objdump -M intel of exe RVAs, compact (default +0x80)
+#   dn boss list | get ID | set ID key=json... | clone PID LOADOUT [SLOT] [key=json...]
+#                               admin boss API; the key stays in run/secrets.env
 #
 # Traps encoded below (see the dreadnought-stack skill):
 #   * mmogbrain's per-request trail is in the REPO-ROOT mmogbrain.log, NOT run/.
@@ -343,7 +349,70 @@ cmd_sql() {
   sqlite3 -header -column "$f" "$q"
 }
 
-cmd_help() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; }
+cmd_online() { curl -s -m 3 http://127.0.0.1:8083/online | python3 -I -c '
+import json,sys
+d=json.load(sys.stdin); print(d.get("count"), " ".join(p.get("name","?") for p in d.get("players",[])))'; }
+
+cmd_host_deploy() {
+  local force=0; [[ "${1:-}" == "--force" ]] && force=1
+  local n; n="$(curl -s -m 3 http://127.0.0.1:8083/online | python3 -I -c 'import json,sys;print(json.load(sys.stdin).get("count",0))' 2>/dev/null)"
+  if [[ "${n:-0}" != "0" && $force -eq 0 ]]; then echo "dn: $n online -- not deploying (--force overrides)"; cmd_online; return 3; fi
+  ( cd "$REPO/battle-server-mod" || exit 1; timeout 600 ./build-linux.sh 2>&1 | grep -E "error|^OK" | head -20 ) || return 1
+  local dll="$REPO/battle-server-mod/build-linux/dn_host_loadout.dll" w; w="$(dirname "$EXE")"
+  [[ -f "$dll" ]] || die "no DLL built"
+  cp "$dll" "$w/wer.dll.new" && mv "$w/wer.dll.new" "$w/wer.dll" && echo "installed wer.dll ($(stat -c %s "$w/wer.dll") bytes)"
+  cmd_restart
+}
+
+cmd_dis() {
+  local a="${1:-}" b="${2:-+0x80}"; [[ -n "$a" ]] || die "usage: dn dis START [END|+N]"
+  local s=$(( 0x140000000 + 16#${a#0x} )) e
+  if [[ "$b" == +* ]]; then e=$(( s + ${b#+} )); else e=$(( 0x140000000 + 16#${b#0x} )); fi
+  objdump -d -M intel --no-show-raw-insn --start-address=$s --stop-address=$e "$EXE" | tail -n +8 \
+    | sed -E 's/^ +14([0-9a-f]{7}):\s+/\1  /; s/0x14([0-9a-f]{7})\b/0x\1/g' | cut -c1-140 | head -400
+}
+
+cmd_boss() {
+  local key; key="$(grep -m1 '^ADMIN_KEY=' "$RUN/secrets.env" | cut -d= -f2-)"
+  local api="http://127.0.0.1:8083/admin/api/bosses"
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list) curl -s -H "X-Admin-Key: $key" "$api" | python3 -I -c '
+import json,sys
+for b in json.load(sys.stdin)["bosses"]: print(b["id"], repr(b["name"]), b.get("base"), "x%s"%b.get("mult"), len(b.get("modules") or []), "modules", len(b.get("feats") or []), "feats")' ;;
+    get) curl -s -H "X-Admin-Key: $key" "$api" | python3 -I -c '
+import json,sys
+print(json.dumps([b for b in json.load(sys.stdin)["bosses"] if b["id"]==int(sys.argv[1])][0], indent=1))' "$1" ;;
+    set|clone)
+      local tmp; tmp="$(mktemp)"; local id
+      if [[ "$sub" == set ]]; then
+        id="$1"; shift
+        curl -s -H "X-Admin-Key: $key" "$api" | python3 -I -c '
+import json,sys
+print(json.dumps([b for b in json.load(sys.stdin)["bosses"] if b["id"]==int(sys.argv[1])][0]))' "$id" > "$tmp" || return 1
+      else
+        local pid="$1" lo="$2"; shift 2; local slot=0
+        [[ "${1:-}" =~ ^[0-9]+$ ]] && { slot="$1"; shift; }
+        id=0
+        curl -s -G -H "X-Admin-Key: $key" "$api/clone" --data-urlencode "pid=$pid" --data-urlencode "loadout=$lo" --data-urlencode "slot=$slot" > "$tmp"
+        grep -q '"error"' "$tmp" && { cat "$tmp"; rm -f "$tmp"; return 1; }
+      fi
+      python3 -I - "$tmp" "$@" <<'PY'
+import json,sys
+f=sys.argv[1]; b=json.load(open(f))
+for kv in sys.argv[2:]:
+    k,v=kv.split("=",1)
+    try: b[k]=json.loads(v)
+    except ValueError: b[k]=v
+json.dump(b,open(f,"w"))
+PY
+      curl -s -o /dev/null -w "PUT %{http_code}\n" -X PUT -H "X-Admin-Key: $key" -H "Content-Type: application/json" --data @"$tmp" "$api/$id"
+      rm -f "$tmp"; cmd_boss list ;;
+    *) die "usage: dn boss list|get ID|set ID k=v...|clone PID LOADOUT [SLOT] [k=v...]" ;;
+  esac
+}
+
+cmd_help() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-help}" in
   env)      shift; cmd_env "$@" ;;
@@ -361,6 +430,10 @@ case "${1:-help}" in
   restart)  shift; cmd_restart "$@" ;;
   rva)      shift; cmd_rva "$@" ;;
   sql)      shift; cmd_sql "$@" ;;
+  online)   shift; cmd_online ;;
+  host-deploy) shift; cmd_host_deploy "$@" ;;
+  dis)      shift; cmd_dis "$@" ;;
+  boss)     shift; cmd_boss "$@" ;;
   cmd)      shift; curl -sS --data-binary "$*" http://127.0.0.1:8083/admin/command ;;
   help|-h|--help) cmd_help ;;
   *) die "unknown command '$1' — dn help" ;;
